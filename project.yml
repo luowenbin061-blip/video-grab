@@ -23,23 +23,13 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGNING_ALLOWED: "NO"
 
-# 成熟方案：内嵌 FFmpeg 引擎（Stay / 亚瑟 / 各类下载器 App 的同款路线）。
-# kewlbear/FFmpeg-iOS 是 SPM 包，自带预编译好的 iOS arm64 静态库
-# （xcframework 二进制从它的 GitHub release 拉，已验证含真机切片）。
-# API 一行：ffmpeg(["ffmpeg", "-i", "in.ts", "-c", "copy", "out.mp4"])。
-# 许可 LGPLv2.1 —— 自用 App 没有问题。
-packages:
-  FFmpegKit:
-    url: https://github.com/kewlbear/FFmpeg-iOS
-    revision: 6cfcee5421fd932e16315dc6c1ccd9fadfbb169a   # = v0.0.6-b20230416-173821
-
+# FFmpeg 预编译静态库由 CI 下载到 vendor/FFmpeg（见 build.yml），
+# 通过 LIBRARY_SEARCH_PATHS + OTHER_LDFLAGS 手动挂链接。
+# （SPM 路线实测走不通：Xcode 15.4 的 SPM 不允许 revision 锁定的包再依赖其他包）
 targets:
   VideoGrab:
     type: application
     platform: iOS
-    dependencies:
-      - package: FFmpegKit
-        product: FFmpeg-iOS
     sources:
       # Info.plist 由下面的 info.path 生成，不能当源码/资源扫进来
       - path: app
@@ -81,6 +71,39 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.videograb.app
         TARGETED_DEVICE_FAMILY: "1,2"
+        # FFmpeg 静态库（设备切片 ios-arm64）。顺序有讲究：静态库是单趟
+        # 解析，被依赖的库要排在依赖者后面（fftools -> ... -> avutil 收尾）。
+        LIBRARY_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/vendor/FFmpeg/fftools.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/avdevice.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/avfilter.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/avformat.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/avcodec.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/swscale.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/swresample.xcframework/ios-arm64"
+          - "$(PROJECT_DIR)/vendor/FFmpeg/avutil.xcframework/ios-arm64"
+        OTHER_LDFLAGS:
+          - "-lfftools"
+          - "-lavdevice"
+          - "-lavfilter"
+          - "-lavformat"
+          - "-lavcodec"
+          - "-lswscale"
+          - "-lswresample"
+          - "-lavutil"
+          - "-lz"
+          - "-lbz2"
+          - "-liconv"
+          - "-framework"
+          - "VideoToolbox"
+          - "-framework"
+          - "CoreMedia"
+          - "-framework"
+          - "AVFoundation"
+          - "-framework"
+          - "AudioToolbox"
+          - "-framework"
+          - "CoreVideo"
         # FFmpeg 转码用的 C 入口（app/Hook.m）经桥接头暴露给 Swift
         SWIFT_OBJC_BRIDGING_HEADER: app/VideoGrab-Bridging-Header.h
 

@@ -31,6 +31,23 @@ jobs:
           echo "=== install xcodegen ===" | tee -a build.log
           brew install xcodegen 2>&1 | tee -a build.log || brew upgrade xcodegen 2>&1 | tee -a build.log
 
+      # FFmpeg 预编译静态库（iOS arm64 真机切片）。SPM 路线已验证走不通
+      # （Xcode 15.4 的 SPM 不支持 revision 锁定包再依赖其他包），改为
+      # 直接下载 xcframework + 手动挂链接，完全绕开 SPM。
+      - name: Download FFmpeg static libs
+        run: |
+          echo "=== download ffmpeg libs ===" | tee -a build.log
+          mkdir -p vendor/FFmpeg
+          cd vendor/FFmpeg
+          base=https://github.com/kewlbear/FFmpeg-iOS/releases/download/v0.0.6-b20230416-173821
+          for lib in avcodec avutil avformat avfilter avdevice swscale swresample fftools; do
+            echo "-- $lib" | tee -a ../../build.log
+            curl -fsSL "$base/$lib.zip" -o "$lib.zip"
+            unzip -oq "$lib.zip"
+            rm -f "$lib.zip"
+          done
+          find . -maxdepth 2 -type d | tee -a ../../build.log
+
       - name: Generate Xcode project
         run: |
           echo "=== xcodegen generate ===" | tee -a build.log
