@@ -283,7 +283,7 @@ enum Exporter {
         session.outputURL = mp4
         session.outputFileType = .mp4
         session.shouldOptimizeForNetworkUse = false
-        await run(session: session, onProgress: onProgress, label: "重新编码")
+        try await run(session: session, onProgress: onProgress, label: "重新编码")
     }
 
     // MARK: - 手段 3：重建轨道后导出
@@ -326,7 +326,7 @@ enum Exporter {
         session.outputURL = mp4
         session.outputFileType = .mp4
         session.timeRange = finalRange
-        await run(session: session, onProgress: onProgress, label: "重建导出")
+        try await run(session: session, onProgress: onProgress, label: "重建导出")
     }
 
     // MARK: - 跑导出会话（兼容 iOS 15 的老 API）
