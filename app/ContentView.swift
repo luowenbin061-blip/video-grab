@@ -402,6 +402,8 @@ struct DownloadList: View {
 struct JobRow: View {
     @ObservedObject var job: DownloadJob
     @State private var playing = false
+    @State private var playTarget: URL?
+    @State private var showLog = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -433,32 +435,70 @@ struct JobRow: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(.green)
                 } else {
-                    Label("能在 App 里播（点下面按钮）；MP4 没转出来",
+                    Label("MP4 没转出来 · 原因在下面「过程记录」里",
                           systemImage: "info.circle.fill")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.orange)
-                    if let e = job.remuxError {
-                        Text("转 MP4 失败的原因：\(e)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // 播放按钮。
+                // 注意：这里**绝不能**退回本地文件 ——
+                // 本地 .ts 和本地 .m3u8 都不被 AVPlayer 接受（已查证），
+                // 所以只有两个选择：本机 HTTP 上的 m3u8（离线），或原始在线地址。
+                HStack(spacing: 8) {
+                    if let u = job.playURL {
+                        Button {
+                            playTarget = u
+                            playing = true
+                        } label: {
+                            Label("播放（已下载）", systemImage: "play.circle.fill")
+                                .font(.system(size: 13))
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else if let u = job.onlineURL {
+                        Button {
+                            playTarget = u
+                            playing = true
+                        } label: {
+                            Label("在线播放", systemImage: "play.circle")
+                                .font(.system(size: 13))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if !job.notes.isEmpty {
+                        Button {
+                            showLog.toggle()
+                        } label: {
+                            Label(showLog ? "收起记录" : "过程记录",
+                                  systemImage: "list.bullet.rectangle")
+                                .font(.system(size: 12.5))
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
 
-                // 播放走的是「本机 HTTP 上的 m3u8」—— 因为 iOS 读不了本地 .ts
-                if let u = job.playURL ?? job.localURL {
-                    Button {
-                        playing = true
-                    } label: {
-                        Label("在 App 里播放", systemImage: "play.circle.fill")
-                            .font(.system(size: 13))
+                if showLog {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(job.notes.enumerated()), id: \.offset) { _, n in
+                            Text(n)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(n.hasPrefix("✗") ? .red :
+                                                 (n.hasPrefix("✓") ? .green : .secondary))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .sheet(isPresented: $playing) { PlayerSheet(url: u) }
+                    .padding(8)
+                    .background(Color(.tertiarySystemBackground))
+                    .cornerRadius(8)
                 }
             }
         }
         .padding(.vertical, 3)
+        .sheet(isPresented: $playing) {
+            if let u = playTarget { PlayerSheet(url: u) }
+        }
     }
 }
 
@@ -487,8 +527,10 @@ struct HelpView: View {
                         .font(.system(size: 13))
                 }
                 Section("已知限制") {
-                    bullet("下载完会自动转成 MP4 —— 只换封装、不重新编码，几秒完事，画质无损。")
-                    bullet("万一转 MP4 失败，会保留 .ts 原文件。那个格式 iOS 系统播放器和微信都不认，要用 VLC、nPlayer 这类打开，或者拷到电脑上看。失败原因会写在下载条目里。")
+                    bullet("iOS 读不了本地的 .ts 视频文件（Apple 的限制，不是 bug）。所以 App 会在本机起一个小服务，把视频以 http://127.0.0.1 的形式给播放器读 —— 播放和转 MP4 都靠它。")
+                    bullet("转 MP4 要重新编码，比较慢（一部剧可能十几分钟，App 要留在前台）。转出来后是标准 mp4，发微信、存相册都行。")
+                    bullet("转不成时会保留 .ts 原文件。那个格式 iOS 系统播放器和微信都不认，要用 VLC、nPlayer 这类打开，或者拷到电脑看。")
+                    bullet("每一步成没成都会记在下载条目的「过程记录」里，出问题点开看一眼定位得很快。")
                     bullet("DRM 加密的付费影片拿不到，这个任何工具都做不到。")
                     bullet("有些站的地址是脚本算出来的、或走了第三方解析，可能嗅不到 —— 换个线路或等视频多播一会儿再试。")
                     bullet("个别站会检测「是不是 App 内置浏览器」，那种站打不开也正常。")

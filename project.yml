@@ -54,6 +54,11 @@ targets:
         # 采集源的 m3u8 和分片常常是 http，放开 ATS（自用，不上架）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        # App 内会起一个只绑 127.0.0.1 的 HTTP 服务，把本地 .ts 以 HLS 形式
+        # 提供给 AVPlayer（本地 ts / 本地 m3u8 都读不了，只能走 http）。
+        # 回环本来不需要本地网络权限，这里声明一句是保险。
+        NSLocalNetworkUsageDescription: 用于在本机把下载好的视频提供给播放器读取（只绑 127.0.0.1，不对外）。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.videograb.app

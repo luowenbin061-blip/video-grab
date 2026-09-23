@@ -1,8 +1,10 @@
 import AVKit
 import SwiftUI
 
-/// 用系统播放器放本地文件。
-/// 下载完能直接在 App 里看一眼，不用先跑去「文件」App。
+/// 用系统播放器放视频。
+///
+/// 传进来的地址要么是「本机 HTTP 上的 m3u8」，要么是原始在线地址 ——
+/// 不能是本地 .ts / 本地 .m3u8，那两种 AVPlayer 都不接受（见 Exporter 顶部说明）。
 struct PlayerSheet: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
