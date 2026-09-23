@@ -485,13 +485,19 @@ struct DownloadList: View {
     }
 }
 
+/// 让 URL 可以直接当 sheet 的触发源（.sheet(item:)）。
+/// 上一版用「isPresented 布尔 + 可选 URL」两个独立状态，弹出瞬间内容判 nil
+/// → 空视图 → 白屏。用 item 模式后这两个状态合成一个，不可能再错位。
+struct SheetURL: Identifiable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
 struct JobRow: View {
     @ObservedObject var job: DownloadJob
-    @State private var playing = false
-    @State private var playTarget: URL?
+    @State private var playSheet: SheetURL?
+    @State private var exportSheet: SheetURL?
     @State private var showLog = false
-    @State private var exporting = false
-    @State private var exportURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -555,9 +561,8 @@ struct JobRow: View {
                             // ★ 每次现取地址 —— 本机服务端口每次启动都可能变，
                             //   用存下来的旧地址就是白屏的根源之一
                             if let u = job.localPlaybackURL() {
-                                playTarget = u
                                 showLog = false
-                                playing = true
+                                playSheet = SheetURL(url: u)
                             } else {
                                 job.show("这个文件现在播不了")
                             }
@@ -571,8 +576,7 @@ struct JobRow: View {
                         // 仍然走我们自己的播放器 —— 而不是丢给 Safari
                         Button {
                             if let u = URL(string: job.sourceURL) {
-                                playTarget = u
-                                playing = true
+                                playSheet = SheetURL(url: u)
                             } else {
                                 job.show("地址不合法")
                             }
@@ -595,8 +599,7 @@ struct JobRow: View {
 
                     Button {
                         if let u = job.exportURL() {
-                            exportURL = u
-                            exporting = true
+                            exportSheet = SheetURL(url: u)
                         } else {
                             job.show("文件不在了")
                         }
@@ -647,17 +650,20 @@ struct JobRow: View {
             }
         }
         .padding(.vertical, 3)
-        .sheet(isPresented: $playing) {
-            if let u = playTarget {
-                PlayerSheet(url: u, title: job.title)
-            }
+        // ══ 白屏的最终修法 ══
+        // 上一版是 .sheet(isPresented:) + 内容里判另一个可选状态：
+        //   .sheet(isPresented: $playing) { if let u = playTarget { ... } }
+        // SwiftUI 在触发 sheet 的瞬间就会求值内容闭包，那时 playTarget 可能
+        // 还没写进去 → 内容为空 → **纯白一整屏**（正是用户看到的样子）。
+        // 改成 .sheet(item:)：URL 本身就是触发源，有值才有 sheet，
+        // "弹出了但内容是空的"这种情况从结构上不可能发生。
+        .sheet(item: $playSheet) { s in
+            PlayerSheet(url: s.url, title: job.title)
         }
-        .sheet(isPresented: $exporting) {
-            if let u = exportURL {
-                DocumentExporter(url: u, isPresented: $exporting, onDone: { ok in
-                    job.show(ok ? "已保存到你选的位置" : "已取消")
-                })
-            }
+        .sheet(item: $exportSheet) { s in
+            DocumentExporter(url: s.url, onFinish: { ok in
+                job.show(ok ? "已保存到你选的位置" : "已取消")
+            })
         }
     }
 

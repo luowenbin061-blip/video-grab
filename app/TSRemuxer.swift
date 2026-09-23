@@ -579,7 +579,13 @@ extension TSRemuxer {
             let v = AVAssetWriterInput(mediaType: .video,
                                        outputSettings: nil,
                                        sourceFormatHint: vf)
-            v.expectsMediaDataInRealTime = false
+            // ⚠️ 这里必须用 true（实时模式）。文档写得很清楚：
+            //   有多个输入时，asset writer 会按时间戳交错写入，只有"就绪"的输入才能
+            //   追加数据；而 expectsMediaDataInRealTime 为 false 时，就绪性会被
+            //   「两路进度是否匹配」影响 —— 我们按时间归并喂（见 pump），
+            //   用实时模式让就绪性只反映处理压力，不再被交错卡死。
+            //   因为我们是按时间戳顺序追加的，输出文件照样是交错好的。
+            v.expectsMediaDataInRealTime = true
             guard w.canAdd(v) else { throw Fail.writer("视频轨加不进去（格式不被接受）") }
             w.add(v)
 
@@ -588,7 +594,7 @@ extension TSRemuxer {
                 let input = AVAssetWriterInput(mediaType: .audio,
                                                outputSettings: nil,
                                                sourceFormatHint: af)
-                input.expectsMediaDataInRealTime = false
+                input.expectsMediaDataInRealTime = true
                 if w.canAdd(input) { w.add(input); a = input }
                 else { audioFormatError = "音频轨加不进去" }
             }
@@ -614,7 +620,19 @@ extension TSRemuxer {
             }
         }
 
-        /// 把排队的样本写进 writer（起 writer 的条件够不够就在这里面判）
+        /// 把排队的样本写进 writer。
+        ///
+        /// ══ 为什么必须「按时间戳归并」两路 ══
+        ///
+        /// Apple 文档原话：一个 asset writer 有多个输入时，它**按时间戳交错写入**
+        /// （为了播放和存储效率），而"只有在 isReadyForMoreMediaData 为 true 时
+        /// 才能往这个输入追加数据"。
+        ///
+        /// 上一版是先把这个队列的视频全喂完、再去喂音频 —— 视频输入很快就不就绪了
+        /// （它在等同一时间段的音频），音频又排在后面没机会喂，
+        /// **两边互相等，永远卡住**。报错就是「writer 长时间不接收数据」。
+        ///
+        /// 现在每次从两路里挑**时间戳更早**的那个喂，两路进度始终贴着走。
         private func pump(force: Bool = false) async throws {
             if writer == nil {
                 if force || videoFirstDTS != nil || pendingBytes > 4 * 1_048_576 {
@@ -626,29 +644,85 @@ extension TSRemuxer {
                     try startWriterIfPossibleWithoutAudio()
                 }
             }
-            guard writer != nil, let vIn else { return }
+            guard let w = writer, let vIn else { return }
+            if aIn == nil, !aq.isEmpty { aq.removeAll() }
 
-            while !vq.isEmpty {
+            var spin = 0
+            while !(vq.isEmpty && aq.isEmpty) {
                 if Task.isCancelled { throw Fail.cancelled }
-                let it = vq.removeFirst()
-                pendingBytes -= it.avcc.count
-                if let sb = makeVideoSample(it) {
-                    try await append(sb, to: vIn)
-                    stats.videoSamples += 1
+                if w.status == .failed {
+                    throw Fail.writer("writer 内部报错：\(w.error?.localizedDescription ?? "未知")")
                 }
-            }
 
-            if let aIn {
-                while !aq.isEmpty {
-                    if Task.isCancelled { throw Fail.cancelled }
-                    let it = aq.removeFirst()
-                    pendingBytes -= it.frame.count
-                    if let sb = makeAudioSample(it) {
-                        try await append(sb, to: aIn)
-                        stats.audioSamples += 1
-                    }
+                let vT = vq.first.map { max($0.dts - (base90 ?? 0), 0) }
+                let aT = aq.first.map { audioT90($0) }
+                let vReady = vIn.isReadyForMoreMediaData
+                let aReady = aIn?.isReadyForMoreMediaData ?? false
+
+                let preferVideo: Bool
+                switch (vT, aT) {
+                case let (.some(v), .some(a)): preferVideo = v <= a
+                case (.some, .none): preferVideo = true
+                default: preferVideo = false
                 }
+
+                var did = false
+                if preferVideo, vReady, let it = popVideo() {
+                    try appendNow(makeVideoSample(it), to: vIn); did = true
+                } else if !preferVideo, aReady, let aIn, let it = popAudio() {
+                    try appendNow(makeAudioSample(it), to: aIn); did = true
+                } else if vReady, let it = popVideo() {
+                    // 首选那一路没收，就先喂另一路 —— 不能死等
+                    try appendNow(makeVideoSample(it), to: vIn); did = true
+                } else if aReady, let aIn, let it = popAudio() {
+                    try appendNow(makeAudioSample(it), to: aIn); did = true
+                }
+
+                if did { spin = 0; continue }
+
+                spin += 1
+                if spin > 2500 {          // 约 5 秒
+                    var msg = "writer 长时间不接收数据（status=\(w.status.rawValue)"
+                    if let e = w.error { msg += " · \(e.localizedDescription)" }
+                    msg += "）"
+                    throw Fail.writer(msg)
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000)
             }
+        }
+
+        private func popVideo() -> VItem? {
+            guard !vq.isEmpty else { return nil }
+            let it = vq.removeFirst()
+            pendingBytes -= it.avcc.count
+            return it
+        }
+
+        private func popAudio() -> AItem? {
+            guard !aq.isEmpty else { return nil }
+            let it = aq.removeFirst()
+            pendingBytes -= it.frame.count
+            return it
+        }
+
+        /// 音频样本时间换算到 90kHz，只用来跟视频比先后
+        private func audioT90(_ it: AItem) -> Int64 {
+            guard let base = base90 else { return 0 }
+            let rate = Int64(Int(sampleRate))
+            let shift = Int64((Double(it.pts - base) * sampleRate / 90000.0).rounded())
+            let samples = shift + Int64(it.index) * 1024
+            return rate > 0 ? samples * 90000 / rate : 0
+        }
+
+        /// 就绪性已经在外面判过了，这里直接追加
+        private func appendNow(_ sb: CMSampleBuffer?, to input: AVAssetWriterInput) throws {
+            guard let sb else { return }
+            if !input.append(sb) {
+                let why = writer?.error?.localizedDescription ?? "原因未提供"
+                throw Fail.writer("样本被拒：\(why)")
+            }
+            if input.mediaType == .video { stats.videoSamples += 1 }
+            else { stats.audioSamples += 1 }
         }
 
         private func startWriterIfPossibleWithoutAudio() throws {
@@ -661,7 +735,7 @@ extension TSRemuxer {
             let v = AVAssetWriterInput(mediaType: .video,
                                        outputSettings: nil,
                                        sourceFormatHint: vf)
-            v.expectsMediaDataInRealTime = false
+            v.expectsMediaDataInRealTime = true      // 同上：见 startWriterIfPossible 里的说明
             guard w.canAdd(v) else { throw Fail.writer("视频轨加不进去") }
             w.add(v)
             guard w.startWriting() else {
@@ -673,21 +747,6 @@ extension TSRemuxer {
             base90 = base
             aq.removeAll()
             if audioFormatError == nil { audioFormatError = "音频轨始终没能建立，已跳过" }
-        }
-
-        private func append(_ sb: CMSampleBuffer, to input: AVAssetWriterInput) async throws {
-            var spin = 0
-            while !input.isReadyForMoreMediaData {
-                if Task.isCancelled { throw Fail.cancelled }
-                try? await Task.sleep(nanoseconds: 2_000_000)
-                spin += 1
-                if spin > 5000 { throw Fail.writer("writer 长时间不接收数据") }
-            }
-            if !input.append(sb) {
-                // AVAssetWriterInput 自己没有 error，原因在 writer 上
-                let why = writer?.error?.localizedDescription ?? "样本被拒（原因未提供）"
-                throw Fail.writer(why)
-            }
         }
 
         // MARK: 样本构造

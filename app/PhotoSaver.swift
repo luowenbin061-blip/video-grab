@@ -53,10 +53,12 @@ enum Saver {
 /// 注意：程序自己的目录是不可见的（Application Support），
 /// 所以这里用 forExporting + asCopy —— 系统会把文件**复制**到用户选的地方，
 /// 程序内的原件不受影响。
+///
+/// 不用 `@Binding isPresented` 而是用回调：外层用 `.sheet(item:)` 弹出，
+/// 关掉时把 item 置 nil 即可 —— 这样也不会有「弹出了但内容为空」的白屏问题。
 struct DocumentExporter: UIViewControllerRepresentable {
     let url: URL
-    @Binding var isPresented: Bool
-    var onDone: ((Bool) -> Void)?
+    var onFinish: (Bool) -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let vc = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
@@ -69,26 +71,22 @@ struct DocumentExporter: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
 
     func makeCoordinator() -> Coord {
-        Coord(isPresented: $isPresented, onDone: onDone)
+        Coord(onFinish: onFinish)
     }
 
     final class Coord: NSObject, UIDocumentPickerDelegate {
-        @Binding var isPresented: Bool
-        let onDone: ((Bool) -> Void)?
+        let onFinish: (Bool) -> Void
 
-        init(isPresented: Binding<Bool>, onDone: ((Bool) -> Void)?) {
-            _isPresented = isPresented
-            self.onDone = onDone
+        init(onFinish: @escaping (Bool) -> Void) {
+            self.onFinish = onFinish
         }
 
         func documentPickerWasCancelled(_ c: UIDocumentPickerViewController) {
-            isPresented = false
-            onDone?(false)
+            onFinish(false)
         }
 
         func documentPicker(_ c: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            isPresented = false
-            onDone?(true)
+            onFinish(true)
         }
     }
 }
