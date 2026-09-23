@@ -1,0 +1,72 @@
+name: VideoGrab
+
+options:
+  bundleIdPrefix: com.videograb
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  # 关键：必须显式指定。
+  # XcodeGen 默认生成 xcode16_0 格式（objectVersion 77），而 GitHub runner 上
+  # 只有 Xcode 15.4，读不了会报 "cannot be opened because it is in a future
+  # Xcode project file format (77)"。上一轮就是踩了这个坑。
+  projectFormat: xcode15_3
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_BITCODE: "NO"
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+
+targets:
+  VideoGrab:
+    type: application
+    platform: iOS
+    sources:
+      # Info.plist 由下面的 info.path 生成，不能当源码/资源扫进来
+      - path: app
+        excludes:
+          - "Info.plist"
+      - path: resources
+        buildPhase: resources
+    info:
+      path: app/Info.plist
+      properties:
+        CFBundleDisplayName: 视频抓取
+        CFBundleName: VideoGrab
+        CFBundleDevelopmentRegion: zh_CN
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # 让下载的文件直接出现在「文件」App → 我的 iPhone → 视频抓取
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        # 采集源的 m3u8 和分片常常是 http，放开 ATS（自用，不上架）
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.videograb.app
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+# XcodeGen 不会自动生成 scheme（是 opt-in 的），必须显式声明，
+# 否则 xcodebuild -scheme 会找不到目标。
+schemes:
+  VideoGrab:
+    build:
+      targets:
+        VideoGrab: all
+    run:
+      config: Release
+    archive:
+      config: Release

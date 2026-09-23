@@ -1,0 +1,121 @@
+name: build-ipa
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '_ci/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          echo "=== xcodebuild ===" | tee build.log
+          xcodebuild -version 2>&1 | tee -a build.log
+          echo "=== swift ===" | tee -a build.log
+          swift --version 2>&1 | tee -a build.log
+
+      - name: Install XcodeGen
+        run: |
+          echo "=== install xcodegen ===" | tee -a build.log
+          brew install xcodegen 2>&1 | tee -a build.log || brew upgrade xcodegen 2>&1 | tee -a build.log
+
+      - name: Generate Xcode project
+        run: |
+          echo "=== xcodegen generate ===" | tee -a build.log
+          xcodegen generate 2>&1 | tee -a build.log
+          echo "=== project format ===" | tee -a build.log
+          grep -m1 objectVersion VideoGrab.xcodeproj/project.pbxproj 2>&1 | tee -a build.log || true
+
+      - name: Build (unsigned)
+        id: build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project VideoGrab.xcodeproj \
+            -scheme VideoGrab \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build >> build.log 2>&1
+          code=$?
+          echo "xcodebuild exit code: $code" | tee -a build.log
+          exit $code
+
+      - name: Ad-hoc sign with ldid
+        id: sign
+        if: steps.build.outcome == 'success'
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "=== signing: $APP ===" | tee -a build.log
+          ldid -S "$APP/VideoGrab" 2>&1 | tee -a build.log || echo "ldid 返回非 0，继续" | tee -a build.log
+          echo "=== verify signature ===" | tee -a build.log
+          otool -l "$APP/VideoGrab" | grep -A2 LC_CODE_SIGNATURE | tee -a build.log || echo "没找到 LC_CODE_SIGNATURE" | tee -a build.log
+
+      - name: Package IPA
+        if: steps.build.outcome == 'success'
+        run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "found app: $APP_PATH" | tee -a build.log
+          if [ -z "$APP_PATH" ]; then
+            echo "没有找到 .app，打包中止" | tee -a build.log
+            exit 1
+          fi
+          rm -rf out
+          mkdir -p out/Payload
+          cp -R "$APP_PATH" out/Payload/
+          echo "--- Payload 结构 ---" | tee -a build.log
+          find out/Payload -maxdepth 3 | head -80 | tee -a build.log
+          cd out && zip -qry ../VideoGrab-unsigned.ipa Payload
+          ls -la ../VideoGrab-unsigned.ipa | tee -a ../build.log
+
+      - name: Publish build log back to repo
+        if: always()
+        run: |
+          mkdir -p _ci
+          if [ -f build.log ]; then
+            { head -c 150000 build.log; echo; echo "=== (中间省略) ==="; echo; tail -c 150000 build.log; } > _ci/build.log
+          else
+            echo "no build.log generated" > _ci/build.log
+          fi
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add -f _ci/
+          git commit -m "ci: build log for run ${{ github.run_number }} [skip ci]" || echo "nothing to commit"
+          git pull --rebase --autostash || echo "pull failed, trying push anyway"
+          git push || echo "push failed"
+
+      - name: Upload artifact
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoGrab-ipa
+          path: VideoGrab-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Create release
+        if: steps.build.outcome == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: 视频抓取 v1.0.${{ github.run_number }}
+          body: |
+            未签名 IPA。用 TrollStore 安装。
+            装完打开 App，用它自带的浏览器打开视频页，长按视频即可嗅探下载。
+          files: VideoGrab-unsigned.ipa
+          draft: false
