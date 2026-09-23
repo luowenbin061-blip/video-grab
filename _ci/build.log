@@ -38,11 +38,9 @@ Resolve Package Graph
 
 Fetching from https://github.com/kewlbear/FFmpeg-iOS
 
-Fetching from https://github.com/kewlbear/FFmpeg-iOS-Support
-
-2026-09-23 16:11:21.701 xcodebuild[5823:19324] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-11-0021.xcresult
+package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported2026-09-23 16:14:53.414 xcodebuild[2409:9402] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-14-0053.xcresult
 xcodebuild: error: Could not resolve package dependencies:
-  Dependencies could not be resolved because package 'ffmpeg-ios' is required using a stable-version but 'ffmpeg-ios' depends on an unstable-version package 'ffmpeg-ios-support' and root depends on 'ffmpeg-ios' 0.0.6-b20230416-173821.
+  package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported
 
 
 === (中间省略) ===
@@ -87,9 +85,7 @@ Resolve Package Graph
 
 Fetching from https://github.com/kewlbear/FFmpeg-iOS
 
-Fetching from https://github.com/kewlbear/FFmpeg-iOS-Support
-
-2026-09-23 16:11:21.701 xcodebuild[5823:19324] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-11-0021.xcresult
+package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported2026-09-23 16:14:53.414 xcodebuild[2409:9402] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-14-0053.xcresult
 xcodebuild: error: Could not resolve package dependencies:
-  Dependencies could not be resolved because package 'ffmpeg-ios' is required using a stable-version but 'ffmpeg-ios' depends on an unstable-version package 'ffmpeg-ios-support' and root depends on 'ffmpeg-ios' 0.0.6-b20230416-173821.
+  package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported
 
