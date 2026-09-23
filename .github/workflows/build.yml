@@ -59,15 +59,30 @@ jobs:
           echo "xcodebuild exit code: $code" | tee -a build.log
           exit $code
 
-      - name: Ad-hoc sign with ldid
+      - name: Ad-hoc sign (ldid + codesign 双保险)
         id: sign
         if: steps.build.outcome == 'success'
         run: |
+          # runner 上不一定预装 ldid，先装上（上一轮就是因为它不在，签名这步静默跳过了）
+          brew install ldid 2>&1 | tail -3 || brew upgrade ldid 2>&1 | tail -3 || true
+
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           echo "=== signing: $APP ===" | tee -a build.log
-          ldid -S "$APP/VideoGrab" 2>&1 | tee -a build.log || echo "ldid 返回非 0，继续" | tee -a build.log
-          echo "=== verify signature ===" | tee -a build.log
-          otool -l "$APP/VideoGrab" | grep -A2 LC_CODE_SIGNATURE | tee -a build.log || echo "没找到 LC_CODE_SIGNATURE" | tee -a build.log
+
+          if command -v ldid >/dev/null 2>&1; then
+            echo "ldid 路径: $(command -v ldid)" | tee -a build.log
+            ldid -S "$APP/VideoGrab" 2>&1 | tee -a build.log && echo "ldid: OK" | tee -a build.log || echo "ldid: 失败" | tee -a build.log
+          else
+            echo "ldid: 仍然没有这个命令" | tee -a build.log
+          fi
+
+          # 兜底：macOS 自带的 codesign 也能做 ad-hoc 签名（会生成 LC_CODE_SIGNATURE）
+          codesign --force --sign - "$APP/VideoGrab" 2>&1 | tee -a build.log \
+            && echo "codesign: OK" | tee -a build.log || echo "codesign: 失败" | tee -a build.log
+
+          echo "=== 验证签名段 ===" | tee -a build.log
+          otool -l "$APP/VideoGrab" | grep -c LC_CODE_SIGNATURE | tee -a build.log || true
+          otool -l "$APP/VideoGrab" | grep -A2 LC_CODE_SIGNATURE | tee -a build.log || echo "❌ 没有 LC_CODE_SIGNATURE" | tee -a build.log
 
       - name: Package IPA
         if: steps.build.outcome == 'success'
