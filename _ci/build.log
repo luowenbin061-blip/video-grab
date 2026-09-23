@@ -111,8 +111,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:C7C37F38-AECA-4FC8-B383-F038DCD1588E, OS:17.4, name:iPad mini (6th generation) }
 { platform:iOS Simulator, id:DA1F2196-DA29-4D5E-8BA8-9978EB2033E6, OS:17.5, name:iPad mini (6th generation) }
 { platform:iOS Simulator, id:DA1F2196-DA29-4D5E-8BA8-9978EB2033E6, OS:17.5, name:iPad mini (6th generation) }
-{ platform:iOS Simulator, id:2EA110AE-11AB-4292-B2C6-041791B79214, OS:18.1, name:iPad mini (6th generation) }
-{ platform:iOS Simulator, id:2EA110AE-11AB-4292-B2C6-041791B79214, OS:18.1, name:iPad mini (6th generation) }
 { platform:iOS Simulator, id:951E7119-0D57-4405-BC5D-111B9C0B4C97, OS:18.1, name:iPad mini (A17 Pro) }
 { platform:iOS Simulator, id:951E7119-0D57-4405-BC5D-111B9C0B4C97, OS:18.1, name:iPad mini (A17 Pro) }
 { platform:iOS Simulator, id:0F36BEB5-08B4-447F-A9D5-1DE57F2AA740, OS:18.2, name:iPad mini (A17 Pro) }
@@ -125,8 +123,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:30F33610-4843-4C04-99B0-734F24ADAB6B, OS:17.4, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
-{ platform:iOS Simulator, id:BFA19BA3-6712-4A97-8A1F-0608E6553053, OS:18.1, name:iPhone 15 }
-{ platform:iOS Simulator, id:BFA19BA3-6712-4A97-8A1F-0608E6553053, OS:18.1, name:iPhone 15 }
+{ platform:iOS Simulator, id:9644ABC5-389D-4180-9D87-F66E3B2F7522, OS:18.1, name:iPhone 15 }
+{ platform:iOS Simulator, id:9644ABC5-389D-4180-9D87-F66E3B2F7522, OS:18.1, name:iPhone 15 }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:D4463870-0237-4022-B154-00CCA82A0636, OS:17.2, name:iPhone 15 Plus }
@@ -135,8 +133,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:9E6981FD-68F6-499B-9715-54D0AC6B324E, OS:17.4, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:4710800E-6961-489B-AFD8-C8091C96CE8C, OS:18.1, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:4710800E-6961-489B-AFD8-C8091C96CE8C, OS:18.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:0C511E31-82CB-4CE3-AF79-548A755737AE, OS:17.2, name:iPhone 15 Pro }
@@ -153,6 +149,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:F2188A35-1A84-46E5-AD89-58890B04C591, OS:17.4, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:B0B0B970-B245-4D53-8991-F3D853A063A2, OS:18.1, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:B0B0B970-B245-4D53-8991-F3D853A063A2, OS:18.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:EDC4F281-97FB-4004-B8FA-3ED2BD36749C, OS:18.2, name:iPhone 16 }
@@ -199,12 +197,8 @@ ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/X
 
 ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld -version_details
 
-Build description signature: 3b60edb356717243db2b0c6115514ef7
-Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/3b60edb356717243db2b0c6115514ef7.xcbuilddata
-ClangStatCache /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
-    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
-    /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -o /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
-
+Build description signature: ccdfe0cd0b67bee4ac3cc0b71013fc06
+Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/ccdfe0cd0b67bee4ac3cc0b71013fc06.xcbuilddata
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
     builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Products
@@ -212,6 +206,10 @@ CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Produc
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
     builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex
+
+ClangStatCache /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
+    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
+    /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -o /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
 
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
@@ -298,33 +296,13 @@ CompileSwift normal arm64 (in target 'VideoGrab' from project 'VideoGrab')
 WebKit.WKWebView:47:15: note: 'evaluateJavaScript' declared here
     open func evaluateJavaScript(_ javaScriptString: String) async throws -> Any
               ^
-/Users/runner/work/video-grab/video-grab/app/ContentView.swift:381:71: error: instance member 'tertiary' cannot be used on type 'Color'
-                .foregroundStyle(item.isRecent ? Color.accentColor : .tertiary)
-                                                                     ~^~~~~~~~
-/Users/runner/work/video-grab/video-grab/app/ContentView.swift:381:71: error: member 'tertiary' in 'Color' produces result of type 'some ShapeStyle', but context expects 'Color'
-                .foregroundStyle(item.isRecent ? Color.accentColor : .tertiary)
-                                                                      ^
 /Users/runner/work/video-grab/video-grab/app/DownloadJob.swift:198:13: warning: initialization of immutable value 'fm' was never used; consider replacing with assignment to '_' or removing it
         let fm = FileManager.default
         ~~~~^~
         _
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:119:34: error: reference to captured var 'self' in concurrently-executing code
+/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:121:34: error: reference to captured var 'self' in concurrently-executing code
             Task { @MainActor in self?.apply(it) }
                                  ^
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:127:25: warning: capture of 'n' with non-sendable type 'Notification' in a `@Sendable` closure
-                let e = n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-                        ^
-Foundation.Notification:2:15: note: struct 'Notification' does not conform to the 'Sendable' protocol
-public struct Notification : ReferenceConvertible, Equatable, Hashable {
-              ^
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:128:17: error: reference to captured var 'self' in concurrently-executing code
-                self?.loading = false
-                ^
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:129:17: error: reference to captured var 'self' in concurrently-executing code
-                self?.error = Self.describe(e) ?? "播放中断"
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:138:27: error: reference to captured var 'self' in concurrently-executing code
-                guard let self, self.error == nil else { return }
-                          ^
 
 ** BUILD FAILED **
 
@@ -449,8 +427,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:C7C37F38-AECA-4FC8-B383-F038DCD1588E, OS:17.4, name:iPad mini (6th generation) }
 { platform:iOS Simulator, id:DA1F2196-DA29-4D5E-8BA8-9978EB2033E6, OS:17.5, name:iPad mini (6th generation) }
 { platform:iOS Simulator, id:DA1F2196-DA29-4D5E-8BA8-9978EB2033E6, OS:17.5, name:iPad mini (6th generation) }
-{ platform:iOS Simulator, id:2EA110AE-11AB-4292-B2C6-041791B79214, OS:18.1, name:iPad mini (6th generation) }
-{ platform:iOS Simulator, id:2EA110AE-11AB-4292-B2C6-041791B79214, OS:18.1, name:iPad mini (6th generation) }
 { platform:iOS Simulator, id:951E7119-0D57-4405-BC5D-111B9C0B4C97, OS:18.1, name:iPad mini (A17 Pro) }
 { platform:iOS Simulator, id:951E7119-0D57-4405-BC5D-111B9C0B4C97, OS:18.1, name:iPad mini (A17 Pro) }
 { platform:iOS Simulator, id:0F36BEB5-08B4-447F-A9D5-1DE57F2AA740, OS:18.2, name:iPad mini (A17 Pro) }
@@ -463,8 +439,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:30F33610-4843-4C04-99B0-734F24ADAB6B, OS:17.4, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
-{ platform:iOS Simulator, id:BFA19BA3-6712-4A97-8A1F-0608E6553053, OS:18.1, name:iPhone 15 }
-{ platform:iOS Simulator, id:BFA19BA3-6712-4A97-8A1F-0608E6553053, OS:18.1, name:iPhone 15 }
+{ platform:iOS Simulator, id:9644ABC5-389D-4180-9D87-F66E3B2F7522, OS:18.1, name:iPhone 15 }
+{ platform:iOS Simulator, id:9644ABC5-389D-4180-9D87-F66E3B2F7522, OS:18.1, name:iPhone 15 }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:D4463870-0237-4022-B154-00CCA82A0636, OS:17.2, name:iPhone 15 Plus }
@@ -473,8 +449,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:9E6981FD-68F6-499B-9715-54D0AC6B324E, OS:17.4, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:4710800E-6961-489B-AFD8-C8091C96CE8C, OS:18.1, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:4710800E-6961-489B-AFD8-C8091C96CE8C, OS:18.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:0C511E31-82CB-4CE3-AF79-548A755737AE, OS:17.2, name:iPhone 15 Pro }
@@ -491,6 +465,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:F2188A35-1A84-46E5-AD89-58890B04C591, OS:17.4, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:B0B0B970-B245-4D53-8991-F3D853A063A2, OS:18.1, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:B0B0B970-B245-4D53-8991-F3D853A063A2, OS:18.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:EDC4F281-97FB-4004-B8FA-3ED2BD36749C, OS:18.2, name:iPhone 16 }
@@ -537,12 +513,8 @@ ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/X
 
 ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld -version_details
 
-Build description signature: 3b60edb356717243db2b0c6115514ef7
-Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/3b60edb356717243db2b0c6115514ef7.xcbuilddata
-ClangStatCache /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
-    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
-    /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -o /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
-
+Build description signature: ccdfe0cd0b67bee4ac3cc0b71013fc06
+Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/ccdfe0cd0b67bee4ac3cc0b71013fc06.xcbuilddata
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
     builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Products
@@ -550,6 +522,10 @@ CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Produc
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
     builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex
+
+ClangStatCache /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
+    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
+    /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -o /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
 
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
@@ -636,33 +612,13 @@ CompileSwift normal arm64 (in target 'VideoGrab' from project 'VideoGrab')
 WebKit.WKWebView:47:15: note: 'evaluateJavaScript' declared here
     open func evaluateJavaScript(_ javaScriptString: String) async throws -> Any
               ^
-/Users/runner/work/video-grab/video-grab/app/ContentView.swift:381:71: error: instance member 'tertiary' cannot be used on type 'Color'
-                .foregroundStyle(item.isRecent ? Color.accentColor : .tertiary)
-                                                                     ~^~~~~~~~
-/Users/runner/work/video-grab/video-grab/app/ContentView.swift:381:71: error: member 'tertiary' in 'Color' produces result of type 'some ShapeStyle', but context expects 'Color'
-                .foregroundStyle(item.isRecent ? Color.accentColor : .tertiary)
-                                                                      ^
 /Users/runner/work/video-grab/video-grab/app/DownloadJob.swift:198:13: warning: initialization of immutable value 'fm' was never used; consider replacing with assignment to '_' or removing it
         let fm = FileManager.default
         ~~~~^~
         _
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:119:34: error: reference to captured var 'self' in concurrently-executing code
+/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:121:34: error: reference to captured var 'self' in concurrently-executing code
             Task { @MainActor in self?.apply(it) }
                                  ^
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:127:25: warning: capture of 'n' with non-sendable type 'Notification' in a `@Sendable` closure
-                let e = n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-                        ^
-Foundation.Notification:2:15: note: struct 'Notification' does not conform to the 'Sendable' protocol
-public struct Notification : ReferenceConvertible, Equatable, Hashable {
-              ^
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:128:17: error: reference to captured var 'self' in concurrently-executing code
-                self?.loading = false
-                ^
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:129:17: error: reference to captured var 'self' in concurrently-executing code
-                self?.error = Self.describe(e) ?? "播放中断"
-/Users/runner/work/video-grab/video-grab/app/PlayerSheet.swift:138:27: error: reference to captured var 'self' in concurrently-executing code
-                guard let self, self.error == nil else { return }
-                          ^
 
 ** BUILD FAILED **
 
