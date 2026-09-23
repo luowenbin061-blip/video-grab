@@ -32,9 +32,6 @@ packages:
   FFmpegKit:
     url: https://github.com/kewlbear/FFmpeg-iOS
     revision: 6cfcee5421fd932e16315dc6c1ccd9fadfbb169a   # = v0.0.6-b20230416-173821
-  FFmpegSupportPkg:
-    url: https://github.com/kewlbear/FFmpeg-iOS-Support
-    revision: c3487115c5f11c67f14f13b3a97a871f67200f34   # = v0.0.2
 
 targets:
   VideoGrab:
@@ -43,8 +40,6 @@ targets:
     dependencies:
       - package: FFmpegKit
         product: FFmpeg-iOS
-      - package: FFmpegSupportPkg
-        product: FFmpeg-iOS-Support
     sources:
       # Info.plist 由下面的 info.path 生成，不能当源码/资源扫进来
       - path: app
@@ -86,6 +81,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.videograb.app
         TARGETED_DEVICE_FAMILY: "1,2"
+        # FFmpeg 转码用的 C 入口（app/Hook.m）经桥接头暴露给 Swift
+        SWIFT_OBJC_BRIDGING_HEADER: app/VideoGrab-Bridging-Header.h
 
 # XcodeGen 不会自动生成 scheme（是 opt-in 的），必须显式声明，
 # 否则 xcodebuild -scheme 会找不到目标。

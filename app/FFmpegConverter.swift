@@ -1,6 +1,10 @@
 import Foundation
 import AVFoundation
-import FFmpegSupport
+
+// HookFFmpeg 由 app/Hook.m 实现（经桥接头暴露给 Swift）。
+// 它进程内调起 FFmpeg CLI 的 main（FFmpeg_main 符号来自
+// FFmpeg-iOS 包的 fftools 静态库），并用 setjmp/longjmp 兜住
+// ffmpeg 内部的 exit() —— 返回 0 = 成功。
 
 /// 成熟方案：进程内跑 FFmpeg CLI 做重封装。
 /// （Stay / 亚瑟 / 各类下载器 App 内部用的都是这条引擎路线）
@@ -32,10 +36,13 @@ enum FFmpegConverter {
             mp4.path,
         ]
 
-        // ffmpeg() 是阻塞调用（进程内跑 CLI 主函数），丢到后台线程跑。
+        // ffmpeg 的 CLI main 是阻塞调用，丢到后台线程跑。
         // 返回 0 = 成功，非 0 = ffmpeg 自己的退出码。
-        let code = await Task.detached(priority: .userInitiated) {
-            ffmpeg(args)
+        let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+            var argv = args.map { strdup($0) }
+            // strdup 出来的字符串不释放 —— 一次转码一次调用，量级可忽略
+            // （kewlbear 原实现同样标注 FIXME: free，行为一致）
+            return HookFFmpeg(Int32(args.count), &argv)
         }.value
 
         guard code == 0 else {
