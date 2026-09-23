@@ -378,7 +378,9 @@ struct SniffPanel: View {
                             .font(.system(size: 11))
                     }
                 }
-                .foregroundStyle(item.isRecent ? Color.accentColor : .tertiary)
+                // 三元里两边都必须是同一个具体类型：Color.accentColor 会把
+                // 另一侧也定成 Color，而 .tertiary 是 ShapeStyle，对不上。
+                .foregroundStyle(item.isRecent ? Color.accentColor : Color.secondary)
 
                 Text("来源：\(item.src)\(item.host.isEmpty ? "" : " · \(item.host)")")
                     .font(.system(size: 11))

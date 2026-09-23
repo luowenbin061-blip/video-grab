@@ -108,6 +108,7 @@ final class PlayerBox: ObservableObject {
     private var statusObs: NSKeyValueObservation?
     private var failObs: NSObjectProtocol?
     private var stallObs: NSObjectProtocol?
+    private var stallTask: Task<Void, Never>?
 
     init(url: URL) {
         item = AVPlayerItem(url: url)
@@ -115,36 +116,57 @@ final class PlayerBox: ObservableObject {
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
 
+        // KVO 的 handler 不是 @Sendable 的，可以安全地往主线程跳一次
         statusObs = item.observe(\.status, options: [.initial, .new]) { [weak self] it, _ in
             Task { @MainActor in self?.apply(it) }
         }
 
-        // 播到一半断掉（本机服务被挂起、网络抖动等）也要说出来
+        // ⚠️ NotificationCenter 的 block 是 @Sendable 的。
+        // 在里面**不能再套一层并发闭包去碰弱引用的 self** —— 会报
+        // "reference to captured var 'self' in concurrently-executing code"。
+        // 这里用 queue: .main 保证回调本来就在主线程，取完值直接调实例方法。
         failObs = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: item, queue: .main) { [weak self] n in
-            Task { @MainActor in
-                let e = n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-                self?.loading = false
-                self?.error = Self.describe(e) ?? "播放中断"
-            }
+            let msg = PlayerBox.message(from: n)
+            self?.fail(msg)
         }
 
-        // 卡住不动（一直是 0 秒、没有帧）超过 8 秒也报出来 —— 白屏就是这么来的
+        // 卡住不动（一直出不来帧）也要报出来 —— 白屏就是这么来的
         stallObs = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.playbackStalledNotification,
             object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.error == nil else { return }
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
-                if self.error == nil, self.loading { self.error = "一直加载不出来（地址能连上但拿不到数据）" }
-            }
+            self?.beginStallWatch()
         }
     }
 
     deinit {
         if let f = failObs { NotificationCenter.default.removeObserver(f) }
         if let s = stallObs { NotificationCenter.default.removeObserver(s) }
+        stallTask?.cancel()
+    }
+
+    private static func message(from n: Notification) -> String {
+        if let e = n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
+            return describe(e) ?? "播放中断"
+        }
+        return "播放中断"
+    }
+
+    private func fail(_ msg: String) {
+        loading = false
+        error = msg
+    }
+
+    private func beginStallWatch() {
+        guard error == nil else { return }
+        stallTask?.cancel()
+        stallTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if self.error == nil, self.loading {
+                self.error = "一直加载不出来（地址能连上但取不到数据）"
+            }
+        }
     }
 
     func start() {
@@ -170,7 +192,7 @@ final class PlayerBox: ObservableObject {
             player.play()
         case .failed:
             loading = false
-            error = Self.describe(it.error) ?? "系统没能打开这个视频"
+            error = PlayerBox.describe(it.error) ?? "系统没能打开这个视频"
         default:
             break
         }
