@@ -12,12 +12,12 @@ import UIKit
 /// 每一次加载都被下一次取消 —— 结果就是永远停在白屏。
 ///
 /// 现在的做法：
-///   1. AVPlayer 在 `PlayerBox` 里**只创建一次**（StateObject，跟着 sheet 一次展示走），
+///   1. AVPlayer 在 `PlayerBox` 里**只创建一次**（StateObject，跟着一次展示走）：
 ///      `updateUIViewController` 里也不再重建，只在真的换人时才换。
 ///   2. 用 AVPlayerViewController 本体（不用 SwiftUI 的 VideoPlayer 封装），
-///      播放控制、全屏、画中画都由系统负责。
-///   3. 盯 AVPlayerItem.status —— ready 才 play，failed 就把**具体错误**显示出来，
-///      不再是一块白屏。地址也一并显示，方便判断是地址问题还是文件问题。
+///      播放控制、全屏交给系统。
+///   3. 盯 AVPlayerItem.status —— ready 才 play，failed / 卡住就把**具体错误和地址**
+///      显示出来，不再是一块白屏。
 struct PlayerSheet: View {
     let url: URL
     let title: String
@@ -37,10 +37,12 @@ struct PlayerSheet: View {
             PlayerVC(player: box.player)
                 .ignoresSafeArea()
 
-            if box.loading {
+            if box.loading && box.error == nil {
                 VStack(spacing: 10) {
                     ProgressView().tint(.white).scaleEffect(1.2)
-                    Text("正在加载…").font(.system(size: 13)).foregroundStyle(.white.opacity(0.8))
+                    Text("正在加载…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.8))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
@@ -49,7 +51,8 @@ struct PlayerSheet: View {
             if let e = box.error {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 30)).foregroundStyle(.orange)
+                        .font(.system(size: 30))
+                        .foregroundStyle(.orange)
                     Text("播放器起不来").font(.headline)
                     Text(e)
                         .font(.system(size: 12))
@@ -62,10 +65,12 @@ struct PlayerSheet: View {
                         .lineLimit(4)
                         .multilineTextAlignment(.center)
                     HStack(spacing: 10) {
-                        Button("重试") { box.retry() }.buttonStyle(.borderedProminent)
+                        Button("重试") { box.retry() }
+                            .buttonStyle(.borderedProminent)
                         Button("复制地址") {
                             UIPasteboard.general.string = url.absoluteString
-                        }.buttonStyle(.bordered)
+                        }
+                        .buttonStyle(.bordered)
                     }
                     .padding(.top, 2)
                 }
@@ -89,14 +94,14 @@ struct PlayerSheet: View {
             .padding(14)
         }
         .onAppear { box.start() }
-        .onDisappear { box.pause() }
+        .onDisappear { box.stop() }
     }
 }
 
 /// 播放器的状态与生命周期。**只创建一次**，这是修掉白屏的关键。
 ///
-/// 故意不加 `@MainActor`：所有 @Published 的写入都已经显式跳到主线程了，
-/// 而 View 的 init 里构造 StateObject 时不受 actor 隔离约束 —— 加了反而会
+/// 故意不加 `@MainActor`：所有 @Published 的写入都已经显式在主线程上做，
+/// 而 View 的 init 里构造 StateObject 不受 actor 隔离约束 —— 加了反而会
 /// 产生"从非隔离上下文调用主 actor 初始化器"的告警。
 final class PlayerBox: ObservableObject {
 
@@ -105,9 +110,9 @@ final class PlayerBox: ObservableObject {
     @Published var error: String?
     @Published var loading = true
 
-    private var statusObs: NSKeyValueObservation?
     private var failObs: NSObjectProtocol?
     private var stallObs: NSObjectProtocol?
+    private var pollTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
 
     init(url: URL) {
@@ -116,15 +121,9 @@ final class PlayerBox: ObservableObject {
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
 
-        // KVO 的 handler 不是 @Sendable 的，可以安全地往主线程跳一次
-        statusObs = item.observe(\.status, options: [.initial, .new]) { [weak self] it, _ in
-            Task { @MainActor in self?.apply(it) }
-        }
-
-        // ⚠️ NotificationCenter 的 block 是 @Sendable 的。
-        // 在里面**不能再套一层并发闭包去碰弱引用的 self** —— 会报
-        // "reference to captured var 'self' in concurrently-executing code"。
-        // 这里用 queue: .main 保证回调本来就在主线程，取完值直接调实例方法。
+        // NotificationCenter 的 block 是 @Sendable 的：直接在闭包里调实例方法没问题
+        // （queue: .main 保证已在主线程），但**不能在里面再套一层并发闭包引用 weak self**，
+        // 那会报 "reference to captured var 'self' in concurrently-executing code"。
         failObs = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: item, queue: .main) { [weak self] n in
@@ -132,7 +131,6 @@ final class PlayerBox: ObservableObject {
             self?.fail(msg)
         }
 
-        // 卡住不动（一直出不来帧）也要报出来 —— 白屏就是这么来的
         stallObs = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.playbackStalledNotification,
             object: item, queue: .main) { [weak self] _ in
@@ -143,38 +141,19 @@ final class PlayerBox: ObservableObject {
     deinit {
         if let f = failObs { NotificationCenter.default.removeObserver(f) }
         if let s = stallObs { NotificationCenter.default.removeObserver(s) }
+        pollTask?.cancel()
         stallTask?.cancel()
-    }
-
-    private static func message(from n: Notification) -> String {
-        if let e = n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
-            return describe(e) ?? "播放中断"
-        }
-        return "播放中断"
-    }
-
-    private func fail(_ msg: String) {
-        loading = false
-        error = msg
-    }
-
-    private func beginStallWatch() {
-        guard error == nil else { return }
-        stallTask?.cancel()
-        stallTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            if self.error == nil, self.loading {
-                self.error = "一直加载不出来（地址能连上但取不到数据）"
-            }
-        }
     }
 
     func start() {
         player.play()
+        startPolling()
     }
 
-    func pause() {
+    func stop() {
         player.pause()
+        pollTask?.cancel()
+        stallTask?.cancel()
     }
 
     func retry() {
@@ -182,20 +161,72 @@ final class PlayerBox: ObservableObject {
         loading = true
         player.seek(to: .zero)
         player.play()
+        startPolling()
     }
 
-    private func apply(_ it: AVPlayerItem) {
-        switch it.status {
+    // MARK: - 状态跟踪
+
+    /// 轮询 AVPlayerItem.status。
+    ///
+    /// 为什么不用 KVO：KVO 的 handler 会在任意线程回调，要往主线程跳就得在闭包里
+    /// 再套一层并发闭包，而嵌套并发闭包引用 weak self 是**编译错误**。
+    /// 轮询一样简单，还能顺带做「一直不 ready」的兜底。
+    private func startPolling() {
+        pollTask?.cancel()
+        let target = self               // 绑成 let：嵌套并发闭包里引用 weak var 会编译不过
+        pollTask = Task { @MainActor in
+            for _ in 0..<600 {          // 最多盯 60 秒
+                if target.checkOnce() { return }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if target.error == nil, target.loading {
+                target.loading = false
+                target.error = "等了 60 秒还是加载不出来（地址能连上但取不到数据）"
+            }
+        }
+    }
+
+    /// 返回 true 表示已经有结论（能播或已失败）
+    private func checkOnce() -> Bool {
+        switch item.status {
         case .readyToPlay:
             loading = false
             error = nil
             player.play()
+            return true
         case .failed:
             loading = false
-            error = PlayerBox.describe(it.error) ?? "系统没能打开这个视频"
+            error = PlayerBox.describe(item.error) ?? "系统没能打开这个视频"
+            return true
         default:
-            break
+            return false
         }
+    }
+
+    private func fail(_ msg: String) {
+        loading = false
+        error = msg
+    }
+
+    /// 卡住不动（一直出不来帧）超过 8 秒也报出来 —— 白屏就是这么来的
+    private func beginStallWatch() {
+        guard error == nil else { return }
+        stallTask?.cancel()
+        let target = self
+        stallTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if target.error == nil, target.loading {
+                target.loading = false
+                target.error = "加载卡住了（地址能连上但取不到数据）"
+            }
+        }
+    }
+
+    private static func message(from n: Notification) -> String {
+        if let e = n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
+            return describe(e) ?? "播放中断"
+        }
+        return "播放中断"
     }
 
     /// 把错误写得具体一点 —— 只显示"播放失败"没法判断是地址问题还是文件问题
