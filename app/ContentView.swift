@@ -401,9 +401,10 @@ struct DownloadList: View {
 
 struct JobRow: View {
     @ObservedObject var job: DownloadJob
+    @State private var playing = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             Text(job.title)
                 .font(.system(size: 14, weight: .medium))
                 .lineLimit(1)
@@ -426,9 +427,37 @@ struct JobRow: View {
             }
 
             if job.finished {
-                Label("去「文件」App → 我的 iPhone → 视频抓取 里拿", systemImage: "folder")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.green)
+                if job.mp4Ready {
+                    Label("MP4 已生成 · 去「文件」App → 我的 iPhone → 视频抓取",
+                          systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.green)
+                } else {
+                    Label("存成了 .ts —— iOS 系统播放器和微信不认这个格式",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.orange)
+                    if let e = job.remuxError {
+                        Text("转 MP4 失败的原因：\(e)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text("应急：装个 VLC 或 nPlayer，用它打开这个 .ts 就能看。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                if let u = job.localURL {
+                    Button {
+                        playing = true
+                    } label: {
+                        Label("在 App 里播放", systemImage: "play.circle.fill")
+                            .font(.system(size: 13))
+                    }
+                    .buttonStyle(.bordered)
+                    .sheet(isPresented: $playing) { PlayerSheet(url: u) }
+                }
             }
         }
         .padding(.vertical, 3)
@@ -460,7 +489,8 @@ struct HelpView: View {
                         .font(.system(size: 13))
                 }
                 Section("已知限制") {
-                    bullet("文件是 .ts 格式。iOS 自带的播放器和微信不认这个格式，要用 nPlayer、VLC 这类播放器，或者拷到电脑上看。")
+                    bullet("下载完会自动转成 MP4 —— 只换封装、不重新编码，几秒完事，画质无损。")
+                    bullet("万一转 MP4 失败，会保留 .ts 原文件。那个格式 iOS 系统播放器和微信都不认，要用 VLC、nPlayer 这类打开，或者拷到电脑上看。失败原因会写在下载条目里。")
                     bullet("DRM 加密的付费影片拿不到，这个任何工具都做不到。")
                     bullet("有些站的地址是脚本算出来的、或走了第三方解析，可能嗅不到 —— 换个线路或等视频多播一会儿再试。")
                     bullet("个别站会检测「是不是 App 内置浏览器」，那种站打不开也正常。")

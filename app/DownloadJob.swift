@@ -19,6 +19,12 @@ final class DownloadJob: ObservableObject, Identifiable {
     @Published var finished = false
     @Published var failed: String?
     @Published var outputName: String?
+    /// 转成 mp4 成功了吗（.ts 在 iOS 上系统播放器和微信都不认，所以要转）
+    @Published var mp4Ready = false
+    /// 转封装失败的原因（失败不算整体失败，.ts 还在）
+    @Published var remuxError: String?
+    /// 本地文件，用来播放
+    @Published var localURL: URL?
 
     private var task: Task<Void, Never>?
 
@@ -78,11 +84,30 @@ final class DownloadJob: ObservableObject, Identifiable {
 
         phase = "开始…"
         do {
-            let url = try await dl.run(sourceURL: src)
+            let tsURL = try await dl.run(sourceURL: src)
             if Task.isCancelled { return }
-            outputName = url.lastPathComponent
+            localURL = tsURL
+            outputName = tsURL.lastPathComponent
+
+            // 下载完立刻转 MP4。
+            // 原因：拼接产物是 MPEG-TS，iOS 系统播放器和微信都不认这个格式，
+            // 只有 nPlayer / VLC 这类专业播放器能播。转成 mp4 才是通用的。
+            phase = "正在转成 MP4…"
+            let mp4URL = tsURL.deletingPathExtension().appendingPathExtension("mp4")
+            do {
+                try await Remuxer.toMP4(ts: tsURL, mp4: mp4URL)
+                if Task.isCancelled { return }
+                mp4Ready = true
+                localURL = mp4URL
+                outputName = mp4URL.lastPathComponent
+                phase = "完成：\(mp4URL.lastPathComponent)"
+            } catch {
+                // 转封装失败不当作整体失败 —— .ts 文件还在，用 VLC 之类的能看。
+                // 把原因记下来，方便判断是「iOS 不认这个封装」还是别的问题。
+                remuxError = error.localizedDescription
+                phase = "已保存为 .ts（转 MP4 失败，见下方说明）"
+            }
             finished = true
-            phase = "已保存：\(url.lastPathComponent)"
         } catch {
             if Task.isCancelled { return }
             failed = error.localizedDescription
