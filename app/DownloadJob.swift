@@ -136,14 +136,16 @@ final class DownloadJob: ObservableObject, Identifiable {
             // ── 3. 转 MP4 ────────────────────────────────────────────
             // 注意：即便上面失败了也照样往下走 —— 上一版就是在这里
             // 用 guard 直接 return，导致一个环节挂掉把整条链路全废掉。
+            //
+            // 而且转 MP4**不依赖**本机服务了：主路是自己解 TS 重封装
+            // （见 TSRemuxer.swift），离线、不重新编码、很快。
             phase = "正在转 MP4…"
             let mp4URL = tsURL.deletingPathExtension().appendingPathExtension("mp4")
-            var candidates: [URL] = []
-            if let hls { candidates.append(hls) }
-            candidates.append(src)          // 兜底：直接从原始地址转
 
             let (ok, log) = await Exporter.toMP4(
-                candidates: candidates,
+                ts: tsURL,
+                hls: hls,
+                remote: src,
                 mp4: mp4URL,
                 onProgress: { [weak self] _, msg in
                     Task { @MainActor in
