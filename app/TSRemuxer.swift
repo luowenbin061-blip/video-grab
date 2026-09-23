@@ -844,7 +844,7 @@ extension TSRemuxer {
             } else if sawPMT, audioPID < 0, pmtSeenCount >= 3 {
                 why = "PMT 重复出现 \(pmtSeenCount) 次都没有音频条目"
             } else if let v0 = videoFirstDTS, let vNow = lastVideoDTS, vNow - v0 >= 900_000 {
-                why = String(format: "视频走了 %.0f 秒音频还没出现", (vNow - v0) / 90_000.0)
+                why = String(format: "视频走了 %.0f 秒音频还没出现", Double(vNow - v0) / 90_000.0)
             } else if pendingBytes > 48 * 1_048_576 {
                 why = "等待音频期间缓冲已超 48MB"
             }
