@@ -489,7 +489,7 @@ extension TSRemuxer {
                 let epid = (Int(sec[k + 1] & 0x1F) << 8) | Int(sec[k + 2])
                 let esLen = (Int(sec[k + 3] & 0x0F) << 8) | Int(sec[k + 4])
                 if st == 0x1B || st == 0x24 || st == 0x02 || st == 0x10 {
-                    if videoPID < 0 { videoPID = epid; videoStreamType = st }
+                    if videoPID < 0 { videoPID = epid; videoStreamType = Int(st) }
                 } else if st == 0x0F || st == 0x11 || st == 0x03 || st == 0x04 {
                     // 明确的音频类型 —— 即使之前拿不准认过一个，也升级成确定的
                     if audioPID < 0 || audioPIDIsGuess { audioPID = epid; audioPIDIsGuess = false }
