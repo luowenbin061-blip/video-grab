@@ -276,7 +276,7 @@ extension TSRemuxer {
                 buf.append(contentsOf: d)
 
                 var i = 0
-                let t0 = DispatchTime.now().uptimeNanoseconds
+                let t0 = Int64(DispatchTime.now().uptimeNanoseconds)
                 while i + 188 <= buf.count {
                     if buf[i] != 0x47 { i += 1; continue }   // 容错：找同步字节
                     parsePacket(buf, at: i)
@@ -720,10 +720,10 @@ extension TSRemuxer {
             if st == 0, let f = fmt {
                 // 体检：把 cookie 取回来对一下 —— 确认系统真的按我们给的 ASC 建了格式。
                 // 不一致的话 esds 就是错的，解码器会拒播 → 无声。
-                var cookieLen: Int32 = 0
-                let cookiePtr = CMAudioFormatDescriptionGetMagicCookie(f, &cookieLen)
+                var cookieLen: Int = 0
+                let cookiePtr = CMAudioFormatDescriptionGetMagicCookie(f, sizeOut: &cookieLen)
                 if let ptr = cookiePtr, cookieLen == asc.count {
-                    let back = Data(bytes: ptr, count: Int(cookieLen))
+                    let back = Data(bytes: ptr, count: cookieLen)
                     if back != Data(asc) {
                         let hex = back.map { String(format: "%02X", $0) }.joined(separator: " ")
                         audioFormatError = "系统回读的 magic cookie(\(hex)) 与写入的不一致"
@@ -900,7 +900,7 @@ extension TSRemuxer {
                     break
                 }
                 // 记「真实」等待时长 —— Task.sleep(2ms) 实际可能睡 1~15ms（定时器合并）
-                let w0 = DispatchTime.now().uptimeNanoseconds
+                let w0 = Int64(DispatchTime.now().uptimeNanoseconds)
                 try? await Task.sleep(nanoseconds: 2_000_000)
                 waitNs += Int64(DispatchTime.now().uptimeNanoseconds) - w0
             }
@@ -997,7 +997,7 @@ extension TSRemuxer {
                 else { audioBuildFails += 1 }
                 return
             }
-            let a0 = DispatchTime.now().uptimeNanoseconds
+            let a0 = Int64(DispatchTime.now().uptimeNanoseconds)
             let ok = input.append(sb)
             appendNs += Int64(DispatchTime.now().uptimeNanoseconds) - a0
             if !ok {
