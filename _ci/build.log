@@ -38,7 +38,7 @@ Resolve Package Graph
 
 Fetching from https://github.com/kewlbear/FFmpeg-iOS
 
-package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported2026-09-23 16:14:53.414 xcodebuild[2409:9402] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-14-0053.xcresult
+package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported2026-09-23 16:20:47.812 xcodebuild[12138:34662] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-20-0047.xcresult
 xcodebuild: error: Could not resolve package dependencies:
   package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported
 
@@ -85,7 +85,7 @@ Resolve Package Graph
 
 Fetching from https://github.com/kewlbear/FFmpeg-iOS
 
-package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported2026-09-23 16:14:53.414 xcodebuild[2409:9402] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-14-0053.xcresult
+package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported2026-09-23 16:20:47.812 xcodebuild[12138:34662] Writing error result bundle to /var/folders/s6/5hzmn6lx4dz5nxs7k_0slzph0000gn/T/ResultBundle_2026-23-09_16-20-0047.xcresult
 xcodebuild: error: Could not resolve package dependencies:
   package 'ffmpeg-ios' is required using a revision-based requirement and it depends on local package 'ffmpeg-ios-support', which is not supported
 
