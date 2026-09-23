@@ -266,19 +266,19 @@ extension TSRemuxer {
             if !sawPMT { throw Fail.noStreams }
             if videoPID < 0 { throw Fail.noVideo }
             if videoFormat == nil { throw Fail.noParameterSets }
-            guard writer != nil, let vIn else { throw Fail.writer("没有开始写") }
+            guard let w = writer, let vIn else { throw Fail.writer("没有开始写") }
             if stats.videoSamples == 0 { throw Fail.empty }
 
             vIn.markAsFinished()
             aIn?.markAsFinished()
             onProgress(1.0, "写入收尾…")
-            await writer.finishWriting()
+            await w.finishWriting()
 
-            if writer.status == .failed {
-                throw Fail.writer(writer.error?.localizedDescription ?? "未知原因")
+            if w.status == .failed {
+                throw Fail.writer(w.error?.localizedDescription ?? "未知原因")
             }
-            if writer.status != .completed {
-                throw Fail.writer("写入没有正常结束（status=\(writer.status.rawValue)）")
+            if w.status != .completed {
+                throw Fail.writer("写入没有正常结束（status=\(w.status.rawValue)）")
             }
 
             if let f = videoFormat {
@@ -515,10 +515,10 @@ extension TSRemuxer {
                 mReserved: 0)
 
             var fmt: CMAudioFormatDescription?
+            // 注意：这个 API 没有 formatID 参数 —— 格式从 asbd.mFormatID 取
             let st: OSStatus = asc.withUnsafeBufferPointer { p in
                 CMAudioFormatDescriptionCreate(
                     allocator: kCFAllocatorDefault,
-                    formatID: kAudioFormatMPEG4AAC,
                     asbd: &asbd,
                     layoutSize: 0,
                     layout: nil,
@@ -684,7 +684,9 @@ extension TSRemuxer {
                 if spin > 5000 { throw Fail.writer("writer 长时间不接收数据") }
             }
             if !input.append(sb) {
-                throw Fail.writer(input.error?.localizedDescription ?? "样本被拒")
+                // AVAssetWriterInput 自己没有 error，原因在 writer 上
+                let why = writer?.error?.localizedDescription ?? "样本被拒（原因未提供）"
+                throw Fail.writer(why)
             }
         }
 
