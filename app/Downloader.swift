@@ -44,9 +44,17 @@ struct HLSDownloader {
     /// (已完成, 总数, 阶段文字)
     var onProgress: (Int, Int, String) -> Void = { _, _, _ in }
 
+    /// 下载产物。除了文件本身，还带出时长和分片数 ——
+    /// 时长要用来写一条只含单个分片的 m3u8（播放器需要 #EXTINF）。
+    struct Output {
+        let fileURL: URL
+        let duration: Double
+        let segmentCount: Int
+    }
+
     // MARK: - 主流程
 
-    func run(sourceURL: URL) async throws -> URL {
+    func run(sourceURL: URL) async throws -> Output {
         try FileManager.default.createDirectory(at: options.tempDir,
                                                 withIntermediateDirectories: true)
 
@@ -133,7 +141,9 @@ struct HLSDownloader {
 
         try? fm.removeItem(at: options.tempDir)
         onProgress(total, total, "完成")
-        return options.outputURL
+        return Output(fileURL: options.outputURL,
+                      duration: playlist.totalDuration,
+                      segmentCount: total)
     }
 
     // MARK: - 网络

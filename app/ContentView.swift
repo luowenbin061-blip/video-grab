@@ -433,8 +433,8 @@ struct JobRow: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(.green)
                 } else {
-                    Label("存成了 .ts —— iOS 系统播放器和微信不认这个格式",
-                          systemImage: "exclamationmark.triangle.fill")
+                    Label("能在 App 里播（点下面按钮）；MP4 没转出来",
+                          systemImage: "info.circle.fill")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.orange)
                     if let e = job.remuxError {
@@ -443,12 +443,10 @@ struct JobRow: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("应急：装个 VLC 或 nPlayer，用它打开这个 .ts 就能看。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                 }
 
-                if let u = job.localURL {
+                // 播放走的是「本机 HTTP 上的 m3u8」—— 因为 iOS 读不了本地 .ts
+                if let u = job.playURL ?? job.localURL {
                     Button {
                         playing = true
                     } label: {
