@@ -71,6 +71,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.videograb.app
         TARGETED_DEVICE_FAMILY: "1,2"
+        # App 图标：app/Assets.xcassets/AppIcon.appiconset（单尺寸 1024，
+        # Xcode 14+ 支持，actool 编译时自动生成全部尺寸并写进 Info.plist）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # FFmpeg 静态库（设备切片 ios-arm64）。顺序有讲究：静态库是单趟
         # 解析，被依赖的库要排在依赖者后面（fftools -> ... -> avutil 收尾）。
         LIBRARY_SEARCH_PATHS:
