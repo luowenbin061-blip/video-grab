@@ -23,10 +23,28 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGNING_ALLOWED: "NO"
 
+# 成熟方案：内嵌 FFmpeg 引擎（Stay / 亚瑟 / 各类下载器 App 的同款路线）。
+# kewlbear/FFmpeg-iOS 是 SPM 包，自带预编译好的 iOS arm64 静态库
+# （xcframework 二进制从它的 GitHub release 拉，已验证含真机切片）。
+# API 一行：ffmpeg(["ffmpeg", "-i", "in.ts", "-c", "copy", "out.mp4"])。
+# 许可 LGPLv2.1 —— 自用 App 没有问题。
+packages:
+  FFmpegKit:
+    url: https://github.com/kewlbear/FFmpeg-iOS
+    exactVersion: 0.0.6-b20230416-173821
+  FFmpegSupportPkg:
+    url: https://github.com/kewlbear/FFmpeg-iOS-Support
+    exactVersion: 0.0.2
+
 targets:
   VideoGrab:
     type: application
     platform: iOS
+    dependencies:
+      - package: FFmpegKit
+        product: FFmpeg-iOS
+      - package: FFmpegSupportPkg
+        product: FFmpeg-iOS-Support
     sources:
       # Info.plist 由下面的 info.path 生成，不能当源码/资源扫进来
       - path: app

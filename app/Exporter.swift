@@ -45,17 +45,29 @@ enum Exporter {
         var log: [Attempt] = []
         try? FileManager.default.removeItem(at: mp4)
 
-        // ── 手段 1：自己重封装（主路，离线、不重新编码、快）────────────
-        onProgress(0, "正在重封装成 MP4…")
+        // ── 手段 0：FFmpeg 引擎（成熟方案，Stay / 各类下载器同款路线）──────
+        // 用户实测：同一个 .ts 别的转码软件几秒转完 → 文件没问题，该用成熟引擎。
+        // `-c copy` 只换容器：秒级 + 音轨保留 + 各类编码全覆盖。
+        onProgress(0, "FFmpeg 转码中…")
+        do {
+            let detail = try await FFmpegConverter.toMP4(ts: ts, mp4: mp4, onProgress: onProgress)
+            log.append(Attempt(name: "FFmpeg 重封装", ok: true, detail: detail))
+            return (true, log)
+        } catch {
+            log.append(Attempt(name: "FFmpeg 重封装", ok: false, detail: brief(error)))
+        }
+
+        // ── 手段 1：自己写的重封装（历史兜底，H.264 明文流可用）────────────
+        onProgress(0, "备用：自研重封装中…")
         do {
             let stats = try await TSRemuxer.toMP4(ts: ts, mp4: mp4,
                                                  onProgress: { p, msg in
                                                      onProgress(p, msg)
                                                  })
-            log.append(Attempt(name: "重封装 TS→MP4", ok: true, detail: stats.note))
+            log.append(Attempt(name: "自研重封装 TS→MP4", ok: true, detail: stats.note))
             return (true, log)
         } catch {
-            log.append(Attempt(name: "重封装 TS→MP4", ok: false, detail: brief(error)))
+            log.append(Attempt(name: "自研重封装 TS→MP4", ok: false, detail: brief(error)))
         }
 
         // ── 手段 2：交给系统的导出会话（留个后手；下面会先说明它为什么基本没戏）
