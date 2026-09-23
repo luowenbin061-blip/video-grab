@@ -18,7 +18,8 @@ struct M3U8Playlist {
     struct Key {
         let method: String          // AES-128 / NONE / SAMPLE-AES
         let uri: URL?
-        let iv: Data?
+        /// 可变：清单没写 IV 时要按规范用分片序号推导出来再补进去
+        var iv: Data?
     }
 
     var isMaster = false
@@ -66,7 +67,9 @@ struct M3U8Playlist {
                 }
 
                 if upper.hasPrefix("#EXT-X-MEDIA-SEQUENCE") {
-                    mediaSequence = attrInt(line, "MEDIA-SEQUENCE") ?? 0
+                    // 注意：这是「冒号分隔」的标签（#EXT-X-MEDIA-SEQUENCE:0），
+                    // 不能用下面那个按 KEY=VALUE 找的 attrString —— 之前就是这么写错的。
+                    mediaSequence = attrAfterColon(line).flatMap(Int.init) ?? 0
                     continue
                 }
 
@@ -142,6 +145,14 @@ struct M3U8Playlist {
     }
 
     // MARK: - 小工具
+
+    /// 读 `#EXT-X-XXX:值` 这种「冒号分隔」的标签。
+    /// 和 `attrString` 要区分开：那个处理的是 `KEY=VALUE` 形式（如 #EXT-X-KEY 里的 METHOD=...）。
+    private static func attrAfterColon(_ line: String) -> String? {
+        guard let i = line.firstIndex(of: ":") else { return nil }
+        let v = line[line.index(after: i)...].trimmingCharacters(in: .whitespaces)
+        return v.isEmpty ? nil : v
+    }
 
     /// 读 #EXT-X-XXX:KEY=VALUE,... 里的某个值（带引号的会去掉引号）。
     private static func attrString(_ line: String, _ key: String) -> String? {

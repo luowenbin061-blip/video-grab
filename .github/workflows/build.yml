@@ -42,6 +42,8 @@ jobs:
         id: build
         run: |
           set -o pipefail
+          # 用 tee 而不是 >> —— 这样编译错误会同时出现在 Actions 日志里，
+          # 不必绕道去读回传的 _ci/build.log。上一轮就是被这个坑了一下。
           xcodebuild \
             -project VideoGrab.xcodeproj \
             -scheme VideoGrab \
@@ -52,8 +54,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            build >> build.log 2>&1
-          code=$?
+            build 2>&1 | tee -a build.log
+          code=${PIPESTATUS[0]}
           echo "xcodebuild exit code: $code" | tee -a build.log
           exit $code
 

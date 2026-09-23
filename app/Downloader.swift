@@ -51,14 +51,19 @@ struct HLSDownloader {
                                                 withIntermediateDirectories: true)
 
         onProgress(0, 0, "读取 m3u8…")
-        var playlist = try await loadPlaylist(url: sourceURL)
+        let first = try await loadPlaylist(url: sourceURL)
 
         // ★ 关键：master playlist 不含分片，必须先挑一个清晰度再取子列表。
-        if playlist.isMaster {
-            guard let v = playlist.bestVariant() else { throw Fail.noVariant }
+        // 这里用 let 而不是 var —— 下面的并发闭包要捕获它，
+        // 捕获 var 在并发代码里会报 "reference to captured var"。
+        let playlist: M3U8Playlist
+        if first.isMaster {
+            guard let v = first.bestVariant() else { throw Fail.noVariant }
             let label = v.resolution ?? (v.bandwidth.map { "\($0 / 1000)kbps" } ?? "默认清晰度")
             onProgress(0, 0, "选中清晰度 \(label)，读取分片列表…")
             playlist = try await loadPlaylist(url: v.url)
+        } else {
+            playlist = first
         }
 
         guard !playlist.segmentURLs.isEmpty else { throw Fail.noSegment }
@@ -230,7 +235,7 @@ struct HLSDownloader {
                               let o = op.baseAddress else {
                             return CCCryptorStatus(kCCMemoryFailure)
                         }
-                        return CCCrypt(kCCDecrypt,
+                        return CCCrypt(CCOperation(kCCDecrypt),
                                        CCAlgorithm(kCCAlgorithmAES),
                                        CCOptions(kCCOptionPKCS7Padding),
                                        k, kCCKeySizeAES128,

@@ -1,0 +1,16 @@
+# 生成物（XcodeGen 会在 CI 上生成 xcodeproj，不要提交）
+*.xcodeproj/
+build/
+out/
+DerivedData/
+*.ipa
+
+# Xcode 用户数据
+xcuserdata/
+*.xcuserstate
+
+# CI 回传的日志（CI 用 git add -f 强制提交，所以这里忽略不影响它）
+_ci/
+
+# 系统
+.DS_Store

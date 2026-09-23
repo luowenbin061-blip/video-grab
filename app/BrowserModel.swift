@@ -75,7 +75,9 @@ final class BrowserModel: NSObject, ObservableObject {
                                   forMainFrameOnly: false,        // ★ 覆盖 iframe
                                   in: world)
         ucc.addUserScript(script)
-        ucc.addScriptMessageHandler(self, contentWorld: world, name: "vgSniff")
+        // 注意：这个方法名在 Swift 里是 add(_:contentWorld:name:)，
+        // 老的 addScriptMessageHandler(_:contentWorld:name:) 已被废弃。
+        ucc.add(self, contentWorld: world, name: "vgSniff")
 
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = self
