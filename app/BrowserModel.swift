@@ -9,7 +9,7 @@ struct SniffItem: Identifiable, Hashable {
     var id: String { url }
     let url: String
     let kind: String        // hls / file / dash / blob / segment / other
-    let src: String         // 来源：video.src、var now、fetch……
+    var src: String         // 来源：video.src、var now、fetch……（video 来源会覆盖刷新）
     let page: String
     var hits: Int
     /// 第一次嗅到的时刻（JS 那边记的，绝对时钟）
