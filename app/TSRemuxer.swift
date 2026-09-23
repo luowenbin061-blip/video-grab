@@ -178,6 +178,12 @@ extension TSRemuxer {
         private var videoPES = [UInt8]()
         private var audioPES = [UInt8]()
         private var sawPMT = false
+        // PSI section 重组：PAT/PMT 的 section 经常跨 TS 包，只读单个包会截断
+        private var patSection = [UInt8]()
+        private var pmtSection = [UInt8]()
+        private var pmtSeenCount = 0
+        /// audioPID 是从「拿不准的类型」（private data 等）猜出来的
+        private var audioPIDIsGuess = false
 
         // 格式
         private var sps: [UInt8]?
@@ -202,6 +208,20 @@ extension TSRemuxer {
         private var lastAudioT: Int64 = -1
         private var lastVideoDTS: Int64?
         private var firstAudioSampleDone = false
+
+        // ── v1.0.14 新增：诊断 + 兜底状态 ──
+        /// writer 一旦 startWriting 就**不能再加输入**。所以要么等音画两种格式
+        /// 都齐了再启动；要么确认这条流真的没有音频，才走无音频兜底。
+        private var audioSurrendered = false
+        private var audioSurrenderWhy: String?
+        /// 被放弃的音频包个数（PES）—— 无音频兜底路径上丢弃的，必须留痕
+        private var audioDropped = 0
+        /// 样本构造失败的次数（静默跳过是大忌 —— 第一个视频没声音就是这么瞎掉的）
+        private var videoBuildFails = 0
+        private var audioBuildFails = 0
+        /// writer 长时间不接收时的兜底：保留已写入部分产出 MP4，而不是全盘失败
+        private var partialWrite = false
+        private var stallInfo: String?
 
         private var vq = [VItem]()
         private var aq = [AItem]()
@@ -272,7 +292,10 @@ extension TSRemuxer {
             vIn.markAsFinished()
             aIn?.markAsFinished()
             onProgress(1.0, "写入收尾…")
-            await w.finishWriting()
+            // finishWriting 也可能卡住（writer 内部落盘出问题时）—— 20 秒兜底
+            await Self.withTimeout(seconds: 20, what: "finishWriting 没有返回") {
+                await w.finishWriting()
+            }
 
             if w.status == .failed {
                 throw Fail.writer(w.error?.localizedDescription ?? "未知原因")
@@ -289,13 +312,52 @@ extension TSRemuxer {
             stats.fps = frameDelta > 0 ? 90000.0 / Double(frameDelta) : 0
             var parts = ["H.264 \(stats.width)×\(stats.height) @\(String(format: "%.2f", stats.fps))fps"]
             parts.append("\(stats.videoSamples) 个视频帧")
+            // ── 音频结果必须写明白，一个字都不含糊 ──
             if stats.audioSamples > 0 {
                 parts.append("\(stats.audioSamples) 个音频帧（\(Int(sampleRate))Hz \(channels)声道）")
+            } else if audioDropped > 0 {
+                parts.append("无音频轨：\(audioSurrenderWhy ?? "未知原因")，丢弃 \(audioDropped) 个音频包")
             } else if let e = audioFormatError {
                 parts.append("音频没写进去：\(e)")
+            } else if audioPID < 0 {
+                parts.append("无音频轨：TS 里没识别出音频流")
+            } else {
+                parts.append("无音频轨：原因不明（音频流存在但一帧都没写出来）")
+            }
+            if videoBuildFails > 0 { parts.append("视频帧构造失败 \(videoBuildFails) 次") }
+            if audioBuildFails > 0 { parts.append("音频帧构造失败 \(audioBuildFails) 次") }
+            if partialWrite, let s = stallInfo {
+                parts.append("⚠ 只包含部分内容：\(s)")
             }
             stats.note = parts.joined(separator: " · ")
             return stats
+        }
+
+        /// 给「可能永远不返回的异步操作」套一个超时。
+        /// 超时后不再等待（底层操作继续飘着，但我们不能陪它卡死）。
+        private static func withTimeout(seconds: UInt64, what: String,
+                                        _ op: @escaping () async -> Void) async {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                let lock = NSLock()
+                var resumed = false
+                let resumeOnce = {
+                    lock.lock()
+                    let first = !resumed
+                    resumed = true
+                    lock.unlock()
+                    if first { cont.resume() }
+                }
+                Task {
+                    await op()
+                    resumeOnce()
+                }
+                Task {
+                    try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                    resumeOnce()
+                }
+            }
+            // 超时路径上没法把「没等到」告诉调用方 —— 只能靠 status 检查兜底
+            _ = what
         }
 
         // MARK: TS 包
@@ -316,11 +378,11 @@ extension TSRemuxer {
             let payload = buf[p..<(off + 188)]
 
             if pid == 0 {
-                if pusi == 1 { parsePAT(payload) }
+                feedPSI(payload, pusi: pusi == 1, into: &patSection, isPMT: false)
                 return
             }
             if pmtPID >= 0, pid == pmtPID {
-                if pusi == 1 { parsePMT(payload) }
+                feedPSI(payload, pusi: pusi == 1, into: &pmtSection, isPMT: true)
                 return
             }
             if pid == videoPID {
@@ -335,11 +397,54 @@ extension TSRemuxer {
             }
         }
 
-        private func parsePAT(_ payload: ArraySlice<UInt8>) {
+        // MARK: PSI 解析
+
+        /// ══ PSI section 重组（v1.0.14 重写）══
+        ///
+        /// PAT/PMT 的 section **经常超过一个 TS 包的净荷（184 字节）**，
+        /// 旧版只读单个包 → section 被截断 → 排在 section 尾部的音频条目丢失
+        /// → audioPID 永远是 -1 → 音频轨整个没人管 → MP4 没有声音。
+        ///
+        /// 规则（ISO 13818-1）：
+        ///   · PUSI 包：第 0 字节是 pointer_field，指出新 section 从哪开始；
+        ///     它前面的字节（如果有）是上一个 section 的尾巴
+        ///   · 非 PUSI 包：整个净荷都是当前 section 的延续
+        private func feedPSI(_ payload: ArraySlice<UInt8>, pusi: Bool,
+                             into buf: inout [UInt8], isPMT: Bool) {
             let arr = Array(payload)
-            guard arr.count > 12 else { return }
-            let ptr = Int(arr[0])
-            let sec = Array(arr[(1 + ptr)...])
+            guard !arr.isEmpty else { return }
+
+            if pusi {
+                let pointer = Int(arr[0])
+                if pointer > 0, !buf.isEmpty {
+                    buf.append(contentsOf: arr[1..<min(1 + pointer, arr.count)])
+                    if let sec = psiSection(buf) {
+                        buf.removeAll(keepingCapacity: true)
+                        if isPMT { parsePMT(sec) } else { parsePAT(sec) }
+                    }
+                }
+                buf = Array(arr[min(1 + pointer, arr.count)...])
+            } else {
+                guard !buf.isEmpty else { return }   // 不在 section 中间的散包
+                buf.append(contentsOf: arr)
+            }
+
+            if let sec = psiSection(buf) {
+                buf.removeAll(keepingCapacity: true)
+                if isPMT { parsePMT(sec) } else { parsePAT(sec) }
+            }
+        }
+
+        /// section 凑齐了吗？凑齐了就完整取出来（section 长度写在第 1~2 字节）
+        private func psiSection(_ buf: [UInt8]) -> [UInt8]? {
+            guard buf.count >= 3 else { return nil }
+            let secLen = (Int(buf[1] & 0x0F) << 8) | Int(buf[2])
+            let total = 3 + secLen
+            guard total >= 9, buf.count >= total else { return nil }
+            return Array(buf[0..<total])
+        }
+
+        private func parsePAT(_ sec: [UInt8]) {
             guard sec.count >= 12, sec[0] == 0x00 else { return }
             let secLen = (Int(sec[1] & 0x0F) << 8) | Int(sec[2])
             let end = min(3 + secLen - 4, sec.count)
@@ -352,12 +457,10 @@ extension TSRemuxer {
             }
         }
 
-        private func parsePMT(_ payload: ArraySlice<UInt8>) {
-            let arr = Array(payload)
-            guard arr.count > 12 else { return }
-            let ptr = Int(arr[0])
-            let sec = Array(arr[(1 + ptr)...])
+        private func parsePMT(_ sec: [UInt8]) {
             guard sec.count >= 12, sec[0] == 0x02 else { return }
+            pmtSeenCount += 1
+            sawPMT = true
             let secLen = (Int(sec[1] & 0x0F) << 8) | Int(sec[2])
             let progInfoLen = (Int(sec[10] & 0x0F) << 8) | Int(sec[11])
             let end = min(3 + secLen - 4, sec.count)
@@ -366,14 +469,19 @@ extension TSRemuxer {
                 let st = sec[k]
                 let epid = (Int(sec[k + 1] & 0x1F) << 8) | Int(sec[k + 2])
                 let esLen = (Int(sec[k + 3] & 0x0F) << 8) | Int(sec[k + 4])
-                if st == 0x1B || st == 0x24 || st == 0x02 {
+                if st == 0x1B || st == 0x24 || st == 0x02 || st == 0x10 {
                     if videoPID < 0 { videoPID = epid }
                 } else if st == 0x0F || st == 0x11 || st == 0x03 || st == 0x04 {
-                    if audioPID < 0 { audioPID = epid }
+                    // 明确的音频类型 —— 即使之前拿不准认过一个，也升级成确定的
+                    if audioPID < 0 || audioPIDIsGuess { audioPID = epid; audioPIDIsGuess = false }
+                } else if audioPID < 0, st == 0x06 || st == 0x81 {
+                    // 拿不准的（private data / AC-3）—— 先记着，遇到确定的会升级。
+                    // 就算认错（比如其实是字幕），ADTS 同步找不到 → 队列是空的 →
+                    // 10 秒兜底会放弃音频并写明原因，不会卡死。
+                    if audioPID < 0 { audioPID = epid; audioPIDIsGuess = true }
                 }
                 k += 5 + esLen
             }
-            sawPMT = true
         }
 
         // MARK: PES → 样本
@@ -452,6 +560,11 @@ extension TSRemuxer {
 
         private func flushAudioPES() {
             guard audioPID >= 0, audioPES.count > 9 else { return }
+            if audioSurrendered {
+                // 无音频兜底路径上，音频包只能放弃 —— 但必须留痕，不能悄悄扔
+                audioDropped += 1
+                return
+            }
             let (body, ptsRaw, _) = pesParts(audioPES)
             guard let ptsRaw, !body.isEmpty else { return }
 
@@ -561,12 +674,15 @@ extension TSRemuxer {
 
         // MARK: 写 MP4
 
-        private func startWriterIfPossible() throws {
+    private func startWriterIfPossible() throws {
             guard writer == nil else { return }
             guard videoPID >= 0 else { return }
             buildVideoFormat()
             guard let vf = videoFormat else { return }          // 还没拿到 SPS/PPS
-            if audioPID >= 0, audioFormat == nil, audioFormatError == nil { return }
+            // ★ v1.0.14：走到这里的前提是 maybeStartWriter 已确认音频格式就绪。
+            //   绝不允许在音频缺失时启动双轨 writer —— startWriting 之后
+            //   就不能再加输入，那等于给整个文件判「无声」。
+            guard let af = audioFormat else { return }
 
             // 音画要落在同一根时间轴上，否则会错位（实测音频比视频晚 56.8ms）
             guard let base = resolvedBase() else { return }
@@ -598,6 +714,9 @@ extension TSRemuxer {
                 if w.canAdd(input) { w.add(input); a = input }
                 else { audioFormatError = "音频轨加不进去" }
             }
+            if a == nil, audioFormatError == nil {
+                audioFormatError = "音频输入没能创建（should not happen，见 maybeStartWriter）"
+            }
 
             guard w.startWriting() else {
                 throw Fail.writer(w.error?.localizedDescription ?? "startWriting 失败")
@@ -622,30 +741,28 @@ extension TSRemuxer {
 
         /// 把排队的样本写进 writer。
         ///
-        /// ══ 为什么必须「按时间戳归并」两路 ══
+        /// ══ v1.0.13 的死锁教训 ══
+        /// Apple 文档：writer 有多个输入时按时间戳交错写入，某条轨道不就绪时不能塞。
+        /// 旧版先喂完视频再喂音频 → 视频等音频、音频没机会喂 → 死锁。
+        /// 现在按时间戳归并：每次挑时间更早的那路喂，一路不就绪就先喂另一路。
         ///
-        /// Apple 文档原话：一个 asset writer 有多个输入时，它**按时间戳交错写入**
-        /// （为了播放和存储效率），而"只有在 isReadyForMoreMediaData 为 true 时
-        /// 才能往这个输入追加数据"。
-        ///
-        /// 上一版是先把这个队列的视频全喂完、再去喂音频 —— 视频输入很快就不就绪了
-        /// （它在等同一时间段的音频），音频又排在后面没机会喂，
-        /// **两边互相等，永远卡住**。报错就是「writer 长时间不接收数据」。
-        ///
-        /// 现在每次从两路里挑**时间戳更早**的那个喂，两路进度始终贴着走。
+        /// ══ v1.0.14 的两个新教训 ══
+        /// 1. writer 一旦 startWriting 就**不能再加输入** —— 启动时机由
+        ///    maybeStartWriter 统一把关：音画格式都齐了才启动（修「没有声音」）。
+        /// 2. 「等 5 秒不收就报错」太急 —— 高码率流（4.8Mbps）一次落盘就能
+        ///    超过 5 秒，第二个视频就是这么死的。放宽到 30 秒；真等不到就
+        ///    **保留已写入部分**产出 MP4（部分内容好过全盘失败），并把
+        ///    两队列的积压和已写帧数写进记录。
         private func pump(force: Bool = false) async throws {
             if writer == nil {
-                if force || videoFirstDTS != nil || pendingBytes > 4 * 1_048_576 {
-                    try startWriterIfPossible()
-                }
-                // 音频格式迟迟建不起来、或文件已经读到尾 → 别为了音频把视频也拖住
-                if writer == nil, videoFormat != nil,
-                   force || pendingBytes > 12 * 1_048_576 {
-                    try startWriterIfPossibleWithoutAudio()
-                }
+                try maybeStartWriter(force: force)
             }
             guard let w = writer, let vIn else { return }
-            if aIn == nil, !aq.isEmpty { aq.removeAll() }
+            if aIn == nil, !aq.isEmpty {
+                // 无音频兜底路径：音频帧只能放弃，但必须留痕
+                audioDropped += aq.count
+                aq.removeAll()
+            }
 
             var spin = 0
             while !(vq.isEmpty && aq.isEmpty) {
@@ -681,14 +798,61 @@ extension TSRemuxer {
                 if did { spin = 0; continue }
 
                 spin += 1
-                if spin > 2500 {          // 约 5 秒
-                    var msg = "writer 长时间不接收数据（status=\(w.status.rawValue)"
-                    if let e = w.error { msg += " · \(e.localizedDescription)" }
-                    msg += "）"
-                    throw Fail.writer(msg)
+                if spin % 2500 == 0 {
+                    // 每 5 秒报一次状态 —— 万一最后还是不行，界面记录里有完整线索
+                    onProgress(-1, String(format: "等待 writer 接收数据… 已等 %d 秒（积压 视频 %d 帧 / 音频 %d 帧）",
+                                          spin / 500, vq.count, aq.count))
+                }
+                if spin > 15000 {          // 约 30 秒（每轮 2ms）
+                    partialWrite = true
+                    stallInfo = String(format: "writer 30 秒不接收（status=%d），已写视频 %d 帧 / 音频 %d 帧，积压视频 %d / 音频 %d 已丢弃",
+                                       w.status.rawValue, stats.videoSamples, stats.audioSamples,
+                                       vq.count, aq.count)
+                    vq.removeAll(); aq.removeAll(); pendingBytes = 0
+                    break
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000)
             }
+        }
+
+        /// ══ writer 的启动时机（v1.0.14 的核心修改，修「没有声音」）══
+        ///
+        /// 为什么不能像旧版那样「有视频就启动」：
+        ///   AVAssetWriter 一旦 startWriting()，**就不能再添加任何输入**。
+        ///   旧版在第一帧视频就启动，那一刻音频往往还没就绪（甚至 audioPID
+        ///   还没解析出来）→ 音频输入永远加不进去 → MP4 只有视频轨。
+        ///
+        /// 现在的规则：
+        ///   · 音频格式就绪 → 立即启动（音画双轨）
+        ///   · 音频确实不存在 / 等了 10 秒还没出现 / 缓冲超限 → 明确放弃音频，
+        ///     走无音频兜底，并把放弃原因写进记录
+        private func maybeStartWriter(force: Bool) throws {
+            guard writer == nil, videoFormat != nil, videoFirstDTS != nil else { return }
+
+            if audioFormat != nil {
+                try startWriterIfPossible()
+                return
+            }
+            if audioSurrendered {
+                try startWriterIfPossibleWithoutAudio()
+                return
+            }
+
+            var why: String?
+            if force {
+                why = "文件读完了音频格式还没建出来"
+            } else if sawPMT, audioPID < 0, pmtSeenCount >= 3 {
+                why = "PMT 重复出现 \(pmtSeenCount) 次都没有音频条目"
+            } else if let v0 = videoFirstDTS, let vNow = lastVideoDTS, vNow - v0 >= 900_000 {
+                why = String(format: "视频走了 %.0f 秒音频还没出现", (vNow - v0) / 90_000.0)
+            } else if pendingBytes > 48 * 1_048_576 {
+                why = "等待音频期间缓冲已超 48MB"
+            }
+            guard let why else { return }   // 继续等音频
+
+            audioSurrendered = true
+            audioSurrenderWhy = why
+            try startWriterIfPossibleWithoutAudio()
         }
 
         private func popVideo() -> VItem? {
@@ -714,9 +878,15 @@ extension TSRemuxer {
             return rate > 0 ? samples * 90000 / rate : 0
         }
 
-        /// 就绪性已经在外面判过了，这里直接追加
+        /// 就绪性已经在外面判过了，这里直接追加。
+        /// 样本构造失败（sb == nil）**绝不能静默跳过** ——
+        /// 第一个视频没声音，查到最后发现失败全被吞了，界面上一点痕迹都没有。
         private func appendNow(_ sb: CMSampleBuffer?, to input: AVAssetWriterInput) throws {
-            guard let sb else { return }
+            guard let sb else {
+                if input.mediaType == .video { videoBuildFails += 1 }
+                else { audioBuildFails += 1 }
+                return
+            }
             if !input.append(sb) {
                 let why = writer?.error?.localizedDescription ?? "原因未提供"
                 throw Fail.writer("样本被拒：\(why)")
@@ -745,8 +915,10 @@ extension TSRemuxer {
             writer = w
             vIn = v
             base90 = base
-            aq.removeAll()
-            if audioFormatError == nil { audioFormatError = "音频轨始终没能建立，已跳过" }
+            // 已排队的音频帧不在这里清 —— pump 里会清掉并计数留痕
+            if audioSurrenderWhy != nil, audioFormatError == nil {
+                audioFormatError = "音频轨没建起来（\(audioSurrenderWhy ?? "")）"
+            }
         }
 
         // MARK: 样本构造
