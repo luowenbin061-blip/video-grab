@@ -44,7 +44,7 @@ enum TSRemuxer {
         case unreadable(String)
         case noStreams
         case noVideo
-        case noParameterSets
+        case noParameterSets(String)
         case writer(String)
         case cancelled
         case empty
@@ -54,7 +54,7 @@ enum TSRemuxer {
             case .unreadable(let s): return "打不开 .ts 文件：\(s)"
             case .noStreams: return "没解析出 PAT/PMT，拿不到流的 PID"
             case .noVideo: return "TS 里没有 H.264 视频流（可能是 HEVC 或其它编码）"
-            case .noParameterSets: return "整段数据里都没找到 SPS/PPS，没法建视频格式"
+            case .noParameterSets(let d): return "没法建视频格式：\(d)"
             case .writer(let s): return "写入 MP4 失败：\(s)"
             case .cancelled: return "已取消"
             case .empty: return "重封装出来是空的"
@@ -219,6 +219,12 @@ extension TSRemuxer {
         /// 样本构造失败的次数（静默跳过是大忌 —— 第一个视频没声音就是这么瞎掉的）
         private var videoBuildFails = 0
         private var audioBuildFails = 0
+        // ── 诊断计数：出错时全写进错误信息，不再让你看不到里面发生了什么 ──
+        private var videoStreamType = 0        // PMT 里声明的视频 stream_type
+        private var videoPESCount = 0          // 收到的视频 PES 个数
+        private var audioPESCount = 0          // 收到的音频 PES 个数
+        private var adtsFrameCount = 0         // 解出的 ADTS 帧个数
+        private var nalCounts: [Int: Int] = [:] // NAL 首字节直方图（能看出编码类型）
         /// writer 长时间不接收时的兜底：保留已写入部分产出 MP4，而不是全盘失败
         private var partialWrite = false
         private var stallInfo: String?
@@ -285,7 +291,20 @@ extension TSRemuxer {
 
             if !sawPMT { throw Fail.noStreams }
             if videoPID < 0 { throw Fail.noVideo }
-            if videoFormat == nil { throw Fail.noParameterSets }
+            if videoFormat == nil {
+                // 把「里面到底发生了什么」全写出来 —— 不再只留一句没用的话
+                let top = nalCounts.sorted { $0.value > $1.value }.prefix(6)
+                    .map { String(format: "0x%02X×%d", $0.key, $0.value) }
+                    .joined(separator: " ")
+                let stHex = videoStreamType > 0
+                    ? String(format: "0x%02X", videoStreamType)
+                    : "未记录"
+                throw Fail.noParameterSets(
+                    "PMT 声明视频类型 \(stHex)，收到 \(videoPESCount) 个视频 PES、"
+                    + "\(videoPESCount > 0 ? "NAL 首字节分布 \(top.isEmpty ? "无" : top)" : "没有任何 NAL")；"
+                    + "音频：PID=\(audioPID < 0 ? "无" : String(audioPID))，"
+                    + "\(audioPESCount) 个 PES / \(adtsFrameCount) 个 ADTS 帧")
+            }
             guard let w = writer, let vIn else { throw Fail.writer("没有开始写") }
             if stats.videoSamples == 0 { throw Fail.empty }
 
@@ -470,7 +489,7 @@ extension TSRemuxer {
                 let epid = (Int(sec[k + 1] & 0x1F) << 8) | Int(sec[k + 2])
                 let esLen = (Int(sec[k + 3] & 0x0F) << 8) | Int(sec[k + 4])
                 if st == 0x1B || st == 0x24 || st == 0x02 || st == 0x10 {
-                    if videoPID < 0 { videoPID = epid }
+                    if videoPID < 0 { videoPID = epid; videoStreamType = st }
                 } else if st == 0x0F || st == 0x11 || st == 0x03 || st == 0x04 {
                     // 明确的音频类型 —— 即使之前拿不准认过一个，也升级成确定的
                     if audioPID < 0 || audioPIDIsGuess { audioPID = epid; audioPIDIsGuess = false }
@@ -515,11 +534,15 @@ extension TSRemuxer {
 
         private func flushVideoPES() {
             guard videoPID >= 0, videoPES.count > 9 else { return }
+            videoPESCount += 1
             let (body, ptsRaw, dtsRaw) = pesParts(videoPES)
             guard let ptsRaw, let dtsRaw, !body.isEmpty else { return }
 
             let nals = TSRemuxer.splitNALs(body)
             guard !nals.isEmpty else { return }
+            for n in nals {
+                if let f = n.first { nalCounts[Int(f), default: 0] += 1 }
+            }
 
             var avcc = [UInt8]()
             avcc.reserveCapacity(body.count + 4 * nals.count)
@@ -565,6 +588,7 @@ extension TSRemuxer {
                 audioDropped += 1
                 return
             }
+            audioPESCount += 1
             let (body, ptsRaw, _) = pesParts(audioPES)
             guard let ptsRaw, !body.isEmpty else { return }
 
@@ -591,6 +615,7 @@ extension TSRemuxer {
                 let frame = Array(body[(off + hlen)..<(off + flen)])
                 aq.append(AItem(frame: frame, pts: base, index: idx))
                 pendingBytes += frame.count
+                adtsFrameCount += 1
                 idx += 1
                 off += flen
             }
@@ -682,7 +707,7 @@ extension TSRemuxer {
             // ★ v1.0.14：走到这里的前提是 maybeStartWriter 已确认音频格式就绪。
             //   绝不允许在音频缺失时启动双轨 writer —— startWriting 之后
             //   就不能再加输入，那等于给整个文件判「无声」。
-            guard let af = audioFormat else { return }
+            guard audioFormat != nil else { return }
 
             // 音画要落在同一根时间轴上，否则会错位（实测音频比视频晚 56.8ms）
             guard let base = resolvedBase() else { return }
@@ -827,7 +852,15 @@ extension TSRemuxer {
         ///   · 音频确实不存在 / 等了 10 秒还没出现 / 缓冲超限 → 明确放弃音频，
         ///     走无音频兜底，并把放弃原因写进记录
         private func maybeStartWriter(force: Bool) throws {
-            guard writer == nil, videoFormat != nil, videoFirstDTS != nil else { return }
+            // ══ v1.0.15 的死锁教训 ══
+            // 上一版这里 guard videoFormat != nil —— 但 videoFormat 是在
+            // startWriterIfPossible() 里才创建的，而那个函数只有这个 guard
+            // 通过后才会被调用 → **格式永远没机会创建 → writer 永远不启动**。
+            // 三个视频全部「没找到 SPS/PPS」就是这么来的（其实压根没找过）。
+            // 现在格式在这里先建，建不出来（SPS/PPS 还没到）才继续等。
+            guard writer == nil, videoPID >= 0, videoFirstDTS != nil else { return }
+            buildVideoFormat()
+            guard videoFormat != nil else { return }   // SPS/PPS 还没出现
 
             if audioFormat != nil {
                 try startWriterIfPossible()
