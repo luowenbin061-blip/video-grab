@@ -26,8 +26,10 @@
   var dirty = false;       // 有变化待上报
   var mseSeen = false;     // 页面是否用过 MSE
 
+  // ★ 必须用绝对时钟（epoch 毫秒）。之前用 performance.now()（页面加载后
+  //   经过的毫秒数），被原生当成 1970 年起点 → 面板时间全显示「01-01 08:00」。
   function nowMs() {
-    try { return Math.round(performance.now()); } catch (e) { return 0; }
+    return Date.now();
   }
 
   function kindOf(u) {
@@ -54,8 +56,13 @@
 
     var key = url.split('#')[0];
     if (found[key]) {
-      found[key].hits = (found[key].hits || 1) + 1;
-      found[key].last = nowMs();
+      var f = found[key];
+      f.last = nowMs();
+      // perf 回溯和 DOM 轮询是「回读」不是新请求 —— 照旧累计的话数字会
+      // 膨胀到上千次（实测见过 1,268 次），反而失去参考价值。
+      // 只有 fetch / xhr / video.src / 解析出的正文这类真实事件才 +1。
+      if (!/^(perf|dom)/.test(src)) f.hits = (f.hits || 1) + 1;
+      if (/^video/.test(src)) f.playing = true;
       return;
     }
 
@@ -73,7 +80,8 @@
       page: (function () { try { return location.href; } catch (e) { return ''; } })(),
       first: nowMs(),
       last: nowMs(),
-      hits: 1
+      hits: 1,
+      playing: /^video/.test(src)
     };
     dirty = true;
   }
@@ -189,7 +197,13 @@
       var els = document.querySelectorAll('video, audio, source');
       for (var i = 0; i < els.length; i++) {
         var el = els[i];
-        try { if (el.currentSrc) add(el.currentSrc, 'dom-currentSrc'); } catch (e) {}
+        // ★ 正在播的 video 元素：它的地址就是「当前视频」—— 面板绿标的来源
+        var isLive = false;
+        try { isLive = !el.paused && !el.ended && el.currentTime > 0; } catch (e) {}
+        var cur = null;
+        try { if (el.currentSrc) cur = el.currentSrc; } catch (e) {}
+        try { if (!cur && el.src) cur = el.src; } catch (e) {}
+        if (cur) add(cur, isLive ? 'video-playing' : 'dom-currentSrc');
         try { if (el.src) add(el.src, 'dom-src'); } catch (e) {}
         try {
           var a = el.getAttribute && el.getAttribute('src');
@@ -231,11 +245,17 @@
   }
 
   // ---------- 7. performance 资源计时回溯 ----------
+  var perfSeen = {};   // 每个 URL 只记一次 —— getEntriesByType 会返回全部历史，
+                       // 每 1.5 秒全量重报会把「出现次数」撑到上千
   function scanPerf() {
     try {
       var es = performance.getEntriesByType('resource');
       for (var i = 0; i < es.length; i++) {
-        if (es[i] && es[i].name) add(es[i].name, 'perf');
+        var n = es[i] && es[i].name;
+        if (!n) continue;
+        if (perfSeen[n]) continue;
+        perfSeen[n] = 1;
+        add(n, 'perf');
       }
     } catch (e) {}
   }

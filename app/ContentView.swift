@@ -232,15 +232,27 @@ struct SniffPanel: View {
     @ObservedObject var downloads: DownloadCenter
     @Binding var isPresented: Bool
     @State private var picked: SniffItem?
+    @State private var showAll = false
+
+    private var visibleGroups: [SniffGroup] {
+        showAll ? model.groups : Array(model.groups.prefix(8))
+    }
 
     var body: some View {
         NavigationView {
             Group {
-                if model.items.isEmpty {
+                if model.groups.isEmpty {
                     emptyState
                 } else {
                     List {
-                        if let h = model.hint {
+                        if model.groups.contains(where: { $0.best.playing }) {
+                            Section {
+                                Label("标「正在播放」的就是当前视频 —— 下载它就对了",
+                                      systemImage: "play.circle.fill")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.green)
+                            }
+                        } else if let h = model.hint {
                             Section {
                                 Label(h, systemImage: "info.circle")
                                     .font(.system(size: 13))
@@ -256,12 +268,23 @@ struct SniffPanel: View {
                             }
                         }
                         Section {
-                            ForEach(model.items) { item in
-                                row(item)
+                            ForEach(visibleGroups) { g in
+                                row(g.best, variants: g.total)
+                            }
+                            if model.groups.count > visibleGroups.count {
+                                Button {
+                                    showAll = true
+                                } label: {
+                                    Text("显示全部 \(model.groups.count) 组（还有 \(model.groups.count - visibleGroups.count) 组没列出）")
+                                        .font(.system(size: 13))
+                                        .frame(maxWidth: .infinity)
+                                }
                             }
                         } header: {
                             HStack {
-                                Text("共 \(model.items.count) 条 · 点一条开始下载")
+                                Text(model.groups.count == model.items.count
+                                     ? "共 \(model.groups.count) 条 · 点一条开始下载"
+                                     : "共 \(model.groups.count) 个视频（合并了 \(model.items.count) 条近似地址）")
                                 Spacer()
                                 if !model.updatedText.isEmpty {
                                     Text("更新于 \(model.updatedText)")
@@ -332,7 +355,7 @@ struct SniffPanel: View {
         "如果只有 BLOB，说明地址藏在脚本里 —— 先让视频播一会儿再刷一次。"
     ]
 
-    private func row(_ item: SniffItem) -> some View {
+    private func row(_ item: SniffItem, variants: Int) -> some View {
         Button {
             picked = item
         } label: {
@@ -348,7 +371,16 @@ struct SniffPanel: View {
                         .font(.system(size: 13.5, weight: .medium))
                         .lineLimit(1)
                     Spacer()
-                    if item.isRecent {
+                    if item.playing {
+                        // ★ 这就是用户要下的：当前正在播的那个视频
+                        Label("正在播放", systemImage: "play.fill")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.white)
+                            .labelStyle(.titleAndIcon)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green, in: Capsule())
+                    } else if item.isRecent {
                         Text("新")
                             .font(.system(size: 9.5, weight: .bold))
                             .foregroundStyle(.white)
@@ -365,7 +397,7 @@ struct SniffPanel: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                // ★ 嗅探时间：让用户分清哪个是刚出来的、哪个是之前留下的
+                // 嗅探时间（真实时钟）+ 出现次数 + 同目录变体数
                 HStack(spacing: 5) {
                     Image(systemName: "clock")
                         .font(.system(size: 9.5))
@@ -374,12 +406,15 @@ struct SniffPanel: View {
                     Text("· \(item.relativeText)")
                         .font(.system(size: 11))
                     if item.hits > 1 {
-                        Text("· 出现 \(item.hits) 次")
+                        Text("· 出现 \(item.hits > 999 ? "999+" : String(item.hits)) 次")
                             .font(.system(size: 11))
                     }
+                    if variants > 1 {
+                        Text("· 含 \(variants) 个清单")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.orange)
+                    }
                 }
-                // 三元里两边都必须是同一个具体类型：Color.accentColor 会把
-                // 另一侧也定成 Color，而 .tertiary 是 ShapeStyle，对不上。
                 .foregroundStyle(item.isRecent ? Color.accentColor : Color.secondary)
 
                 Text("来源：\(item.src)\(item.host.isEmpty ? "" : " · \(item.host)")")

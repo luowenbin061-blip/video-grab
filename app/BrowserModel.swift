@@ -12,13 +12,26 @@ struct SniffItem: Identifiable, Hashable {
     let src: String         // 来源：video.src、var now、fetch……
     let page: String
     var hits: Int
-    /// 第一次嗅到的时刻（JS 那边记的）
+    /// 第一次嗅到的时刻（JS 那边记的，绝对时钟）
     var first: Date
     /// 最近一次被看到的时刻
     var last: Date
+    /// 来自「正在播放的 video 元素」→ 面板置顶的绿标，就是用户要下的那个
+    var playing: Bool
 
     /// 能直接下的是 hls 和直链文件；blob / segment 只能当线索。
     var isDownloadable: Bool { kind == "hls" || kind == "file" }
+
+    /// 分组键：同目录的清单变体（master / media / 线路）合并成一条。
+    /// 聚合站一个页面会预加载几十个视频的清单，全平铺用户根本没法选。
+    var groupKey: String {
+        guard let u = URL(string: url) else { return url }
+        let host = u.host ?? ""
+        if kind == "blob" { return url }                       // blob 每条独立
+        let parts = u.path.split(separator: "/").map(String.init)
+        let dir = parts.dropLast().joined(separator: "/")
+        return host + "/" + dir
+    }
 
     var badge: String {
         switch kind {
@@ -75,11 +88,21 @@ struct SniffItem: Identifiable, Hashable {
     static func clockText(_ d: Date) -> String { clock.string(from: d) }
 }
 
+/// 分组去重后的一条展示项（同目录的清单变体合并成一条，用户就不用在
+/// 几十条近似地址里猜了）。下载用 best。
+struct SniffGroup: Identifiable {
+    let id: String          // groupKey
+    let best: SniffItem     // 代表这条下载用的地址
+    let total: Int          // 组内变体条数
+}
+
 /// 浏览器 + 嗅探结果的中枢。
 @MainActor
 final class BrowserModel: NSObject, ObservableObject {
 
     @Published var items: [SniffItem] = []
+    /// 分组去重后的展示列表（同目录清单变体合并成一条）
+    @Published var groups: [SniffGroup] = []
     @Published var address = ""
     @Published var pageTitle = ""
     @Published var isLoading = false
@@ -149,6 +172,7 @@ final class BrowserModel: NSObject, ObservableObject {
     func goForward() { webView?.goForward() }
     func reload() {
         items.removeAll()
+        groups.removeAll()
         mseSeen = false
         webView?.reload()
     }
@@ -174,6 +198,7 @@ final class BrowserModel: NSObject, ObservableObject {
 
     func clearItems() {
         items.removeAll()
+        groups.removeAll()
         showToast("已清空列表")
     }
 
@@ -185,27 +210,42 @@ final class BrowserModel: NSObject, ObservableObject {
         let now = Date()
         for d in raw {
             guard let url = d["url"] as? String, !url.isEmpty else { continue }
-            // JS 那边用 epoch 毫秒记的 first / last；没给就退化成"现在"
+            // JS 现在上报的是绝对时钟（epoch 毫秒），不再是被误读的 performance.now()
             let first = Self.date(fromMs: d["first"]) ?? merged[url]?.first ?? now
-            let last = Self.date(fromMs: d["last"]) ?? now
+            let last = Self.date(fromMs: d["last"]) ?? merged[url]?.last ?? now
+            let hits = (d["hits"] as? Int) ?? 1
+            let isPlaying = (d["playing"] as? Bool) == true
             let item = SniffItem(
                 url: url,
                 kind: (d["kind"] as? String) ?? "other",
                 src: (d["src"] as? String) ?? "",
                 page: (d["page"] as? String) ?? href,
-                hits: (d["hits"] as? Int) ?? 1,
+                hits: hits,
                 first: first,
-                last: last)
-            merged[url] = item
+                last: last,
+                playing: isPlaying)
+            if var old = merged[url] {
+                // 同一 URL 可能来自主页面和多个 iframe（各自有独立的嗅探实例）
+                old.hits = max(old.hits, hits)          // 取大者 —— 做加法会虚胖
+                old.first = min(old.first, first)
+                old.last = max(old.last, last)
+                old.playing = old.playing || isPlaying
+                if item.src.hasPrefix("video") { old.src = item.src }   // video 来源最有说服力
+                merged[url] = old
+            } else {
+                merged[url] = item
+            }
         }
+        let all = Array(merged.values)
         let order: [String: Int] = ["hls": 0, "file": 1, "dash": 2, "blob": 3, "other": 4, "segment": 9]
-        items = merged.values.sorted {
+        items = all.sorted {
             let a = order[$0.kind] ?? 5, b = order[$1.kind] ?? 5
             if a != b { return a < b }
             // 同类里**最近嗅到的排前面** —— 用户一般就是要刚出来的那一条
             if $0.last != $1.last { return $0.last > $1.last }
             return $0.url < $1.url
         }
+        groups = Self.makeGroups(all)
         lastUpdated = now
         mseSeen = mse
         if let web = webView, web.url?.absoluteString != href {
@@ -213,6 +253,31 @@ final class BrowserModel: NSObject, ObservableObject {
             if address.isEmpty { address = href }
         }
         updateHint()
+    }
+
+    /// 同目录的清单变体（master / media / 线路）合并成一组，每组选一条代表：
+    /// 正在播的 > 最近请求的 > 出现次数多的。
+    static func makeGroups(_ items: [SniffItem]) -> [SniffGroup] {
+        var by: [String: [SniffItem]] = [:]
+        for it in items { by[it.groupKey, default: []].append(it) }
+        let order: [String: Int] = ["hls": 0, "file": 1, "dash": 2, "blob": 3, "other": 4, "segment": 9]
+        var groups = by.map { key, list -> SniffGroup in
+            let best = list.sorted { a, b in
+                if a.playing != b.playing { return a.playing }
+                if a.last != b.last { return a.last > b.last }
+                return a.hits > b.hits
+            }[0]
+            return SniffGroup(id: key, best: best, total: list.count)
+        }
+        groups.sort { g1, g2 in
+            let a = g1.best, b = g2.best
+            if a.playing != b.playing { return a.playing }          // 正在播放的最前
+            let ka = order[a.kind] ?? 5, kb = order[b.kind] ?? 5
+            if ka != kb { return ka < kb }                          // 可下载的优先
+            if a.last != b.last { return a.last > b.last }          // 最近嗅到的优先
+            return a.url < b.url
+        }
+        return groups
     }
 
     private static func date(fromMs v: Any?) -> Date? {
