@@ -1,77 +1,203 @@
 import AVFoundation
 import Foundation
 
-/// 一个下载任务的前端状态。
+/// 一个下载任务的全部状态。
 ///
-/// 产物落点：App 自己的 Documents 目录。因为 Info.plist 里开了
-/// UIFileSharingEnabled + LSSupportsOpeningDocumentsInPlace，
-/// 所以文件会直接出现在系统「文件」App → 我的 iPhone → 视频抓取 里，
-/// 不需要任何额外权限、也不需要「导出」这一步。
+/// 产物落点：`JobStore.dir`（App 私有的 Application Support），
+/// **不再往「文件」App 里塞** —— 需求是视频留在程序内，
+/// 存到相册还是存到文件夹由用户在界面上自己点。
 @MainActor
 final class DownloadJob: ObservableObject, Identifiable {
 
-    let id = UUID()
+    let id: UUID
     let title: String
     let sourceURL: String
+    let createdAt: Date
 
-    @Published var phase = "排队中"
+    @Published var phase: String
     @Published var done = 0
     @Published var total = 0
-    @Published var finished = false
+    @Published var finished: Bool
     @Published var failed: String?
+    /// 能直接播的那个产物（转成功是 .mp4；没转成是 .ts）
     @Published var outputName: String?
-
-    /// 转成 mp4 成功了吗（.ts 在 iOS 上系统播放器和微信都不认，所以要转）
-    @Published var mp4Ready = false
+    @Published var mp4Ready: Bool
+    /// 没转成 mp4 时，本地 .ts 要靠本机 HTTP 包成 HLS 才能播，这是清单文件名
+    @Published var playlistName: String?
     @Published var remuxError: String?
 
-    /// 本地文件（.ts 或 .mp4），用来在「文件」App 里找
-    @Published var localURL: URL?
+    /// 文件大小 / 时长 / 分辨率 —— 列表上直接给用户看
+    @Published var fileSize: Int64
+    @Published var duration: Double
+    @Published var resolution: String?
 
-    /// 播放地址。**只能是本机 HTTP 上的 m3u8** ——
-    /// 本地 .ts 和本地 .m3u8 都不能交给 AVPlayer（见 Exporter 顶部的说明）。
-    @Published var playURL: URL?
+    /// 每一步的诊断记录
+    @Published var notes: [String]
 
-    /// 在线地址（原始远端 m3u8）。本机服务起不来时，至少还能在线看。
-    @Published var onlineURL: URL?
+    /// 磁盘上的文件不在了（被系统清理或被用户删掉）
+    @Published var fileMissing = false
+    /// 存相册成功过
+    @Published var savedToPhotos = false
+    /// 界面上的一句话反馈（"已存到相册"这类）
+    @Published var notice: String?
 
-    /// 每一步的诊断记录，直接显示到界面上。
-    /// 上一版只显示一句笼统原因（「本机播放服务没起来」），看不出卡在哪一环，
-    /// 结果白跑一轮 —— 这次每一步成没成、为什么不成，全都记下来。
-    @Published var notes: [String] = []
+    /// 记录有变化时通知外层落盘
+    var onUpdate: (() -> Void)?
 
     private var task: Task<Void, Never>?
+    private var noticeTask: Task<Void, Never>?
 
     var progress: Double { total > 0 ? Double(done) / Double(total) : 0 }
+    var isActive: Bool { !finished && failed == nil }
+
+    // MARK: - 构造
 
     init(title: String, sourceURL: String) {
+        id = UUID()
         self.title = title
         self.sourceURL = sourceURL
+        createdAt = Date()
+        phase = "排队中"
+        finished = false
+        mp4Ready = false
+        fileSize = 0
+        duration = 0
+        notes = []
     }
 
+    /// 从磁盘上的记录恢复
+    init(record: JobRecord) {
+        id = record.id
+        title = record.title
+        sourceURL = record.sourceURL
+        createdAt = record.createdAt
+        phase = record.phaseText
+        finished = true
+        failed = record.failed
+        outputName = record.outputName
+        mp4Ready = record.mp4Ready
+        playlistName = record.playlistName
+        fileSize = record.fileSize
+        duration = record.duration
+        resolution = record.resolution
+        notes = record.notes
+
+        // 上次是下到一半被关掉的
+        if !record.finished, record.failed == nil {
+            failed = "上次运行中被中断（没下完）"
+            phase = "中断"
+        }
+        if !JobStore.exists(named: record.outputName) {
+            fileMissing = true
+            if record.outputName != nil {
+                phase = "文件已不在"
+            }
+        }
+    }
+
+    /// 存盘用的快照
+    func snapshot() -> JobRecord {
+        JobRecord(id: id,
+                  title: title,
+                  sourceURL: sourceURL,
+                  createdAt: createdAt,
+                  finishedAt: finished ? Date() : nil,
+                  finished: finished,
+                  failed: failed,
+                  outputName: outputName,
+                  mp4Ready: mp4Ready,
+                  playlistName: playlistName,
+                  fileSize: fileSize,
+                  duration: duration,
+                  resolution: resolution,
+                  phaseText: phase,
+                  notes: notes)
+    }
+
+    // MARK: - 控制
+
     func start() {
-        guard task == nil else { return }
+        guard task == nil, !finished else { return }
         task = Task { [weak self] in await self?.run() }
     }
 
     func cancel() {
         task?.cancel()
         task = nil
-        if !finished { phase = "已取消（已下的分片保留，可再点继续）" }
+        if !finished {
+            phase = "已取消（已下的分片保留，可再点继续）"
+        }
     }
+
+    // MARK: - 播放 / 导出 / 删除
+
+    /// 能在 App 内播的地址。**每次现算，不缓存** ——
+    /// 本机 HTTP 服务的端口每次启动都可能变，存旧地址就会白屏。
+    func localPlaybackURL() -> URL? {
+        guard !fileMissing, let n = outputName else { return nil }
+
+        // 转成 mp4 的直接播本地文件 —— 最稳，不需要任何服务
+        if mp4Ready, JobStore.exists(named: n) {
+            return JobStore.file(named: n)
+        }
+        // 没转成 mp4：本地 .ts 只能靠本机 HTTP 包成 HLS 才能被播放器读
+        guard let pl = playlistName, JobStore.exists(named: n) else { return nil }
+        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        return LocalHTTPServer.shared.url(pl)
+    }
+
+    /// 能导出的文件（优先 mp4）
+    func exportURL() -> URL? {
+        guard let n = outputName, JobStore.exists(named: n) else { return nil }
+        return JobStore.file(named: n)
+    }
+
+    var canSaveToPhotos: Bool { mp4Ready && JobStore.exists(named: outputName) }
+
+    func saveToPhotos() async {
+        guard let u = exportURL() else {
+            show("文件不在了"); return
+        }
+        do {
+            try await Saver.toPhotos(u)
+            savedToPhotos = true
+            show("已存到相册")
+            notes.append("✓ 已存到系统相册")
+            onUpdate?()
+        } catch {
+            show(error.localizedDescription)
+            notes.append("✗ 存相册失败：\(error.localizedDescription)")
+        }
+    }
+
+    func show(_ s: String) {
+        notice = s
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            if self?.notice == s { self?.notice = nil }
+        }
+    }
+
+    /// 删掉任务的同时把文件也删掉
+    func deleteFiles() {
+        task?.cancel()
+        task = nil
+        JobStore.remove([outputName, playlistName, baseName + ".ts"])
+    }
+
+    var baseName: String { "\(Self.safeFileName(title))_\(Self.stamp(createdAt))" }
 
     // MARK: - 主流程
 
     private func run() async {
         guard let src = URL(string: sourceURL) else {
-            failed = "地址不合法"; phase = "失败"; return
+            failed = "地址不合法"; phase = "失败"; finished = true; onUpdate?(); return
         }
-        onlineURL = src
 
         let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let out = docs.appendingPathComponent(Self.safeFileName(title) + ".ts")
-        let temp = fm.temporaryDirectory.appendingPathComponent("vg_\(id.uuidString)")
+        let tsURL = JobStore.file(named: baseName + ".ts")
+        let tempDir = JobStore.dir.appendingPathComponent("parts_\(id.uuidString)")
 
         var opt = HLSDownloader.Options(
             concurrency: 4,
@@ -80,8 +206,8 @@ final class DownloadJob: ObservableObject, Identifiable {
             userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
                 + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
             referer: nil,
-            tempDir: temp,
-            outputURL: out)
+            tempDir: tempDir,
+            outputURL: tsURL)
         if let host = src.host { opt.referer = "https://\(host)/" }
 
         var dl = HLSDownloader(options: opt)
@@ -99,57 +225,29 @@ final class DownloadJob: ObservableObject, Identifiable {
             let result = try await dl.run(sourceURL: src)
             if Task.isCancelled { return }
 
-            let tsURL = result.fileURL
-            localURL = tsURL
-            outputName = tsURL.lastPathComponent
-            notes.append("✓ 下载完成 \(tsURL.lastPathComponent)（\(result.segmentCount) 个分片 · \(Int(result.duration)) 秒）")
+            duration = result.duration
+            fileSize = JobStore.size(of: tsURL.lastPathComponent)
+            notes.append("✓ 下载完成 \(result.segmentCount) 个分片 · \(Int(result.duration)) 秒")
 
-            let dir = tsURL.deletingLastPathComponent()
+            // ── 写一条只含这个 .ts 的 m3u8 ──────────────────────────
+            // 只在"转 mp4 失败"时才用得上（本地 .ts 必须靠本机 HTTP 包成 HLS 才能播）
+            let playName = "play_\(id.uuidString.prefix(8)).m3u8"
+            let wrotePlaylist = Self.writePlaylist(tsName: tsURL.lastPathComponent,
+                                                   duration: result.duration,
+                                                   folder: JobStore.dir,
+                                                   name: playName) != nil
 
-            // ── 1. 写一条只含这个 .ts 的 m3u8 ─────────────────────────
-            var hls: URL?
-            if let m3u8 = Self.writePlaylist(tsName: tsURL.lastPathComponent,
-                                             duration: result.duration,
-                                             folder: dir) {
-                notes.append("✓ 生成播放清单 \(m3u8.lastPathComponent)")
-
-                // ── 2. 起本机 HTTP 服务 ───────────────────────────────
-                // 这是**唯一**能让 AVPlayer / AVAssetExportSession 读到本地 TS 的办法：
-                // 本地 .ts 直接读不了，本地 .m3u8 也不行，HLS 必须来自 http。
-                if let port = LocalHTTPServer.shared.start(root: dir),
-                   let u = LocalHTTPServer.shared.url(m3u8.lastPathComponent) {
-                    hls = u
-                    playURL = u
-                    notes.append("✓ 本机播放服务已启动 127.0.0.1:\(port)")
-                } else {
-                    notes.append("✗ 本机播放服务起不来：\(LocalHTTPServer.shared.lastError ?? "未知原因")")
-                }
-            } else {
-                notes.append("✗ 写播放清单失败（磁盘空间或权限？）")
-            }
-
-            if hls == nil {
-                notes.append("· 本机服务没起来时，只能用在线地址播放")
-                notes.append("· 已下载的 .ts 在「文件」App 里，可用 VLC / nPlayer 打开")
-            }
-
-            // ── 3. 转 MP4 ────────────────────────────────────────────
-            // 注意：即便上面失败了也照样往下走 —— 上一版就是在这里
-            // 用 guard 直接 return，导致一个环节挂掉把整条链路全废掉。
-            //
-            // 而且转 MP4**不依赖**本机服务了：主路是自己解 TS 重封装
-            // （见 TSRemuxer.swift），离线、不重新编码、很快。
-            phase = "正在转 MP4…"
-            let mp4URL = tsURL.deletingPathExtension().appendingPathExtension("mp4")
-
+            // ── 自动转 MP4（留在程序内，不外发）────────────────────
+            phase = "正在转成 MP4…"
+            let mp4URL = JobStore.file(named: baseName + ".mp4")
             let (ok, log) = await Exporter.toMP4(
                 ts: tsURL,
-                hls: hls,
+                hls: wrotePlaylist ? LocalHTTPServer.shared.url(playName) : nil,
                 remote: src,
                 mp4: mp4URL,
                 onProgress: { [weak self] _, msg in
                     Task { @MainActor in
-                        self?.phase = msg.isEmpty ? "正在转 MP4…" : msg
+                        self?.phase = msg.isEmpty ? "正在转成 MP4…" : msg
                     }
                 })
 
@@ -158,31 +256,45 @@ final class DownloadJob: ObservableObject, Identifiable {
 
             if ok {
                 mp4Ready = true
-                localURL = mp4URL
                 outputName = mp4URL.lastPathComponent
-                phase = "完成：\(mp4URL.lastPathComponent)"
+                playlistName = nil
+                // 列表上只放短的那一段（"H.264 1920×1080 @25.00fps"），完整的在过程记录里
+                let detail = log.first(where: { $0.ok })?.detail ?? ""
+                resolution = detail.components(separatedBy: " · ").first ?? detail
+                fileSize = JobStore.size(of: outputName)
+                // 转成功了就把 .ts 和清单删掉 —— 留着只是白占一份空间
+                JobStore.remove([tsURL.lastPathComponent, playName])
+                phase = "完成 · MP4 已就绪"
+                notes.append("✓ 已转成 MP4（程序内保存，需要的话点「存相册」或「存文件夹」）")
             } else {
                 remuxError = log.last?.detail ?? "没成功"
-                phase = "可以播放；MP4 没转出来（原因见下方）"
+                outputName = tsURL.lastPathComponent
+                playlistName = wrotePlaylist ? playName : nil
+                phase = "可以播放；MP4 没转出来（原因见过程记录）"
             }
+
             finished = true
+            onUpdate?()
 
         } catch {
-            if Task.isCancelled { return }
+            if Task.isCancelled {
+                finished = true
+                onUpdate?()
+                return
+            }
             failed = error.localizedDescription
             phase = "失败"
             notes.append("✗ 下载失败：\(error.localizedDescription)")
+            finished = true
+            onUpdate?()
         }
     }
 
-    /// 给拼好的那个 .ts 写一条「只有一个分片」的 m3u8。
-    ///
-    /// HLS 规范允许分片是单条、长度任意。有了这条清单，本机 HTTP 服务
-    /// 才有东西可提供，AVPlayer 才能读。
-    private static func writePlaylist(tsName: String, duration: Double, folder: URL) -> URL? {
+    /// 给拼好的 .ts 写一条「只有一个分片」的 m3u8（HLS 允许单分片、长度任意）
+    private static func writePlaylist(tsName: String, duration: Double,
+                                      folder: URL, name: String) -> URL? {
         let dur = max(1, duration)
-        // 文件名里可能有中文和空格，m3u8 里按 URL 路径规则转义 ——
-        // 这样本机服务和播放器两边都能正确取到这个文件。
+        // 文件名可能有中文和空格，按 URL 路径规则转义，本机和播放器两边才都取得到
         let ref = tsName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tsName
         let text = """
         #EXTM3U
@@ -194,7 +306,7 @@ final class DownloadJob: ObservableObject, Identifiable {
         #EXT-X-ENDLIST
 
         """
-        let url = folder.appendingPathComponent("play_\(UUID().uuidString.prefix(8)).m3u8")
+        let url = folder.appendingPathComponent(name)
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             return url
@@ -203,15 +315,37 @@ final class DownloadJob: ObservableObject, Identifiable {
         }
     }
 
-    private static func safeFileName(_ s: String) -> String {
+    // MARK: - 文件名
+
+    static func safeFileName(_ s: String) -> String {
         var n = s.trimmingCharacters(in: .whitespacesAndNewlines)
         if n.isEmpty { n = "video" }
         let bad = CharacterSet(charactersIn: "/\\:*?\"<>|")
         n = n.components(separatedBy: bad).joined(separator: "_")
-        if n.count > 60 { n = String(n.prefix(60)) }
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-            .prefix(19)
-        return "\(n)_\(stamp)"
+        if n.count > 50 { n = String(n.prefix(50)) }
+        return n
+    }
+
+    static func stamp(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: d)
+    }
+
+    /// 给人看的尺寸
+    static func sizeText(_ n: Int64) -> String {
+        if n <= 0 { return "—" }
+        let mb = Double(n) / 1_048_576
+        if mb >= 1024 { return String(format: "%.2f GB", mb / 1024) }
+        if mb >= 1 { return String(format: "%.1f MB", mb) }
+        return String(format: "%.0f KB", Double(n) / 1024)
+    }
+
+    static func durationText(_ s: Double) -> String {
+        guard s > 0 else { return "—" }
+        let t = Int(s.rounded())
+        let h = t / 3600, m = (t % 3600) / 60, sec = t % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec)
+                     : String(format: "%d:%02d", m, sec)
     }
 }

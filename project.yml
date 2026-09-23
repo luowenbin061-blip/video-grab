@@ -48,9 +48,14 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        # 让下载的文件直接出现在「文件」App → 我的 iPhone → 视频抓取
-        UIFileSharingEnabled: true
-        LSSupportsOpeningDocumentsInPlace: true
+        # 注意：这里**故意不开** UIFileSharingEnabled / LSSupportsOpeningDocumentsInPlace。
+        # 需求是视频留在程序内（Application Support 私有目录），由用户自己点
+        # 「存相册」或「存文件夹」决定要不要出去。开了这两个键，
+        # Documents 会被系统「文件」App 自动列出来，那就等于自动转出程序了。
+        # 用户主动导出走的是 UIDocumentPickerViewController(forExporting:)，不受影响。
+        #
+        # 存相册要的权限说明
+        NSPhotoLibraryAddUsageDescription: 用于把你下载并转好的视频保存到系统相册（只在你点「存相册」时写入）。
         # 采集源的 m3u8 和分片常常是 http，放开 ATS（自用，不上架）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

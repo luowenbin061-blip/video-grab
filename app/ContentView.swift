@@ -1,25 +1,58 @@
 import SwiftUI
 
-/// 所有下载任务的容器。
+/// 所有下载任务的容器。**记录会落盘**，重启程序后还在。
 @MainActor
 final class DownloadCenter: ObservableObject {
     @Published var jobs: [DownloadJob] = []
 
+    init() {
+        // 启动时把上次的记录读回来（文件还在的就还能播、还能存相册）
+        jobs = JobStore.load().map { rec in
+            let job = DownloadJob(record: rec)
+            job.onUpdate = { [weak self] in self?.save() }
+            return job
+        }
+    }
+
     @discardableResult
     func add(title: String, url: String) -> DownloadJob {
         let job = DownloadJob(title: title, sourceURL: url)
+        job.onUpdate = { [weak self] in self?.save() }
         jobs.insert(job, at: 0)
+        save()
         job.start()
         return job
     }
 
-    var activeCount: Int { jobs.filter { !$0.finished && $0.failed == nil }.count }
+    /// 删除任务时把文件也删掉（用户明确要删，就别留垃圾）
+    func remove(at offsets: IndexSet) {
+        for i in offsets { jobs[i].cancel() }
+        let going = offsets.map { jobs[$0] }
+        jobs.remove(atOffsets: offsets)
+        for j in going { j.deleteFiles() }
+        save()
+    }
+
+    func remove(_ job: DownloadJob) {
+        job.cancel()
+        jobs.removeAll { $0.id == job.id }
+        job.deleteFiles()
+        save()
+    }
+
+    func save() {
+        JobStore.save(jobs.map { $0.snapshot() })
+    }
+
+    var activeCount: Int { jobs.filter { $0.isActive }.count }
+    var usedSpace: Int64 { JobStore.totalSize() }
 }
 
 struct ContentView: View {
 
     @StateObject private var model = BrowserModel()
     @StateObject private var downloads = DownloadCenter()
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showPanel = false
     @State private var showDownloads = false
@@ -85,6 +118,10 @@ struct ContentView: View {
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板
             showPanel = true
+        }
+        .onChange(of: scenePhase) { ph in
+            // 进后台/被打断前把记录落盘 —— 不然被系统杀掉就丢
+            if ph != .active { downloads.save() }
         }
         .onAppear { input = model.address }
     }
@@ -223,7 +260,13 @@ struct SniffPanel: View {
                                 row(item)
                             }
                         } header: {
-                            Text("共 \(model.items.count) 条 · 点一条开始下载")
+                            HStack {
+                                Text("共 \(model.items.count) 条 · 点一条开始下载")
+                                Spacer()
+                                if !model.updatedText.isEmpty {
+                                    Text("更新于 \(model.updatedText)")
+                                }
+                            }
                         }
                     }
                     .listStyle(.insetGrouped)
@@ -305,6 +348,14 @@ struct SniffPanel: View {
                         .font(.system(size: 13.5, weight: .medium))
                         .lineLimit(1)
                     Spacer()
+                    if item.isRecent {
+                        Text("新")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.red, in: Capsule())
+                    }
                     if picked?.id == item.id {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(Color.accentColor)
@@ -314,9 +365,25 @@ struct SniffPanel: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                Text("来源：\(item.src)")
+                // ★ 嗅探时间：让用户分清哪个是刚出来的、哪个是之前留下的
+                HStack(spacing: 5) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9.5))
+                    Text(item.timeText)
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    Text("· \(item.relativeText)")
+                        .font(.system(size: 11))
+                    if item.hits > 1 {
+                        Text("· 出现 \(item.hits) 次")
+                            .font(.system(size: 11))
+                    }
+                }
+                .foregroundStyle(item.isRecent ? Color.accentColor : .tertiary)
+
+                Text("来源：\(item.src)\(item.host.isEmpty ? "" : " · \(item.host)")")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
             .padding(.vertical, 3)
         }
@@ -330,6 +397,9 @@ struct SniffPanel: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(item.isDownloadable ? .primary : .secondary)
                 Spacer()
+                Text("嗅探于 \(item.timeText)")
+                    .font(.system(size: 11.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
                 Button("复制地址") { model.copy(item.url) }
                     .font(.system(size: 13))
             }
@@ -372,16 +442,30 @@ struct DownloadList: View {
         NavigationView {
             Group {
                 if center.jobs.isEmpty {
-                    Text("还没有下载任务")
-                        .foregroundStyle(.secondary)
+                    VStack(spacing: 8) {
+                        Image(systemName: "tray")
+                            .font(.system(size: 34))
+                            .foregroundStyle(.tertiary)
+                        Text("还没有下载任务")
+                            .foregroundStyle(.secondary)
+                        Text("下载好的视频留在程序里，\n需要时再点「存相册」或「存文件夹」。")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                    }
                 } else {
                     List {
-                        ForEach(center.jobs) { job in
-                            JobRow(job: job)
-                        }
-                        .onDelete { idx in
-                            for i in idx { center.jobs[i].cancel() }
-                            center.jobs.remove(atOffsets: idx)
+                        Section {
+                            ForEach(center.jobs) { job in
+                                JobRow(job: job)
+                            }
+                            .onDelete { idx in center.remove(at: idx) }
+                        } footer: {
+                            HStack {
+                                Text("共 \(center.jobs.count) 个任务")
+                                Spacer()
+                                Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
+                            }
                         }
                     }
                     .listStyle(.insetGrouped)
@@ -391,7 +475,7 @@ struct DownloadList: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { isPresented = false }
+                    Button("完成") { center.save(); isPresented = false }
                 }
             }
         }
@@ -404,14 +488,22 @@ struct JobRow: View {
     @State private var playing = false
     @State private var playTarget: URL?
     @State private var showLog = false
+    @State private var exporting = false
+    @State private var exportURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(job.title)
-                .font(.system(size: 14, weight: .medium))
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(job.title)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                Spacer()
+                Text(JobRecord.formatter.string(from: job.createdAt))
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
 
-            if job.failed == nil && !job.finished {
+            if job.isActive {
                 ProgressView(value: job.progress)
             }
 
@@ -421,84 +513,158 @@ struct JobRow: View {
                     .foregroundStyle(job.failed != nil ? .red : .secondary)
                     .lineLimit(2)
                 Spacer()
-                if job.total > 0 && !job.finished {
+                if job.total > 0 && job.isActive {
                     Text("\(job.done)/\(job.total)")
                         .font(.system(size: 11.5).monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
             }
 
-            if job.finished {
-                if job.mp4Ready {
-                    Label("MP4 已生成 · 去「文件」App → 我的 iPhone → 视频抓取",
-                          systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.green)
-                } else {
-                    Label("MP4 没转出来 · 原因在下面「过程记录」里",
-                          systemImage: "info.circle.fill")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.orange)
+            // 文件信息
+            if job.finished && !job.fileMissing {
+                HStack(spacing: 10) {
+                    if job.duration > 0 { meta("clock", DownloadJob.durationText(job.duration)) }
+                    if job.fileSize > 0 { meta("internaldrive", DownloadJob.sizeText(job.fileSize)) }
+                    if let r = job.resolution, !r.isEmpty { meta("film", r) }
                 }
+            }
 
-                // 播放按钮。
-                // 注意：这里**绝不能**退回本地文件 ——
-                // 本地 .ts 和本地 .m3u8 都不被 AVPlayer 接受（已查证），
-                // 所以只有两个选择：本机 HTTP 上的 m3u8（离线），或原始在线地址。
+            if job.fileMissing {
+                Label("文件已经不在了（可能被系统清理或删掉）", systemImage: "xmark.octagon")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.red)
+            } else if job.finished && !job.mp4Ready {
+                Label("MP4 没转出来 · 原因在「过程记录」里", systemImage: "info.circle.fill")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.orange)
+            }
+
+            if let n = job.notice {
+                Text(n)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.green)
+            }
+
+            // 操作按钮
+            if job.finished && !job.fileMissing {
                 HStack(spacing: 8) {
-                    if let u = job.playURL {
+                    if job.localPlaybackURL() != nil {
                         Button {
-                            playTarget = u
-                            playing = true
+                            // ★ 每次现取地址 —— 本机服务端口每次启动都可能变，
+                            //   用存下来的旧地址就是白屏的根源之一
+                            if let u = job.localPlaybackURL() {
+                                playTarget = u
+                                showLog = false
+                                playing = true
+                            } else {
+                                job.show("这个文件现在播不了")
+                            }
                         } label: {
-                            Label("播放（已下载）", systemImage: "play.circle.fill")
-                                .font(.system(size: 13))
+                            Label("播放", systemImage: "play.fill")
+                                .font(.system(size: 12.5, weight: .medium))
                         }
                         .buttonStyle(.borderedProminent)
-                    } else if let u = job.onlineURL {
+                    } else {
+                        // 本地没东西可播（比如文件被删了），退回原始在线地址，
+                        // 仍然走我们自己的播放器 —— 而不是丢给 Safari
                         Button {
-                            playTarget = u
-                            playing = true
+                            if let u = URL(string: job.sourceURL) {
+                                playTarget = u
+                                playing = true
+                            } else {
+                                job.show("地址不合法")
+                            }
                         } label: {
-                            Label("在线播放", systemImage: "play.circle")
-                                .font(.system(size: 13))
+                            Label("在线播放", systemImage: "play")
+                                .font(.system(size: 12.5, weight: .medium))
                         }
                         .buttonStyle(.bordered)
                     }
 
-                    if !job.notes.isEmpty {
-                        Button {
-                            showLog.toggle()
-                        } label: {
-                            Label(showLog ? "收起记录" : "过程记录",
-                                  systemImage: "list.bullet.rectangle")
-                                .font(.system(size: 12.5))
-                        }
-                        .buttonStyle(.bordered)
+                    Button {
+                        Task { await job.saveToPhotos() }
+                    } label: {
+                        Label(job.savedToPhotos ? "已存相册" : "存相册",
+                              systemImage: job.savedToPhotos ? "checkmark.circle.fill" : "photo.on.rectangle")
+                            .font(.system(size: 12.5, weight: .medium))
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(!job.canSaveToPhotos)
+
+                    Button {
+                        if let u = job.exportURL() {
+                            exportURL = u
+                            exporting = true
+                        } else {
+                            job.show("文件不在了")
+                        }
+                    } label: {
+                        Label("存文件夹", systemImage: "folder")
+                            .font(.system(size: 12.5, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
                 }
 
-                if showLog {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(job.notes.enumerated()), id: \.offset) { _, n in
-                            Text(n)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(n.hasPrefix("✗") ? .red :
-                                                 (n.hasPrefix("✓") ? .green : .secondary))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .padding(8)
-                    .background(Color(.tertiarySystemBackground))
-                    .cornerRadius(8)
+                if !job.canSaveToPhotos && job.exportURL() != nil {
+                    Text("相册不认 .ts，要等 MP4 转出来才能存相册；「存文件夹」可以保存原文件。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            if !job.notes.isEmpty {
+                Button {
+                    showLog.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showLog ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(showLog ? "收起过程记录" : "过程记录")
+                            .font(.system(size: 11.5))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if showLog {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(job.notes.enumerated()), id: \.offset) { _, n in
+                        Text(n)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(n.hasPrefix("✗") ? .red :
+                                             (n.hasPrefix("✓") ? .green : .secondary))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(8)
+                .background(Color(.tertiarySystemBackground))
+                .cornerRadius(8)
             }
         }
         .padding(.vertical, 3)
         .sheet(isPresented: $playing) {
-            if let u = playTarget { PlayerSheet(url: u) }
+            if let u = playTarget {
+                PlayerSheet(url: u, title: job.title)
+            }
         }
+        .sheet(isPresented: $exporting) {
+            if let u = exportURL {
+                DocumentExporter(url: u, isPresented: $exporting, onDone: { ok in
+                    job.show(ok ? "已保存到你选的位置" : "已取消")
+                })
+            }
+        }
+    }
+
+    private func meta(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon).font(.system(size: 9.5))
+            Text(text).font(.system(size: 11).monospacedDigit())
+        }
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -511,15 +677,26 @@ struct HelpView: View {
         NavigationView {
             List {
                 Section("这是干什么的") {
-                    Text("这个 App 自带一个浏览器。网页视频的真实地址只存在于「加载它的那个会话里」，所以要在自己的浏览器里看、在自己的进程里嗅，才拿得到。嗅到之后下载、拼接，最后直接落到「文件」App 里 —— 不需要任何解锁和付费。")
+                    Text("这个 App 自带一个浏览器。网页视频的真实地址只存在于「加载它的那个会话里」，所以要在自己的浏览器里看、在自己的进程里嗅，才拿得到。嗅到之后下载、自动转成 MP4 —— 视频**留在程序内**，需要时你自己决定存到相册还是某个文件夹。不需要任何解锁和付费。")
                         .font(.system(size: 13.5))
                 }
                 Section("怎么用") {
                     step(1, "在上面地址栏输入视频站地址，进去。")
                     step(2, "点一下播放，让视频真的开始加载（重要：先播几秒）。")
                     step(3, "长按视频画面，或点右下角圆圈 → 弹出嗅探结果。")
-                    step(4, "选标着 M3U8 的那一条 → 开始下载。")
-                    step(5, "下完去「文件」App → 我的 iPhone → 视频抓取 里拿文件。")
+                    step(4, "按嗅探时间选最新那条标着 M3U8 的 → 开始下载。")
+                    step(5, "下完自动转成 MP4。要保存就点「存相册」或「存文件夹」。")
+                }
+                Section("嗅探结果怎么看") {
+                    bullet("每条都标了嗅探时间（几点几分几秒 + “刚刚 / 3 分钟前”），刚出来的会带红色「新」标记并排在最前面 —— 这样才能确定点的是刚抓到的那条。")
+                    bullet("同一个地址被反复看到时，会显示「出现 N 次」，说明它更可能是真正在用的那个。")
+                    bullet("下拉或点右上角 ⋯ → 重新扫描，可以强制再扫一遍。")
+                }
+                Section("视频存在哪") {
+                    bullet("下载和转好的文件都留在 App 自己的私有目录里，不会自动出现在系统「文件」App 中。")
+                    bullet("「存相册」= 存进系统相册（需要相册写入权限，第一次会问）。")
+                    bullet("「存文件夹」= 弹出系统的存储面板，你自己选放在哪个文件夹，系统会复制一份过去，程序内的原件不受影响。")
+                    bullet("在下载列表里左滑删除，会把这个任务和它的文件一起删掉。")
                 }
                 Section("下载时注意") {
                     Label("尽量别切出去。iOS 会在 App 切到后台后把它挂起，下载会暂停。已下好的分片会保留，回来再点一次会接着下。",
@@ -527,9 +704,8 @@ struct HelpView: View {
                         .font(.system(size: 13))
                 }
                 Section("已知限制") {
-                    bullet("iOS 读不了本地的 .ts 视频文件（Apple 的限制，不是 bug）。所以 App 会在本机起一个小服务，把视频以 http://127.0.0.1 的形式给播放器读 —— 播放和转 MP4 都靠它。")
-                    bullet("转 MP4 要重新编码，比较慢（一部剧可能十几分钟，App 要留在前台）。转出来后是标准 mp4，发微信、存相册都行。")
-                    bullet("转不成时会保留 .ts 原文件。那个格式 iOS 系统播放器和微信都不认，要用 VLC、nPlayer 这类打开，或者拷到电脑看。")
+                    bullet("转 MP4 是「只换容器、不重新编码」，所以很快、画质无损。只有少数格式不规范的流才需要走备用方案。")
+                    bullet("转不成时会保留 .ts 原文件。那个格式 iOS 系统播放器和相册都不认，可以用「存文件夹」导出后用 VLC / nPlayer 打开。")
                     bullet("每一步成没成都会记在下载条目的「过程记录」里，出问题点开看一眼定位得很快。")
                     bullet("DRM 加密的付费影片拿不到，这个任何工具都做不到。")
                     bullet("有些站的地址是脚本算出来的、或走了第三方解析，可能嗅不到 —— 换个线路或等视频多播一会儿再试。")

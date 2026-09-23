@@ -4,12 +4,18 @@ import WebKit
 
 /// 嗅探到的一条地址。
 struct SniffItem: Identifiable, Hashable {
-    let id = UUID()
+    /// 用地址当 id（不能再用随机 UUID）——
+    /// 面板每刷新一次都会重建这些结构，随机 id 会让"已选中"和列表高亮一直跳。
+    var id: String { url }
     let url: String
     let kind: String        // hls / file / dash / blob / segment / other
     let src: String         // 来源：video.src、var now、fetch……
     let page: String
     var hits: Int
+    /// 第一次嗅到的时刻（JS 那边记的）
+    var first: Date
+    /// 最近一次被看到的时刻
+    var last: Date
 
     /// 能直接下的是 hls 和直链文件；blob / segment 只能当线索。
     var isDownloadable: Bool { kind == "hls" || kind == "file" }
@@ -31,6 +37,42 @@ struct SniffItem: Identifiable, Hashable {
         if last.isEmpty || last == "/" { return "video" }
         return last.removingPercentEncoding ?? last
     }
+
+    /// 页面域名，用来判断这条是在哪个站嗅到的
+    var host: String {
+        URL(string: page)?.host ?? URL(string: url)?.host ?? ""
+    }
+
+    /// 90 秒内出现过就算"新的"
+    var isRecent: Bool { Date().timeIntervalSince(last) < 90 }
+
+    /// HH:mm:ss
+    var timeText: String { Self.clock.string(from: first) }
+
+    /// 相对时间：刚刚 / 3 分钟前 / 今天 14:32 / 09-22 14:32
+    var relativeText: String {
+        let age = Date().timeIntervalSince(first)
+        if age < 60 { return "刚刚" }
+        if age < 3600 { return "\(Int(age / 60)) 分钟前" }
+        let cal = Calendar.current
+        let hm = Self.hm.string(from: first)
+        if cal.isDateInToday(first) { return "今天 \(hm)" }
+        if cal.isDateInYesterday(first) { return "昨天 \(hm)" }
+        return Self.mdhm.string(from: first)
+    }
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+    private static let hm: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
+    }()
+    private static let mdhm: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"; return f
+    }()
+
+    /// 给面板显示"更新于 HH:mm:ss"用
+    static func clockText(_ d: Date) -> String { clock.string(from: d) }
 }
 
 /// 浏览器 + 嗅探结果的中枢。
@@ -47,6 +89,8 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var toast: String?
     @Published var mseSeen = false
     @Published var hint: String?
+    /// 列表最后一次刷新时间（面板上显示，让用户知道数据新不新）
+    @Published var lastUpdated: Date?
 
     weak var webView: WKWebView?
 
@@ -138,27 +182,50 @@ final class BrowserModel: NSObject, ObservableObject {
     fileprivate func ingest(href: String, mse: Bool, raw: [[String: Any]]) {
         var merged: [String: SniffItem] = [:]
         for old in items { merged[old.url] = old }
+        let now = Date()
         for d in raw {
             guard let url = d["url"] as? String, !url.isEmpty else { continue }
+            // JS 那边用 epoch 毫秒记的 first / last；没给就退化成"现在"
+            let first = Self.date(fromMs: d["first"]) ?? merged[url]?.first ?? now
+            let last = Self.date(fromMs: d["last"]) ?? now
             let item = SniffItem(
                 url: url,
                 kind: (d["kind"] as? String) ?? "other",
                 src: (d["src"] as? String) ?? "",
                 page: (d["page"] as? String) ?? href,
-                hits: (d["hits"] as? Int) ?? 1)
+                hits: (d["hits"] as? Int) ?? 1,
+                first: first,
+                last: last)
             merged[url] = item
         }
         let order: [String: Int] = ["hls": 0, "file": 1, "dash": 2, "blob": 3, "other": 4, "segment": 9]
         items = merged.values.sorted {
             let a = order[$0.kind] ?? 5, b = order[$1.kind] ?? 5
-            return a != b ? a < b : $0.url < $1.url
+            if a != b { return a < b }
+            // 同类里**最近嗅到的排前面** —— 用户一般就是要刚出来的那一条
+            if $0.last != $1.last { return $0.last > $1.last }
+            return $0.url < $1.url
         }
+        lastUpdated = now
         mseSeen = mse
         if let web = webView, web.url?.absoluteString != href {
             // 只在第一次同步地址栏，避免打字时被覆盖
             if address.isEmpty { address = href }
         }
         updateHint()
+    }
+
+    private static func date(fromMs v: Any?) -> Date? {
+        if let n = v as? Double { return Date(timeIntervalSince1970: n / 1000) }
+        if let n = v as? Int { return Date(timeIntervalSince1970: Double(n) / 1000) }
+        if let n = v as? NSNumber { return Date(timeIntervalSince1970: n.doubleValue / 1000) }
+        return nil
+    }
+
+    /// 面板上显示「更新于 …」
+    var updatedText: String {
+        guard let t = lastUpdated else { return "" }
+        return SniffItem.clockText(t)
     }
 
     private func updateHint() {
