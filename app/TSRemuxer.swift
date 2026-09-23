@@ -221,10 +221,15 @@ extension TSRemuxer {
         private var audioBuildFails = 0
         // ── 诊断计数：出错时全写进错误信息，不再让你看不到里面发生了什么 ──
         private var videoStreamType = 0        // PMT 里声明的视频 stream_type
+        private var audioStreamType = 0        // PMT 里声明的音频 stream_type（0x0F=ADTS 0x11=LATM）
         private var videoPESCount = 0          // 收到的视频 PES 个数
         private var audioPESCount = 0          // 收到的音频 PES 个数
         private var adtsFrameCount = 0         // 解出的 ADTS 帧个数
         private var nalCounts: [Int: Int] = [:] // NAL 首字节直方图（能看出编码类型）
+        // ── 三段计时（AI 会诊建议）：慢在哪一看占比便知 ──
+        private var parseNs: Int64 = 0         // TS 解析耗时
+        private var waitNs: Int64 = 0          // 等 writer 就绪的累计耗时（含真实 sleep 开销）
+        private var appendNs: Int64 = 0        // append 本身的累计耗时
         /// writer 长时间不接收时的兜底：保留已写入部分产出 MP4，而不是全盘失败
         private var partialWrite = false
         private var stallInfo: String?
@@ -249,6 +254,7 @@ extension TSRemuxer {
         // MARK: 主流程
 
         func run() async throws -> Stats {
+            let startedAt = Date()
             let attrs = try? FileManager.default.attributesOfItem(atPath: ts.path)
             let total = (attrs?[.size] as? Int) ?? 0
             guard total > 0 else { throw Fail.unreadable("文件是空的") }
@@ -270,11 +276,13 @@ extension TSRemuxer {
                 buf.append(contentsOf: d)
 
                 var i = 0
+                let t0 = DispatchTime.now().uptimeNanoseconds
                 while i + 188 <= buf.count {
                     if buf[i] != 0x47 { i += 1; continue }   // 容错：找同步字节
                     parsePacket(buf, at: i)
                     i += 188
                 }
+                parseNs += Int64(DispatchTime.now().uptimeNanoseconds) - t0
                 leftover = Array(buf[i...])
 
                 try await pump()
@@ -302,7 +310,7 @@ extension TSRemuxer {
                 throw Fail.noParameterSets(
                     "PMT 声明视频类型 \(stHex)，收到 \(videoPESCount) 个视频 PES、"
                     + "\(videoPESCount > 0 ? "NAL 首字节分布 \(top.isEmpty ? "无" : top)" : "没有任何 NAL")；"
-                    + "音频：PID=\(audioPID < 0 ? "无" : String(audioPID))，"
+                    + "音频：PID=\(audioPID < 0 ? "无" : String(audioPID))（类型 \(audioStreamType > 0 ? String(format: "0x%02X", audioStreamType) : "未记录")），"
                     + "\(audioPESCount) 个 PES / \(adtsFrameCount) 个 ADTS 帧")
             }
             guard let w = writer, let vIn else { throw Fail.writer("没有开始写") }
@@ -348,8 +356,48 @@ extension TSRemuxer {
             if partialWrite, let s = stallInfo {
                 parts.append("⚠ 只包含部分内容：\(s)")
             }
+            // ── 耗时拆账：解析 / 等就绪 / 写入 各占多少，慢在哪一眼便知 ──
+            let elapsed = Date().timeIntervalSince(startedAt)
+            parts.append(String(format: "用时 %.1f 秒（解析 %d%% / 等待 %d%% / 写入 %d%%）",
+                                elapsed,
+                                pct(parseNs, elapsed),
+                                pct(waitNs, elapsed),
+                                pct(appendNs, elapsed)))
+
+            // ── 写完立刻体检输出文件 ──
+            // 本地 MP4 的轨道查询是可靠的（HLS 才返回空数组）。这一步能把
+            // 「音轨根本没写进文件」和「音轨在文件里但播不出声」彻底分开。
+            do {
+                let outAsset = AVURLAsset(url: mp4)
+                let aTracks = try await outAsset.loadTracks(withMediaType: .audio)
+                let vTracks = try await outAsset.loadTracks(withMediaType: .video)
+                if vTracks.isEmpty {
+                    parts.append("⚠ MP4 体检：文件里没有视频轨！")
+                }
+                if aTracks.isEmpty {
+                    parts.append("⚠ MP4 体检：文件里没有音轨！")
+                } else {
+                    var info = "MP4 体检：音轨存在 ✔"
+                    if let fd = try? await aTracks[0].load(.formatDescriptions).first,
+                       let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd) {
+                        info += String(format: "（%.0fHz %d 声道）",
+                                       asbd.pointee.mSampleRate,
+                                       Int(asbd.pointee.mChannelsPerFrame))
+                    }
+                    parts.append(info)
+                }
+            } catch {
+                parts.append("MP4 体检失败：\(error.localizedDescription)")
+            }
+
             stats.note = parts.joined(separator: " · ")
             return stats
+        }
+
+        /// 占比（防除零）
+        private func pct(_ ns: Int64, _ seconds: Double) -> Int {
+            guard seconds > 0.001 else { return 0 }
+            return Int((Double(ns) / 1_000_000_000.0 / seconds * 100).rounded())
         }
 
         /// 给「可能永远不返回的异步操作」套一个超时。
@@ -492,12 +540,16 @@ extension TSRemuxer {
                     if videoPID < 0 { videoPID = epid; videoStreamType = Int(st) }
                 } else if st == 0x0F || st == 0x11 || st == 0x03 || st == 0x04 {
                     // 明确的音频类型 —— 即使之前拿不准认过一个，也升级成确定的
-                    if audioPID < 0 || audioPIDIsGuess { audioPID = epid; audioPIDIsGuess = false }
+                    if audioPID < 0 || audioPIDIsGuess {
+                        audioPID = epid; audioPIDIsGuess = false; audioStreamType = Int(st)
+                    }
                 } else if audioPID < 0, st == 0x06 || st == 0x81 {
                     // 拿不准的（private data / AC-3）—— 先记着，遇到确定的会升级。
                     // 就算认错（比如其实是字幕），ADTS 同步找不到 → 队列是空的 →
                     // 10 秒兜底会放弃音频并写明原因，不会卡死。
-                    if audioPID < 0 { audioPID = epid; audioPIDIsGuess = true }
+                    if audioPID < 0 {
+                        audioPID = epid; audioPIDIsGuess = true; audioStreamType = Int(st)
+                    }
                 }
                 k += 5 + esLen
             }
@@ -666,6 +718,17 @@ extension TSRemuxer {
                     formatDescriptionOut: &fmt)
             }
             if st == 0, let f = fmt {
+                // 体检：把 cookie 取回来对一下 —— 确认系统真的按我们给的 ASC 建了格式。
+                // 不一致的话 esds 就是错的，解码器会拒播 → 无声。
+                var cookieLen: Int32 = 0
+                let cookiePtr = CMAudioFormatDescriptionGetMagicCookie(f, &cookieLen)
+                if let ptr = cookiePtr, cookieLen == asc.count {
+                    let back = Data(bytes: ptr, count: Int(cookieLen))
+                    if back != Data(asc) {
+                        let hex = back.map { String(format: "%02X", $0) }.joined(separator: " ")
+                        audioFormatError = "系统回读的 magic cookie(\(hex)) 与写入的不一致"
+                    }
+                }
                 audioFormat = f
             } else {
                 audioFormatError = "CMAudioFormatDescriptionCreate 失败 OSStatus=\(st)"
@@ -720,13 +783,13 @@ extension TSRemuxer {
             let v = AVAssetWriterInput(mediaType: .video,
                                        outputSettings: nil,
                                        sourceFormatHint: vf)
-            // ⚠️ 这里必须用 true（实时模式）。文档写得很清楚：
-            //   有多个输入时，asset writer 会按时间戳交错写入，只有"就绪"的输入才能
-            //   追加数据；而 expectsMediaDataInRealTime 为 false 时，就绪性会被
-            //   「两路进度是否匹配」影响 —— 我们按时间归并喂（见 pump），
-            //   用实时模式让就绪性只反映处理压力，不再被交错卡死。
-            //   因为我们是按时间戳顺序追加的，输出文件照样是交错好的。
-            v.expectsMediaDataInRealTime = true
+            // ★ v1.0.18 改回 false（离线标准模式）。
+            //   v1.0.13 曾因「先喂完视频再喂音频」被交错规则卡死而改成 true；
+            //   但喂入顺序早已改成按时间戳归并，交错规则不再适用 ——
+            //   而 true 的实时语义在离线写入时会把就绪性节流到接近实时时长
+            //   （用户实测 40-50MB 要 7-8 分钟），这才是慢的根源。
+            //   离线重封装的标准做法就是 false + 就绪轮询。
+            v.expectsMediaDataInRealTime = false
             guard w.canAdd(v) else { throw Fail.writer("视频轨加不进去（格式不被接受）") }
             w.add(v)
 
@@ -735,7 +798,7 @@ extension TSRemuxer {
                 let input = AVAssetWriterInput(mediaType: .audio,
                                                outputSettings: nil,
                                                sourceFormatHint: af)
-                input.expectsMediaDataInRealTime = true
+                input.expectsMediaDataInRealTime = false
                 if w.canAdd(input) { w.add(input); a = input }
                 else { audioFormatError = "音频轨加不进去" }
             }
@@ -811,13 +874,13 @@ extension TSRemuxer {
                 var did = false
                 if preferVideo, vReady, let it = popVideo() {
                     try appendNow(makeVideoSample(it), to: vIn); did = true
-                } else if !preferVideo, aReady, let aIn, let it = popAudio() {
-                    try appendNow(makeAudioSample(it), to: aIn); did = true
+                } else if !preferVideo, aReady, let aIn, !aq.isEmpty {
+                    try appendNow(makeAudioSampleBatch(popAudioBatch()), to: aIn); did = true
                 } else if vReady, let it = popVideo() {
                     // 首选那一路没收，就先喂另一路 —— 不能死等
                     try appendNow(makeVideoSample(it), to: vIn); did = true
-                } else if aReady, let aIn, let it = popAudio() {
-                    try appendNow(makeAudioSample(it), to: aIn); did = true
+                } else if aReady, let aIn, !aq.isEmpty {
+                    try appendNow(makeAudioSampleBatch(popAudioBatch()), to: aIn); did = true
                 }
 
                 if did { spin = 0; continue }
@@ -836,7 +899,10 @@ extension TSRemuxer {
                     vq.removeAll(); aq.removeAll(); pendingBytes = 0
                     break
                 }
+                // 记「真实」等待时长 —— Task.sleep(2ms) 实际可能睡 1~15ms（定时器合并）
+                let w0 = DispatchTime.now().uptimeNanoseconds
                 try? await Task.sleep(nanoseconds: 2_000_000)
+                waitNs += Int64(DispatchTime.now().uptimeNanoseconds) - w0
             }
         }
 
@@ -877,7 +943,9 @@ extension TSRemuxer {
             } else if sawPMT, audioPID < 0, pmtSeenCount >= 3 {
                 why = "PMT 重复出现 \(pmtSeenCount) 次都没有音频条目"
             } else if let v0 = videoFirstDTS, let vNow = lastVideoDTS, vNow - v0 >= 900_000 {
-                why = String(format: "视频走了 %.0f 秒音频还没出现", Double(vNow - v0) / 90_000.0)
+                // 带上音频侧的诊断：区分「根本没数据」和「有数据但解不出帧」（后者是 LATM 的特征）
+                why = String(format: "视频走了 %.0f 秒音频还没就绪（音频类型 0x%02X：收到 %d 个 PES，解出 %d 个 ADTS 帧）",
+                             Double(vNow - v0) / 90_000.0, audioStreamType, audioPESCount, adtsFrameCount)
             } else if pendingBytes > 48 * 1_048_576 {
                 why = "等待音频期间缓冲已超 48MB"
             }
@@ -895,11 +963,19 @@ extension TSRemuxer {
             return it
         }
 
-        private func popAudio() -> AItem? {
-            guard !aq.isEmpty else { return nil }
-            let it = aq.removeFirst()
-            pendingBytes -= it.frame.count
-            return it
+        /// 一次最多取 8 个音频帧 —— 合并成一个多样本 CMSampleBuffer。
+        /// append 次数从「每帧一次」（2 分钟约 8000 次）降到「每 8 帧一次」。
+        private func popAudioBatch() -> [AItem] {
+            let n = min(8, aq.count)
+            guard n > 0 else { return [] }
+            var out = [AItem]()
+            out.reserveCapacity(n)
+            for _ in 0..<n {
+                let it = aq.removeFirst()
+                pendingBytes -= it.frame.count
+                out.append(it)
+            }
+            return out
         }
 
         /// 音频样本时间换算到 90kHz，只用来跟视频比先后
@@ -914,18 +990,23 @@ extension TSRemuxer {
         /// 就绪性已经在外面判过了，这里直接追加。
         /// 样本构造失败（sb == nil）**绝不能静默跳过** ——
         /// 第一个视频没声音，查到最后发现失败全被吞了，界面上一点痕迹都没有。
+        /// 样本计数用 CMSampleBufferGetNumSamples（音频批量化后一个 buffer 装多帧）。
         private func appendNow(_ sb: CMSampleBuffer?, to input: AVAssetWriterInput) throws {
             guard let sb else {
                 if input.mediaType == .video { videoBuildFails += 1 }
                 else { audioBuildFails += 1 }
                 return
             }
-            if !input.append(sb) {
+            let a0 = DispatchTime.now().uptimeNanoseconds
+            let ok = input.append(sb)
+            appendNs += Int64(DispatchTime.now().uptimeNanoseconds) - a0
+            if !ok {
                 let why = writer?.error?.localizedDescription ?? "原因未提供"
                 throw Fail.writer("样本被拒：\(why)")
             }
-            if input.mediaType == .video { stats.videoSamples += 1 }
-            else { stats.audioSamples += 1 }
+            let n = CMSampleBufferGetNumSamples(sb)
+            if input.mediaType == .video { stats.videoSamples += n }
+            else { stats.audioSamples += n }
         }
 
         private func startWriterIfPossibleWithoutAudio() throws {
@@ -938,7 +1019,7 @@ extension TSRemuxer {
             let v = AVAssetWriterInput(mediaType: .video,
                                        outputSettings: nil,
                                        sourceFormatHint: vf)
-            v.expectsMediaDataInRealTime = true      // 同上：见 startWriterIfPossible 里的说明
+            v.expectsMediaDataInRealTime = false     // 同上：离线标准模式（见 startWriterIfPossible）
             guard w.canAdd(v) else { throw Fail.writer("视频轨加不进去") }
             w.add(v)
             guard w.startWriting() else {
@@ -985,31 +1066,46 @@ extension TSRemuxer {
             return st == 0 ? sb : nil
         }
 
-        private func makeAudioSample(_ it: AItem) -> CMSampleBuffer? {
-            guard let f = audioFormat, let base = base90 else { return nil }
+        /// 把最多 8 个 ADTS 帧合并成【一个多样本 CMSampleBuffer】。
+        /// · dataBuffer：帧字节连续拼接（AAC 帧之间不需要任何分隔）
+        /// · sampleSizeArray：每帧的字节数（系统按它切分）
+        /// · sampleTimingArray：每帧一条 timing（duration=1024/采样率，PTS 递增）
+        /// 这样 append 次数减为原来的 1/8，且对 AVAssetWriter 来说完全等价。
+        private func makeAudioSampleBatch(_ items: [AItem]) -> CMSampleBuffer? {
+            guard let f = audioFormat, let base = base90, !items.isEmpty else { return nil }
             let rate = Int32(sampleRate)
-            // 统一换算到「样本数」为时间单位，避免 90kHz 换算的取整误差累积
-            let shift = Int64((Double(it.pts - base) * sampleRate / 90000.0).rounded())
-            var t = shift + Int64(it.index) * 1024
-            if t <= lastAudioT { t = lastAudioT + 1024 }
-            lastAudioT = t
+            var data = [UInt8]()
+            data.reserveCapacity(items.reduce(0) { $0 + $1.frame.count })
+            var sizes = [Int]()
+            sizes.reserveCapacity(items.count)
+            var timings = [CMSampleTimingInfo]()
+            timings.reserveCapacity(items.count)
 
-            guard let bb = makeBlockBuffer(it.frame) else { return nil }
-            var timing = CMSampleTimingInfo(
-                duration: CMTime(value: 1024, timescale: rate),
-                presentationTimeStamp: CMTime(value: t, timescale: rate),
-                decodeTimeStamp: .invalid)
-            var size = it.frame.count
+            for it in items {
+                // 统一换算到「样本数」为时间单位，避免 90kHz 换算的取整误差累积
+                let shift = Int64((Double(it.pts - base) * sampleRate / 90000.0).rounded())
+                var t = shift + Int64(it.index) * 1024
+                if t <= lastAudioT { t = lastAudioT + 1024 }
+                lastAudioT = t
+                timings.append(CMSampleTimingInfo(
+                    duration: CMTime(value: 1024, timescale: rate),
+                    presentationTimeStamp: CMTime(value: t, timescale: rate),
+                    decodeTimeStamp: .invalid))
+                sizes.append(it.frame.count)
+                data.append(contentsOf: it.frame)
+            }
+
+            guard let bb = makeBlockBuffer(data) else { return nil }
             var sb: CMSampleBuffer?
             let st = CMSampleBufferCreateReady(
                 allocator: kCFAllocatorDefault,
                 dataBuffer: bb,
                 formatDescription: f,
-                sampleCount: 1,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timing,
-                sampleSizeEntryCount: 1,
-                sampleSizeArray: &size,
+                sampleCount: items.count,
+                sampleTimingEntryCount: timings.count,
+                sampleTimingArray: timings,
+                sampleSizeEntryCount: sizes.count,
+                sampleSizeArray: sizes,
                 sampleBufferOut: &sb)
             return st == 0 ? sb : nil
         }
