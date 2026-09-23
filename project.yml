@@ -31,10 +31,10 @@ settings:
 packages:
   FFmpegKit:
     url: https://github.com/kewlbear/FFmpeg-iOS
-    exactVersion: 0.0.6-b20230416-173821
+    revision: 6cfcee5421fd932e16315dc6c1ccd9fadfbb169a   # = v0.0.6-b20230416-173821
   FFmpegSupportPkg:
     url: https://github.com/kewlbear/FFmpeg-iOS-Support
-    exactVersion: 0.0.2
+    revision: c3487115c5f11c67f14f13b3a97a871f67200f34   # = v0.0.2
 
 targets:
   VideoGrab:
