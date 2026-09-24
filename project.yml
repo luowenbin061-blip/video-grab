@@ -68,10 +68,10 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
-        # App 内会起一个只绑 127.0.0.1 的 HTTP 服务，把本地 .ts 以 HLS 形式
+        # App 内会起一个 HTTP 服务：默认只绑 127.0.0.1，把本地 .ts 以 HLS 形式
         # 提供给 AVPlayer（本地 ts / 本地 m3u8 都读不了，只能走 http）。
-        # 回环本来不需要本地网络权限，这里声明一句是保险。
-        NSLocalNetworkUsageDescription: 用于在本机把下载好的视频提供给播放器读取（只绑 127.0.0.1，不对外）。
+        # 用户点「共享给电脑」时才改绑 0.0.0.0（同一 Wi-Fi 可见，带口令）。
+        NSLocalNetworkUsageDescription: 用于把手机里下载好的视频通过 Wi-Fi 提供给你自己的电脑浏览器下载（只有你点「共享给电脑」时才会开启，并带访问口令）。
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.videograb.app

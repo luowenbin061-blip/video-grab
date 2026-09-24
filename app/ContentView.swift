@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 /// 所有下载任务的容器。**记录会落盘**，重启程序后还在。
 @MainActor
@@ -55,6 +56,22 @@ final class DownloadCenter: ObservableObject {
     /// 把进度画进画中画小窗，让 App 进后台也继续跑（Stay 用的同一招）
     let pip = PiPProgress()
 
+    /// 局域网共享开着没有（给按钮上色用）
+    @Published var lanOn = false
+
+    /// 开始共享：同一 Wi-Fi 下的电脑用浏览器就能拿文件。成功返回可访问地址。
+    func startSharing() -> URL? {
+        guard LocalHTTPServer.shared.enableLAN(root: JobStore.dir) else { return nil }
+        lanOn = true
+        preparePiP()
+        return LocalHTTPServer.shared.lanURL
+    }
+
+    func stopSharing() {
+        LocalHTTPServer.shared.disableLAN()
+        lanOn = false
+    }
+
     /// 进后台前调用：把"进度从哪来"告诉 PiP
     func preparePiP() {
         pip.provider = { [weak self] in
@@ -63,6 +80,12 @@ final class DownloadCenter: ObservableObject {
             let total = act.reduce(0) { $0 + $1.total }
             let done = act.reduce(0) { $0 + $1.done }
             let first = act.first
+            // 没有下载任务、但开着共享 —— 也得撑住后台，不然电脑下到一半就断
+            if act.isEmpty, self.lanOn {
+                return PiPProgress.Snapshot(title: "局域网共享中",
+                                            detail: "电脑可在同一 Wi-Fi 下下载",
+                                            progress: 0, activeCount: 0)
+            }
             return PiPProgress.Snapshot(
                 title: first?.title ?? "视频抓取",
                 detail: first?.phase ?? "",
@@ -116,6 +139,7 @@ struct ContentView: View {
     @State private var showPanel = false
     @State private var showDownloads = false
     @State private var showHelp = false
+    @State private var showShare = false
     @State private var input = ""
 
     var body: some View {
@@ -174,6 +198,7 @@ struct ContentView: View {
             DownloadList(center: downloads, isPresented: $showDownloads)
         }
         .sheet(isPresented: $showHelp) { HelpView() }
+        .sheet(isPresented: $showShare) { LanShareView(downloads: downloads) }
         // 画中画的 layer 得挂在一个真实视图上（只要几个像素，几乎看不见）
         .background(alignment: .topLeading) {
             PiPHost(layer: downloads.pip.displayLayer)
@@ -188,10 +213,10 @@ struct ContentView: View {
         .onChange(of: scenePhase) { ph in
             // 进后台/被打断前把记录落盘 —— 不然被系统杀掉就丢
             if ph != .active { downloads.save() }
-            // 进后台且有任务在跑 → 起画中画保活（用户能看见进度，进程也继续跑）
+            // 进后台且有任务在跑（或开着局域网共享）→ 起画中画保活
             if ph == .background {
                 downloads.preparePiP()
-                if downloads.activeCount > 0 { downloads.pip.start() }
+                if downloads.activeCount > 0 || downloads.lanOn { downloads.pip.start() }
             } else if ph == .active {
                 // 回前台就不需要它了（它只在后台有意义）
                 downloads.pip.stop()
@@ -266,6 +291,8 @@ struct ContentView: View {
 
             HStack(spacing: 0) {
                 toolButton("questionmark.circle", "说明", enabled: true) { showHelp = true }
+                toolButton(downloads.lanOn ? "wifi.circle.fill" : "wifi", "共享给电脑",
+                           enabled: true, active: downloads.lanOn) { showShare = true }
                 toolButton("list.bullet.rectangle", "嗅探结果", enabled: true) { showPanel = true }
             }
         }
@@ -275,10 +302,12 @@ struct ContentView: View {
     }
 
     private func toolButton(_ icon: String, _ label: String,
-                            enabled: Bool, action: @escaping () -> Void) -> some View {
+                            enabled: Bool, active: Bool = false,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 19))
+                .foregroundStyle(active ? Color.accentColor : Color.primary)
                 .frame(width: 44, height: 32)
         }
         .disabled(!enabled)
@@ -791,6 +820,117 @@ struct JobRow: View {
     }
 }
 
+// MARK: - 局域网共享
+
+/// 同一 Wi-Fi 下，电脑浏览器打开一个地址就能看到、下载手机里下好的视频。
+///
+/// 口令只是门牌（挡同一 Wi-Fi 下瞎扫端口的陌生人），不是加密 ——
+/// 所以界面上必须说清楚「用完记得关」，而且关掉就换新口令。
+/// 手机自己的播放器走回环地址，不受口令影响。
+struct LanShareView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var downloads: DownloadCenter
+
+    @State private var url: URL?
+    @State private var problem: String?
+    @State private var copied = false
+
+    var body: some View {
+        NavigationView {
+            List {
+                if let url {
+                    Section {
+                        Text(url.absoluteString)
+                            .font(.system(size: 14, design: .monospaced))
+                            .textSelection(.enabled)
+                        Button {
+                            UIPasteboard.general.string = url.absoluteString
+                            copied = true
+                        } label: {
+                            Label(copied ? "已复制" : "复制地址",
+                                  systemImage: copied ? "checkmark" : "doc.on.doc")
+                        }
+                    } header: {
+                        Text("在电脑浏览器里打开这个地址")
+                    } footer: {
+                        Text("电脑和手机要在同一个 Wi-Fi。地址里那串口令是门牌：同一 Wi-Fi 下拿到地址的人都能下载，所以用完记得关掉。")
+                    }
+
+                    Section("怎么用") {
+                        bullet("手机保持这个 App 开着就行，锁屏也能用（会自动弹一个小窗保持运行）。")
+                        bullet("电脑上点文件名即开始下载。mp4 一般能直接在线播放；m3u8 建议下载后用播放器打开。")
+                        bullet("电脑打不开时：先确认手机连的是 Wi-Fi（只有蜂窝网时不开局域网），再看系统设置里有没有允许这个 App 访问「本地网络」。")
+                    }
+
+                    Section {
+                        Button(role: .destructive) {
+                            downloads.stopSharing()
+                            url = nil
+                            problem = nil
+                            copied = false
+                        } label: {
+                            Label("关闭共享", systemImage: "stop.circle")
+                        }
+                    } footer: {
+                        Text("关掉后地址立刻失效，下次开启会换一个新口令。")
+                    }
+                } else {
+                    Section {
+                        Label(problem ?? "没能开启共享", systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 14))
+                        Button { openSettings() } label: {
+                            Label("打开系统设置", systemImage: "gear")
+                        }
+                        Button { start() } label: {
+                            Label("再试一次", systemImage: "arrow.clockwise")
+                        }
+                    } header: {
+                        Text("没能开启")
+                    } footer: {
+                        Text("最常见的原因：手机没连 Wi-Fi，或者系统拒绝了「本地网络」权限。")
+                    }
+                }
+            }
+            .navigationTitle("共享给电脑")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .onAppear { if url == nil { start() } }
+    }
+
+    private func start() {
+        copied = false
+        problem = nil
+        guard downloads.startSharing() != nil else {
+            url = nil
+            problem = LocalHTTPServer.shared.lastError ?? "本机 HTTP 服务起不来"
+            return
+        }
+        url = LocalHTTPServer.shared.lanURL
+        if url == nil {
+            problem = "服务起来了，但没找到局域网地址 —— 手机可能没连 Wi-Fi"
+        }
+    }
+
+    private func openSettings() {
+        guard let u = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(u)
+    }
+
+    private func bullet(_ t: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("·").font(.system(size: 15, weight: .bold))
+            Text(t).font(.system(size: 13))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 // MARK: - 说明
 
 struct HelpView: View {
@@ -821,10 +961,17 @@ struct HelpView: View {
                     bullet("「存文件夹」= 弹出系统的存储面板，你自己选放在哪个文件夹，系统会复制一份过去，程序内的原件不受影响。")
                     bullet("在下载列表里左滑删除，会把这个任务和它的文件一起删掉。")
                 }
-                Section("下载时注意") {
-                    Label("尽量别切出去。iOS 会在 App 切到后台后把它挂起，下载会暂停。已下好的分片会保留，回来再点一次会接着下。",
-                          systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 13))
+                Section("下载时切后台") {
+                    bullet("切后台或锁屏时会自动弹出一个画中画小窗（里面是下载进度），靠它继续跑 —— 但别把 App 从多任务里上滑杀掉，那样就真停了。")
+                    bullet("已下好的分片会保留，回来再点一次会接着下。")
+                }
+                Section("共享给电脑") {
+                    bullet("点工具条上的 Wi-Fi 图标 → 同一 Wi-Fi 的电脑用浏览器打开显示的那个地址，就能看到、下载手机里的视频。")
+                    bullet("地址里带一串随机口令，是挡住同一个 Wi-Fi 下陌生人扫端口的；但它不是加密，拿到地址的人都能下 —— 用完点「关闭共享」，下次开启会换新口令。")
+                    bullet("关掉后手机自己的播放完全不受影响（播放走本机地址，不需要口令）。")
+                    if let ip = LocalHTTPServer.lanIPAddress() {
+                        bullet("手机当前的局域网地址是 \(ip)（换 Wi-Fi 会变）。")
+                    }
                 }
                 Section("已知限制") {
                     bullet("转 MP4 是「只换容器、不重新编码」，所以很快、画质无损。只有少数格式不规范的流才需要走备用方案。")

@@ -24,7 +24,14 @@ import Darwin
 ///   而 Network.framework 的状态机不给出可读的失败原因。
 ///   BSD socket 的 bind/getsockname 是确定的，失败时还能拿到 errno。
 ///
-/// 只绑 127.0.0.1，不对局域网开放。
+/// **两种模式**，默认只服务本机：
+///   · 普通模式：只绑 127.0.0.1，播放器自己取文件用，外面看不见。
+///   · 局域网模式（用户点「共享」才开）：改绑 0.0.0.0，同一 Wi-Fi 下的电脑
+///     用浏览器就能看到目录、下载文件。**必须带口令**（见 token）——
+///     回环地址（手机自己）不需要口令，所以播放这条路完全不受影响。
+///
+/// 口令放在路径第一段（`/<token>/xxx`），不认就 403。它不是加密，
+/// 只是一道门牌：挡住同一 Wi-Fi 下瞎扫端口的陌生人。用完关掉即可。
 final class LocalHTTPServer {
 
     static let shared = LocalHTTPServer()
@@ -39,6 +46,20 @@ final class LocalHTTPServer {
     private(set) var port: UInt16 = 0
     /// 起不来时的具体原因（含 errno），会显示到界面上 —— 不能再只丢一句"没起来"
     private(set) var lastError: String?
+
+    // MARK: - 局域网共享
+
+    /// 是否对局域网开放（默认关 —— 不主动把手机里的文件露出去）
+    private(set) var lanEnabled = false
+    /// 访问口令。局域网访客必须在路径第一段带上它；回环（手机自己）不用。
+    private(set) var token = ""
+
+    /// 电脑上要打开的地址，形如 http://192.168.1.7:18080/3f9a1c07b2e4d5a6/
+    /// 没连 Wi-Fi（拿不到局域网 IP）时返回 nil。
+    var lanURL: URL? {
+        guard lanEnabled, port > 0, let ip = Self.lanIPAddress() else { return nil }
+        return URL(string: "http://\(ip):\(port)/\(token)/")
+    }
 
     private init() {
         // 往已关闭的 socket 写会收到 SIGPIPE，默认动作是直接杀掉进程。
@@ -57,19 +78,83 @@ final class LocalHTTPServer {
         lastError = nil
         closeListener()
 
-        // 先用「系统分配端口」，不行再试几个固定端口
-        let attempts: [(host: String, port: Int)] =
-            [("127.0.0.1", 0), ("127.0.0.1", 18080), ("127.0.0.1", 18081),
-             ("127.0.0.1", 18082), ("127.0.0.1", 18083)]
+        // 局域网模式要先把固定端口试一遍 —— 地址稳定（18080）才好往电脑地址栏敲；
+        // 普通模式没人在意端口，让系统随便分配。
+        let host = lanEnabled ? "0.0.0.0" : "127.0.0.1"
+        let ports = lanEnabled ? [18080, 18081, 18082, 18083, 0] : [0, 18080, 18081, 18082, 18083]
 
-        for a in attempts {
-            if let p = tryListen(host: a.host, port: a.port) { return p }
+        for p in ports {
+            if let got = tryListen(host: host, port: p) { return got }
         }
         if lastError == nil { lastError = "所有端口都试过了，都起不来" }
         return nil
     }
 
     func stop() { closeListener() }
+
+    // MARK: - 开 / 关 局域网共享
+
+    /// 打开共享。root 传 nil 就沿用上次的目录。成功返回 true（去 lanURL 拿地址）。
+    @discardableResult
+    func enableLAN(root wanted: URL? = nil) -> Bool {
+        if let wanted { root = wanted }
+        guard let root else {
+            lastError = "还没有可共享的目录"
+            return false
+        }
+        if lanEnabled, running, port > 0 { return true }
+
+        if token.isEmpty { token = Self.makeToken() }
+        lanEnabled = true
+        closeListener()                 // 换绑地址（127.0.0.1 → 0.0.0.0）必须重新监听
+        let reached = start(root: root)
+        if reached == nil { lanEnabled = false; token = "" }
+        return reached != nil
+    }
+
+    /// 关掉共享，退回「只服务本机」。口令一并清掉，下次开又是新的。
+    func disableLAN() {
+        guard lanEnabled else { return }
+        lanEnabled = false
+        token = ""
+        let keep = root
+        closeListener()
+        if let keep { _ = start(root: keep) }
+    }
+
+    /// 16 位十六进制口令（UInt32.random 底层走的是系统的密码学随机源）
+    private static func makeToken() -> String {
+        String(format: "%08x%08x",
+               UInt32.random(in: UInt32.min...UInt32.max),
+               UInt32.random(in: UInt32.min...UInt32.max))
+    }
+
+    /// 手机当前的局域网 IPv4（优先 Wi-Fi 接口 en0）。没连 Wi-Fi 返回 nil。
+    static func lanIPAddress() -> String? {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+
+        var fallback: String?
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = cursor {
+            let ifa = p.pointee
+            if let sa = ifa.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) {
+                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(sa, socklen_t(sa.pointee.sa_len),
+                               &host, socklen_t(host.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    let ip = String(cString: host)
+                    if ip != "127.0.0.1" {
+                        if String(cString: ifa.ifa_name) == "en0" { return ip }
+                        if fallback == nil { fallback = ip }
+                    }
+                }
+            }
+            cursor = ifa.ifa_next
+        }
+        return fallback
+    }
 
     private func closeListener() {
         running = false
@@ -155,20 +240,33 @@ final class LocalHTTPServer {
 
     private func acceptLoop(_ fd: Int32) {
         while running {
-            var cli = sockaddr()
-            var len = socklen_t(MemoryLayout<sockaddr>.size)
-            let cfd = accept(fd, &cli, &len)
+            var cli = sockaddr_in()
+            var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let cfd: Int32 = withUnsafeMutablePointer(to: &cli) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    accept(fd, sa, &len)
+                }
+            }
             if cfd < 0 {
                 if errno == EINTR { continue }
                 if !running { break }
                 Thread.sleep(forTimeInterval: 0.05)   // 别空转烧 CPU
                 continue
             }
-            queue.async { [weak self] in self?.serve(cfd) }
+            // 记下对端地址：回环＝手机自己（播放器），局域网访客才要口令
+            let isLocal = Self.isLoopback(cli)
+            queue.async { [weak self] in self?.serve(cfd, isLocal: isLocal) }
         }
     }
 
-    private func serve(_ fd: Int32) {
+    /// 对端是不是回环地址（用 inet_pton 比对，避免自己算字节序）
+    private static func isLoopback(_ addr: sockaddr_in) -> Bool {
+        var loop = in_addr()
+        guard inet_pton(AF_INET, "127.0.0.1", &loop) == 1 else { return false }
+        return addr.sin_addr.s_addr == loop.s_addr
+    }
+
+    private func serve(_ fd: Int32, isLocal: Bool) {
         defer { close(fd) }
 
         // 收发都设超时，免得被半开连接占住线程
@@ -177,7 +275,7 @@ final class LocalHTTPServer {
         _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
         guard let head = readRequestHead(fd) else { return }
-        respond(fd, requestHead: head)
+        respond(fd, requestHead: head, isLocal: isLocal)
     }
 
     /// 读到请求头结束（\r\n\r\n）为止
@@ -210,7 +308,7 @@ final class LocalHTTPServer {
 
     // MARK: - 响应
 
-    private func respond(_ fd: Int32, requestHead: String) {
+    private func respond(_ fd: Int32, requestHead: String, isLocal: Bool) {
         let lines = requestHead.components(separatedBy: "\r\n")
         guard let first = lines.first, !first.isEmpty else {
             sendSimple(fd, status: 400, reason: "Bad Request")
@@ -227,25 +325,48 @@ final class LocalHTTPServer {
         if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
         path = path.removingPercentEncoding ?? path
         if path.hasPrefix("/") { path = String(path.dropFirst()) }
-        if path.isEmpty { path = "index.m3u8" }
+        // 空路径 = 根目录 → 走目录列表（播放器取的永远是具体文件名，不受影响）
 
         guard let root else {
             sendSimple(fd, status: 404, reason: "Not Found")
             return
         }
 
+        // 局域网访客必须带口令；手机自己的播放器（回环）放行，播放链路零影响
+        if lanEnabled, !isLocal, !token.isEmpty {
+            if path == token {
+                path = ""                                    // /<口令> → 根目录
+            } else if path.hasPrefix(token + "/") {
+                path = String(path.dropFirst(token.count + 1))
+            } else {
+                sendForbiddenPage(fd)
+                return
+            }
+        }
+
         // 防目录穿越
-        let rootPath = root.standardizedFileURL.path
-        let target = root.appendingPathComponent(path).standardizedFileURL
+        var rootPath = root.standardizedFileURL.path
+        while rootPath.hasSuffix("/") { rootPath.removeLast() }
+        let target = path.isEmpty
+            ? root.standardizedFileURL                     // 空路径 = 根目录本身
+            : root.appendingPathComponent(path).standardizedFileURL
         guard target.path == rootPath || target.path.hasPrefix(rootPath + "/") else {
             sendSimple(fd, status: 403, reason: "Forbidden")
             return
         }
 
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir),
-              !isDir.boolValue,
-              let fh = try? FileHandle(forReadingFrom: target) else {
+        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir) else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+        // 目录 → 目录列表页（「用电脑浏览器进来挑文件」就靠这一页）
+        if isDir.boolValue {
+            sendDirectoryList(fd, dir: target, relPath: path, isLocal: isLocal)
+            return
+        }
+
+        guard let fh = try? FileHandle(forReadingFrom: target) else {
             sendSimple(fd, status: 404, reason: "Not Found")
             return
         }
@@ -310,6 +431,88 @@ final class LocalHTTPServer {
         head += "Content-Length: 0\r\n"
         head += "Connection: close\r\n\r\n"
         _ = writeAll(fd, Data(head.utf8))
+    }
+
+    private func sendHTML(_ fd: Int32, status: Int, reason: String, html: String) {
+        let body = Data(html.utf8)
+        var head = "HTTP/1.1 \(status) \(reason)\r\n"
+        head += "Content-Type: text/html; charset=utf-8\r\n"
+        head += "Content-Length: \(body.count)\r\n"
+        head += "Cache-Control: no-store\r\n"
+        head += "Connection: close\r\n\r\n"
+        guard writeAll(fd, Data(head.utf8)) else { return }
+        _ = writeAll(fd, body)
+    }
+
+    private func sendForbiddenPage(_ fd: Int32) {
+        sendHTML(fd, status: 403, reason: "Forbidden", html: """
+        <!doctype html><meta charset="utf-8"><title>需要访问口令</title>
+        <body style="font:15px -apple-system,system-ui,sans-serif;margin:40px;color:#111">
+        <h2>需要访问口令</h2>
+        <p>请用手机上「视频抓取」里显示的那个完整地址打开，形如
+        <code>http://192.168.x.x:18080/口令/</code>。</p>
+        </body>
+        """)
+    }
+
+    /// 目录列表页 —— 电脑浏览器打开后直接点文件名就能下载 / 在线播放
+    private func sendDirectoryList(_ fd: Int32, dir: URL, relPath: String, isLocal: Bool) {
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        // 局域网访客点出来的链接也得带口令，不然点进去会被拒
+        let prefix = (lanEnabled && !isLocal && !token.isEmpty) ? "/\(token)" : ""
+        let base = relPath.isEmpty ? "" : relPath + "/"
+
+        var rows = ""
+        for n in names.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
+            let full = dir.appendingPathComponent(n)
+            var d: ObjCBool = false
+            guard fm.fileExists(atPath: full.path, isDirectory: &d) else { continue }
+            let enc = n.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? n
+            rows += "<li><a href=\"\(prefix)/\(base)\(enc)\">"
+            rows += d.boolValue ? "📁 \(Self.esc(n))/</a>" : "🎬 \(Self.esc(n))</a>"
+            if !d.boolValue { rows += "<span class=size>\(Self.sizeText(full))</span>" }
+            rows += "</li>\n"
+        }
+        if rows.isEmpty { rows = "<li class=size>（这个目录里还没有文件）</li>\n" }
+
+        var html = """
+        <!doctype html><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>视频抓取 · 文件</title>
+        <style>
+        body{font:15px -apple-system,system-ui,"PingFang SC",sans-serif;margin:26px;max-width:840px;color:#111}
+        h2{font-size:17px;margin:0 0 14px} ul{list-style:none;padding:0;margin:0}
+        li{margin:12px 0;line-height:1.4}
+        a{color:#0a66ff;text-decoration:none;word-break:break-all}
+        a:hover{text-decoration:underline}
+        .size{color:#888;font-size:13px;margin-left:10px}
+        .back{display:inline-block;margin-bottom:16px;font-size:14px}
+        .hint{margin-top:30px;color:#888;font-size:13px;line-height:1.6}
+        </style>
+        <h2>📂 \(relPath.isEmpty ? "根目录" : Self.esc(relPath))</h2>
+        """
+        if !relPath.isEmpty {
+            let parent = (relPath as NSString).deletingLastPathComponent
+            html += "<a class=back href=\"\(prefix)/\(parent.isEmpty ? "" : parent + "/")\">← 返回上一层</a>\n"
+        }
+        html += "<ul>\n\(rows)</ul>\n"
+        html += "<p class=hint>手机上的「视频抓取」正在共享这个目录。点文件名即可下载，"
+        html += "mp4 一般能直接在线播放。<br>要关掉共享，回到手机 App 点「关闭共享」。</p>\n"
+        sendHTML(fd, status: 200, reason: "OK", html: html)
+    }
+
+    private static func sizeText(_ url: URL) -> String {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let n = (attrs?[.size] as? Int64) ?? 0
+        return ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
+    }
+
+    private static func esc(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     /// 写完整，处理短写和 EINTR
