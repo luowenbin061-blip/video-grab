@@ -360,9 +360,7 @@ final class BrowserModel: NSObject, ObservableObject {
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
     func reload() {
-        items.removeAll()
-        groups.removeAll()
-        mseSeen = false
+        clearItems(silent: true)      // 顺带把标签快照一起清掉，免得旧数据复活
         webView?.reload()
     }
 
@@ -385,10 +383,25 @@ final class BrowserModel: NSObject, ObservableObject {
         showToast("已复制地址")
     }
 
-    func clearItems() {
+    /// 清空嗅探列表。
+    /// ★ 除了界面状态，还要清**当前标签的快照** —— 否则会出现这种情况：
+    ///   你清了列表，页面紧接着又上报一条，ingest 拿标签里残留的旧数据当底子
+    ///   合并，刚被你清掉的那一堆全回来了。
+    ///   （silent：reload 用得到 —— 它也要清，但不该弹「已清空列表」。）
+    func clearItems(silent: Bool = false) {
         items.removeAll()
         groups.removeAll()
-        showToast("已清空列表")
+        mseSeen = false
+        hint = nil
+        lastUpdated = nil
+        if let t = currentTab {
+            t.items.removeAll()
+            t.groups.removeAll()
+            t.mseSeen = false
+            t.hint = nil
+            t.lastUpdated = nil
+        }
+        if !silent { showToast("已清空列表") }
     }
 
     // MARK: - 给收藏 / 工具箱用的三个小接口
