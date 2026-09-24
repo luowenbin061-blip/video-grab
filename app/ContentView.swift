@@ -80,11 +80,15 @@ final class DownloadCenter: ObservableObject {
             let total = act.reduce(0) { $0 + $1.total }
             let done = act.reduce(0) { $0 + $1.done }
             let first = act.first
-            // 没有下载任务、但开着共享 —— 也得撑住后台，不然电脑下到一半就断
-            if act.isEmpty, self.lanOn {
-                return PiPProgress.Snapshot(title: "局域网共享中",
-                                            detail: "电脑可在同一 Wi-Fi 下下载",
-                                            progress: 0, activeCount: 0)
+            // 没有下载任务时小窗也得有像样的画面（开关可能正开着）
+            if act.isEmpty {
+                return self.lanOn
+                    ? PiPProgress.Snapshot(title: "局域网共享中",
+                                           detail: "电脑可在同一 Wi-Fi 下下载",
+                                           progress: 0, activeCount: 0)
+                    : PiPProgress.Snapshot(title: "后台保活中",
+                                           detail: "有下载任务时会显示进度",
+                                           progress: 0, activeCount: 0)
             }
             return PiPProgress.Snapshot(
                 title: first?.title ?? "视频抓取",
@@ -122,10 +126,13 @@ struct PiPErrorBanner: View {
             Text(e)
                 .font(.system(size: 11.5))
                 .foregroundStyle(.orange)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color(.tertiarySystemBackground), in: Capsule())
-                .padding(.bottom, 10)
+                .padding(.vertical, 8)
+                .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .allowsHitTesting(false)      // 绝不挡住任何按钮
         }
     }
 }
@@ -140,6 +147,7 @@ struct ContentView: View {
     @State private var showDownloads = false
     @State private var showHelp = false
     @State private var showShare = false
+    @State private var showPiPAsk = false
     @State private var input = ""
 
     var body: some View {
@@ -188,9 +196,17 @@ struct ContentView: View {
             }
 
             Divider()
+            pipBar
+            Divider()
             toolbar
         }
         .overlay(alignment: .top) { toastView }
+        .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
+            Button("取消", role: .cancel) {}
+            Button("好的") { downloads.pip.start() }
+        } message: {
+            Text("开启后会立刻出现一个画中画小窗，里面的进度就是下载进度。这样切到别的 App 或锁屏，下载都继续跑。随时关掉小窗即可停用。")
+        }
         .sheet(isPresented: $showPanel) {
             SniffPanel(model: model, downloads: downloads, isPresented: $showPanel)
         }
@@ -203,9 +219,6 @@ struct ContentView: View {
         .background(alignment: .topLeading) {
             PiPHost(layer: downloads.pip.displayLayer)
         }
-        .overlay(alignment: .bottom) {
-            PiPErrorBanner(pip: downloads.pip)
-        }
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板
             showPanel = true
@@ -215,11 +228,13 @@ struct ContentView: View {
             if ph != .active { downloads.save() }
             // 进后台且有任务在跑（或开着局域网共享）→ 起画中画保活
             if ph == .background {
+                // 故意不再自动起画中画：进了后台才起的话，画布层已经被后台事件
+                // 打成 failed（-11847「操作已中断」），必失败。改由前台那个开关负责。
                 downloads.preparePiP()
-                if downloads.activeCount > 0 || downloads.lanOn { downloads.pip.start() }
             } else if ph == .active {
-                // 回前台就不需要它了（它只在后台有意义）
-                downloads.pip.stop()
+                // 画中画是用户自己开的开关，回前台不主动关掉；
+                // 只有本来就闲着的时候，才把音频会话让出去。
+                if !downloads.pip.isRunning { downloads.pip.stop() }
             }
         }
         .onAppear {
@@ -312,6 +327,48 @@ struct ContentView: View {
         }
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.35)
+    }
+
+    // MARK: - 后台保活开关（学 Stay：在前台由用户点开，不偷偷在后台起）
+
+    private var pipBar: some View {
+        VStack(spacing: 6) {
+            PiPErrorBanner(pip: downloads.pip)
+
+            HStack(spacing: 8) {
+                Button {
+                    if downloads.pip.isRunning {
+                        downloads.pip.stop()
+                    } else {
+                        showPiPAsk = true          // 先问一句，再趁前台立刻起
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: downloads.pip.isRunning ? "pip.fill" : "pip")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(downloads.pip.isRunning ? "PIP 后台下载中 · 点此停用" : "PIP 后台下载")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(downloads.pip.isRunning ? Color.accentColor : Color(.tertiarySystemFill),
+                                in: Capsule())
+                    .foregroundStyle(downloads.pip.isRunning ? Color.white : Color.primary)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                if downloads.pip.isRunning, downloads.activeCount == 0 {
+                    Text("现在还没有下载任务")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Color(.secondarySystemBackground))
     }
 
     // MARK: - Toast
@@ -964,8 +1021,10 @@ struct HelpView: View {
                     bullet("在下载列表里左滑删除，会把这个任务和它的文件一起删掉。")
                 }
                 Section("下载时切后台") {
-                    bullet("切后台或锁屏时会自动弹出一个画中画小窗（里面是下载进度），靠它继续跑 —— 但别把 App 从多任务里上滑杀掉，那样就真停了。")
-                    bullet("已下好的分片会保留，回来再点一次会接着下。")
+                    bullet("先点底部的「PIP 后台下载」→ 确认后会出现一个画中画小窗（里面是下载进度）。有这个窗口，切到别的 App 或锁屏，下载都会继续跑。")
+                    bullet("为什么非要先点一下：iOS 在 App 进后台的那一刻会作废画布层，那时候才去起画中画必然失败（报「操作已中断」）。所以必须趁 App 还在前台时开好。")
+                    bullet("不想后台下载就不点它 —— 切后台下载会暂停，已下好的分片保留，回来点一次会接着下。")
+                    bullet("别把 App 从多任务里上滑杀掉，那样连画中画一起没。")
                 }
                 Section("共享给电脑") {
                     bullet("点工具条上的 Wi-Fi 图标 → 同一 Wi-Fi 的电脑用浏览器打开显示的那个地址，就能看到、下载手机里的视频。")
