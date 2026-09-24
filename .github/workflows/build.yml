@@ -76,6 +76,27 @@ jobs:
           echo "xcodebuild exit code: $code" | tee -a build.log
           exit $code
 
+      # 补齐「老式松散图标」。
+      # 背景：actool 实测只导出 AppIcon60x60@2x.png / AppIcon76x76@2x~ipad.png 两张松散
+      # PNG（@3x 只存在于 Assets.car 里）。而 Info.plist 里
+      # CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconFiles 存的是**基础名**
+      # （iPhone 是 AppIcon60x60），系统那条老式查找路径会按屏幕倍数去拼
+      # AppIcon60x60@3x.png —— @3x 设备（iPhone）拿不到这张，就会画成系统占位网格。
+      # 主屏图标走的是 Asset Catalog 那条路（CFBundleIconName=AppIcon），所以主屏正常、
+      # 只有任务切换器这类走老式路径的地方露白。
+      # 必须放在「签名」之前：签名之后往 .app 里加文件会让签名失效。
+      - name: Fill legacy loose icon files
+        if: steps.build.outcome == 'success'
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          SRC=app/Assets.xcassets/AppIcon.appiconset
+          cp -f "$SRC/icon-60@2x.png" "$APP/AppIcon60x60@2x.png"
+          cp -f "$SRC/icon-60@3x.png" "$APP/AppIcon60x60@3x.png"
+          cp -f "$SRC/icon-76@1x.png" "$APP/AppIcon76x76~ipad.png"
+          cp -f "$SRC/icon-76@2x.png" "$APP/AppIcon76x76@2x~ipad.png"
+          echo "=== .app 里的松散图标 ===" | tee -a build.log
+          ls -la "$APP"/*.png | tee -a build.log
+
       - name: Ad-hoc sign (ldid + codesign 双保险)
         id: sign
         if: steps.build.outcome == 'success'
