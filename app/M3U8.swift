@@ -30,6 +30,9 @@ struct M3U8Playlist {
     /// 有的话说明编码参数/时间基变了，拼接时要留意（可能导致进度条不准）。
     var discontinuityBefore: Set<Int> = []
     var key: Key?
+    /// #EXT-X-MEDIA-SEQUENCE —— 清单没写 IV 时，某个分片的 IV 由
+    /// 「它 + 该分片的下标」推出来，所以要带出去给下载器用。
+    var mediaSequence = 0
     var rawText = ""
 
     var totalDuration: Double { segmentDurations.reduce(0, +) }
@@ -127,14 +130,11 @@ struct M3U8Playlist {
             if currentKey != nil { p.key = currentKey }
         }
 
-        // 没写 IV 的话，HLS 规范规定用分片序号当 IV
-        if var k = p.key, k.iv == nil {
-            var be = UInt32(mediaSequence).bigEndian
-            var iv = Data(count: 16)
-            withUnsafeBytes(of: &be) { iv.replaceSubrange(12..<16, with: $0) }
-            k.iv = iv
-            p.key = k
-        }
+        // 注意：这里**不能**把「按 mediaSequence 推导的 IV」写进 key ——
+        // 一个 key 是所有分片共用的，而每个分片规范上该用自己的序号当 IV。
+        // 之前这里写了个单值兜底，结果只有第 0 个分片 IV 正确、其余全错；
+        // 现在只把 mediaSequence 带出去，由下载器逐分片算（mediaSequence + 下标）。
+        p.mediaSequence = mediaSequence
 
         return p
     }
