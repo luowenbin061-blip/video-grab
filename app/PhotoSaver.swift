@@ -46,26 +46,6 @@ enum Saver {
             })
         }
     }
-
-    /// 存一张图到系统相册（工具箱 · 截图用）。
-    /// 授权那段跟上面存视频是同一套规则：只在用户点了按钮时才请求。
-    static func toPhotos(image: UIImage) async throws {
-        let status: PHAuthorizationStatus = await withCheckedContinuation { c in
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { s in c.resume(returning: s) }
-        }
-        guard status == .authorized || status == .limited else { throw Fail.noPhotoPermission }
-
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            PHPhotoLibrary.shared().performChanges({
-                PHAssetChangeRequest.creationRequestForAsset(from: image)
-            }, completionHandler: { ok, err in
-                if let err { c.resume(throwing: err) }
-                else if ok { c.resume() }
-                else { c.resume(throwing: NSError(domain: "VideoGrab", code: 10,
-                                                  userInfo: [NSLocalizedDescriptionKey: "相册写入没有成功"])) }
-            })
-        }
-    }
 }
 
 /// 调系统「存储到文件」面板，让用户自己选位置。

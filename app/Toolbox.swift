@@ -1,13 +1,15 @@
 import SwiftUI
 import UIKit
 
-/// 工具箱：截图 / 页内查找 / 翻译 —— 都只作用于当前网页。
-/// 三个动作都是「先收起这张卡片再动手」：卡片盖着的时候网页那层不是最新画面。
+/// 工具箱 —— 都只作用于当前网页。
+///
+/// 截图那一项已按用户要求删除（实测对自用场景没用）。
+/// 翻译正在重做：之前那条「跳到百度翻译」是跳出去翻、不是原地翻译，不算数。
 ///
 /// ★ 这里必须显式写 @MainActor：BrowserModel 是 @MainActor 类型，
 ///   用 @ObservedObject / @StateObject 包住它的 View 会被自动推断成 @MainActor，
 ///   但本页用的是裸 `let model: BrowserModel`，拿不到那层推断 →
-///   直接调 model.currentURL / model.load() 会被判成 non-isolated 而编译不过。
+///   直接调 model.presentFind() 会被判成 non-isolated 而编译不过。
 @MainActor
 struct ToolboxView: View {
     let model: BrowserModel
@@ -18,26 +20,22 @@ struct ToolboxView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section("当前网页") {
-                    Button { shoot() } label: {
-                        item("camera", "截图当前页面", "存到系统相册")
-                    }
+                Section {
                     Button { find() } label: {
                         item("magnifyingglass", "页内查找", "系统原生查找条，和 Safari 一样")
                     }
-                    Button { translate() } label: {
-                        item("character.book.closed", "翻译整个网页", "跳到百度整页翻译")
+                    Button { translateNotReady() } label: {
+                        item("character.book.closed", "翻译整个网页",
+                             "重做中：下一版改成原地翻译", dim: true)
                     }
+                } header: {
+                    Text("当前网页")
+                } footer: {
+                    Text("翻译正在重做 —— 之前那条「跳到百度翻译」是跳出去翻，不是原地翻译，不算数。下一版做「原地把页面文字翻成中文」，并且能一键切回原文。")
                 }
 
                 if let note {
                     Section { Text(note).font(.system(size: 13)) }
-                }
-
-                Section("说明") {
-                    Text("翻译是「跳出去」用百度的整页翻译，不是把文字原地替换 —— 看完点底栏的后退就能回到原网页。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("工具箱")
@@ -50,7 +48,8 @@ struct ToolboxView: View {
         }
     }
 
-    private func item(_ icon: String, _ title: String, _ sub: String) -> some View {
+    private func item(_ icon: String, _ title: String, _ sub: String,
+                      dim: Bool = false) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 17))
@@ -61,57 +60,23 @@ struct ToolboxView: View {
             }
             Spacer()
         }
+        .foregroundStyle(dim ? Color.secondary : Color.primary)
     }
 
-    // MARK: - 三个动作
+    // MARK: - 动作
 
-    private func shoot() {
-        isPresented = false
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)      // 等卡片收干净再截
-            guard let img = await model.snapshotImage() else {
-                model.showToast("截图失败：没拿到画面")
-                return
-            }
-            do {
-                try await Saver.toPhotos(image: img)
-                model.showToast("截图已存进相册")
-            } catch {
-                model.showToast("存相册失败：\(error.localizedDescription)")
-            }
-        }
-    }
-
+    /// 页内查找：先收起这张卡片，等网页那层回到前台再把系统查找条调出来
     private func find() {
         isPresented = false
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
-            if !model.presentFind() {
-                model.showToast("页内查找要 iOS 16 以上")
+            if let why = model.presentFind() {
+                model.showToast(why)          // 起不来说明真实原因，不再一律甩锅系统版本
             }
         }
     }
 
-    private func translate() {
-        guard let page = model.currentURL else {
-            note = "还没有打开网页。"
-            return
-        }
-        guard var comp = URLComponents(string: "https://fanyi.baidu.com/transpage") else {
-            note = "链接拼不出来。"
-            return
-        }
-        comp.queryItems = [
-            URLQueryItem(name: "query", value: page),
-            URLQueryItem(name: "from", value: "auto"),
-            URLQueryItem(name: "to", value: "zh"),
-            URLQueryItem(name: "source", value: "url"),
-        ]
-        guard let u = comp.url else {
-            note = "链接拼不出来。"
-            return
-        }
-        isPresented = false
-        model.load(u.absoluteString)
+    private func translateNotReady() {
+        note = "翻译正在重做：下一版改成「原地把页面文字翻成中文」，还能一键切回原文。"
     }
 }

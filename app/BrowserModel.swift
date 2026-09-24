@@ -156,6 +156,12 @@ final class BrowserModel: NSObject, ObservableObject {
         ucc.add(self, contentWorld: world, name: "vgSniff")
 
         let wv = WKWebView(frame: .zero, configuration: cfg)
+        // 工具箱的「页内查找」：iOS 16 起 WKWebView 自带系统的 UIFindInteraction，
+        // 但**默认是关的** —— 不打开这个开关，wv.findInteraction 就是 nil。
+        // 上一版漏了这行，导致点「页内查找」时拿不到对象，还被错报成「要 iOS 16 以上」。
+        if #available(iOS 16.0, *) {
+            wv.isFindInteractionEnabled = true
+        }
         wv.navigationDelegate = self
         wv.uiDelegate = self
         wv.allowsBackForwardNavigationGestures = true
@@ -226,21 +232,19 @@ final class BrowserModel: NSObject, ObservableObject {
         return s
     }
 
-    /// 工具箱 · 截图：拿当前网页的画面（async 版，省得在回调里绕 MainActor）
-    func snapshotImage() async -> UIImage? {
-        guard let wv = webView else { return nil }
-        return await withCheckedContinuation { c in
-            wv.takeSnapshot(with: nil) { img, _ in c.resume(returning: img) }
-        }
-    }
-
-    /// 工具箱 · 页内查找：调系统原生查找条（iOS 16+）。返回有没有调起来。
-    func presentFind() -> Bool {
-        if #available(iOS 16.0, *), let fi = webView?.findInteraction {
+    /// 工具箱 · 页内查找：调系统原生查找条。
+    /// 返回 nil = 已调起；返回一段文字 = 没起来，并说明**真实**原因
+    /// （不再像上一版那样一律甩锅给系统版本）。
+    func presentFind() -> String? {
+        if #available(iOS 16.0, *) {
+            guard let wv = webView else { return "网页还没准备好，稍后再试" }
+            guard let fi = wv.findInteraction else {
+                return "查找功能没能启用（isFindInteractionEnabled 没生效）"
+            }
             fi.presentFindNavigator(showingReplace: false)
-            return true
+            return nil
         }
-        return false
+        return "页内查找要 iOS 16 以上"
     }
 
     // MARK: - 从 JS 收到的数据
