@@ -15,9 +15,14 @@ import UIKit
 @MainActor
 struct ToolboxView: View {
     let model: BrowserModel
+    /// 导入的视频要进下载列表 —— 这是工具箱里第一个不依赖网页的工具
+    let center: DownloadCenter
     @Binding var isPresented: Bool
 
     @State private var note: String?
+    @State private var showImportSource = false
+    @State private var showPhotoPicker = false
+    @State private var showFilePicker = false
 
     var body: some View {
         NavigationView {
@@ -36,6 +41,17 @@ struct ToolboxView: View {
                     Text("翻译暂缓 —— 之前那条「跳到百度翻译」是跳出去翻，不是原地翻译，不算数。要做就做「原地把页面文字翻成中文、还能一键切回原文」那种，等以后再说。")
                 }
 
+                Section {
+                    Button { showImportSource = true } label: {
+                        item("square.and.arrow.down.on.square", "导入视频",
+                             "从相册或「文件」选视频放进下载列表，可多选")
+                    }
+                } header: {
+                    Text("导入")
+                } footer: {
+                    Text("导入的视频和下载的放在一起。系统能播的原样收下；播不了的自动转成 MP4。")
+                }
+
                 if let note {
                     Section { Text(note).font(.system(size: 13)) }
                 }
@@ -45,6 +61,24 @@ struct ToolboxView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { isPresented = false }
+                }
+            }
+            .confirmationDialog("从哪里导入？", isPresented: $showImportSource,
+                                titleVisibility: .visible) {
+                Button("从相册（可多选）") { showPhotoPicker = true }
+                Button("从「文件」（可多选）") { showFilePicker = true }
+                Button("取消", role: .cancel) {}
+            }
+            .sheet(isPresented: $showPhotoPicker) {
+                PhotoPickerBox { files in
+                    center.addImported(files)
+                    if !files.isEmpty { isPresented = false }   // 收起卡片，让用户看到导入进度
+                }
+            }
+            .sheet(isPresented: $showFilePicker) {
+                FilePickerBox { files in
+                    center.addImported(files)
+                    if !files.isEmpty { isPresented = false }
                 }
             }
         }

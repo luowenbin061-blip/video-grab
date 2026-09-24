@@ -489,6 +489,103 @@ final class DownloadJob: ObservableObject, Identifiable {
         }
     }
 
+    // MARK: - 本地导入（工具箱「导入视频」）
+
+    /// 从相册/「文件」导入的任务卡。跟下载不同：没有网络阶段，
+    /// 直接进入「拷进程序内 → 探测能不能播 → 播不了才转码」。
+    static func makeImported(originalName: String) -> DownloadJob {
+        let name = originalName.replacingOccurrences(of: "\.\w+$", with: "",
+                                                     options: .regularExpression)
+        let j = DownloadJob(title: name.isEmpty ? "导入的视频" : name,
+                            sourceURL: "local://import")
+        j.phase = "正在导入…"
+        return j
+    }
+
+    /// 导入流程。产物字段（outputName / mp4Ready / notes）跟下载共用 ——
+    /// 列表卡片、播放、存相册/存文件夹全都不用改。
+    func runImport(from tempURL: URL) async {
+        let ext = tempURL.pathExtension
+        let dest = JobStore.file(named: baseName + "." + (ext.isEmpty ? "mov" : ext))
+
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: tempURL, to: dest)
+            try? FileManager.default.removeItem(at: tempURL)      // 临时副本使命完成
+        } catch {
+            failed = "导入失败：\(error.localizedDescription)"
+            phase = "失败"
+            notes.append("✗ 拷不进程序内：\(error.localizedDescription)")
+            finished = true
+            onUpdate?()
+            return
+        }
+        notes.append("✓ 已复制进程序内（\(DownloadJob.sizeText(JobStore.size(of: dest.lastPathComponent)))）")
+
+        // ── 探测：系统认不认这个文件（比看扩展名准 —— 扩展名会骗人，
+        //    有的 .mp4 其实是系统不认的编码，有的 .mkv 里装的是认的）──
+        phase = "正在识别视频…"
+        let asset = AVURLAsset(url: dest)
+        let tracks = try? await asset.loadTracks(withMediaType: .video)
+        let playable = (tracks?.isEmpty == false)
+
+        if playable {
+            // 按「mp4 不转、能播的也不折腾」的约定原样留着
+            outputName = dest.lastPathComponent
+            mp4Ready = true
+            duration = (try? await asset.load(.duration).seconds) ?? 0
+            fileSize = JobStore.size(of: outputName)
+            if let t = tracks?.first, let size = try? await t.load(.naturalSize) {
+                resolution = "\(Int(abs(size.width)))×\(Int(abs(size.height)))"
+            }
+            phase = "完成 · 本地导入"
+            notes.append("✓ 系统能直接播，无需转码")
+            finished = true
+            onUpdate?()
+            await makeThumbnail(from: dest)
+            return
+        }
+
+        // 播不了 → 转成 MP4（-c copy 只换壳，秒级；
+        // 除非里面装的是 iOS 不认的编码 —— 那种确实会慢，界面上写清楚）
+        notes.append("· 系统播不了这个格式，试着转成 MP4…")
+        phase = "正在转成 MP4…"
+        let mp4URL = JobStore.file(named: baseName + ".mp4")
+        let (ok, log) = await Exporter.toMP4(ts: dest, hls: nil, remote: nil,
+                                             mp4: mp4URL,
+                                             onProgress: { [weak self] p, msg in
+                                                 Task { @MainActor in
+                                                     guard let self else { return }
+                                                     self.stage = .convert
+                                                     self.convertProgress = p
+                                                     self.phase = msg.isEmpty ? "正在转成 MP4…" : msg
+                                                 }
+                                             })
+        notes.append(contentsOf: log.map(\.line))
+        if ok {
+            outputName = mp4URL.lastPathComponent
+            mp4Ready = true
+            fileSize = JobStore.size(of: outputName)
+            JobStore.remove([dest.lastPathComponent])     // 换壳成功，原文件就多余了
+            duration = (try? await AVURLAsset(url: mp4URL).load(.duration).seconds) ?? 0
+            let detail = log.first(where: { $0.ok })?.detail ?? ""
+            resolution = detail.components(separatedBy: " · ").first ?? detail
+            phase = "完成 · 本地导入（已转成 MP4）"
+            finished = true
+            onUpdate?()
+            await makeThumbnail(from: mp4URL)
+        } else {
+            // 转码失败：原文件留着（系统播不了但文件是好的），可以存出去用别的软件处理
+            remuxError = log.last?.detail ?? "没成功"
+            outputName = dest.lastPathComponent
+            phase = "导入完成；这个格式系统播不了，转码也没成"
+            finished = true
+            onUpdate?()
+        }
+    }
+
     // MARK: - 文件名
 
     static func safeFileName(_ s: String) -> String {

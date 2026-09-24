@@ -28,6 +28,20 @@ final class DownloadCenter: ObservableObject {
         return job
     }
 
+    /// 工具箱「导入视频」：相册/文件选来的视频进这里。
+    /// 立刻建卡（用户看得到「正在导入」），复制/探测/转码在后台走。
+    func addImported(_ files: [SavedFile]) {
+        guard !files.isEmpty else { return }
+        for f in files {
+            let job = DownloadJob.makeImported(originalName: f.originalName)
+            job.onUpdate = { [weak self] in self?.save() }
+            jobs.insert(job, at: 0)
+            let src = f.url
+            Task { await job.runImport(from: src) }
+        }
+        save()
+    }
+
     /// 删除任务时把文件也删掉（用户明确要删，就别留垃圾）
     func remove(at offsets: IndexSet) {
         for i in offsets { jobs[i].cancel() }
@@ -306,7 +320,7 @@ struct ContentView: View {
             SettingsView(downloads: downloads, store: store, isPresented: $showSettings)
         }
         .sheet(isPresented: $showToolbox) {
-            ToolboxView(model: model, isPresented: $showToolbox)
+            ToolboxView(model: model, center: downloads, isPresented: $showToolbox)
         }
         .sheet(isPresented: $showTabs) {
             TabsView(model: model, isPresented: $showTabs)
