@@ -134,6 +134,7 @@ struct ContentView: View {
     @State private var showHelp = false
     @State private var showShare = false
     @State private var showPiPAsk = false
+    @State private var showMenu = false        // 底部功能卡片是否展开
     @State private var input = ""
 
     var body: some View {
@@ -182,11 +183,27 @@ struct ContentView: View {
             }
 
             Divider()
-            statusBar
-            Divider()
-            gridBar
+            PiPErrorBanner(pip: downloads.pip)
+                .padding(.horizontal, 8)
+            progressLine
+            bottomBar
         }
         .overlay(alignment: .top) { toastView }
+        // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
+        .overlay(alignment: .bottom) {
+            if showMenu {
+                ZStack(alignment: .bottom) {
+                    Color.black.opacity(0.05)
+                        .ignoresSafeArea()
+                        .onTapGesture { showMenu = false }
+                    funcMenuCard
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 62)      // 浮在底栏之上
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: showMenu)
         .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
             Button("取消", role: .cancel) {}
             Button("好的") { downloads.pip.start() }
@@ -229,11 +246,11 @@ struct ContentView: View {
     // 原来「后退 前进 刷新」挤在底部工具栏里，三条工具栏 + 一排图标按钮堆在一起，
     // 功能看着重叠。现在顶上一行只管「去哪儿」，其余全部收到下面。
 
-    private var topBar: some View {
-        HStack(spacing: 4) {
-            navButton("chevron.left", "后退", enabled: model.canGoBack) { model.goBack() }
-            navButton("chevron.right", "前进", enabled: model.canGoForward) { model.goForward() }
+    // MARK: - 顶部（只有地址栏这一行）
+    // 后退/前进挪到底栏去了 —— 参考图里导航就在下面，顶上一行只负责「去哪儿」。
 
+    private var topBar: some View {
+        HStack(spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "globe")
                     .font(.system(size: 13))
@@ -272,14 +289,48 @@ struct ContentView: View {
         .background(Color(.secondarySystemBackground))
     }
 
-    /// 顶部导航按钮（44×44，够手指点）
-    private func navButton(_ icon: String, _ label: String,
-                           enabled: Bool, action: @escaping () -> Void) -> some View {
+    // MARK: - 底部栏（‹ › ≡ ⬇ ⟳）
+    // 「≡」是那张功能卡片的入口 —— 功能不常驻页面，点开才出现。
+    // 底栏只放「浏览时随时要用」的几个动作。
+
+    private var bottomBar: some View {
+        HStack(spacing: 0) {
+            barButton("chevron.left", "后退", enabled: model.canGoBack) { model.goBack() }
+            barButton("chevron.right", "前进", enabled: model.canGoForward) { model.goForward() }
+            barButton("line.3.horizontal", "功能", active: showMenu) { showMenu.toggle() }
+            barButton("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
+                showDownloads = true
+            }
+            barButton("arrow.clockwise", "刷新") { model.reload() }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 5)
+        .background(Color(.secondarySystemBackground))
+    }
+
+    /// 底栏按钮：五等分、44pt 高（够手指点）
+    private func barButton(_ icon: String, _ label: String,
+                           enabled: Bool = true, active: Bool = false,
+                           badge: Int = 0,
+                           action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 17, weight: .medium))
-                .frame(width: 44, height: 40)
-                .contentShape(Rectangle())
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: icon)
+                    .font(.system(size: 19))
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 0.5)
+                        .background(Color.red, in: Capsule())
+                        .offset(x: 11, y: -7)
+                }
+            }
+            .foregroundStyle(active ? Color.accentColor : Color.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -287,48 +338,74 @@ struct ContentView: View {
         .accessibilityLabel(label)
     }
 
-    // MARK: - 底部宫格（4 列 × 2 行，每格 2 字）
-    // 「按钮杂乱 + 文案啰嗦」的解法在这里：主界面只留这些高频入口，
-    // 每个按钮只写两个字，长说明一律不放界面上。
+    // MARK: - 功能卡片（点底栏「≡」调出）
+    // 8 个入口都收在这里，页面上不常驻。
+    // 顺序按参考图：收藏/历史 · 收藏网址 · 下载管理 · 设置 / 工具箱 · 复制URL · 多窗口 · 刷新
 
-    private var gridBar: some View {
-        VStack(spacing: 2) {
+    private var funcMenuCard: some View {
+        VStack(spacing: 4) {
             HStack(spacing: 0) {
-                gridCell("star", "收藏", soon: true)
-                gridCell("bookmark", "网址", soon: true)
-                gridCell("arrow.down.circle", "下载", badge: downloads.activeCount) {
+                menuCell("clock.arrow.circlepath", "收藏/历史", soon: true)
+                menuCell("bookmark", "收藏网址", soon: true)
+                menuCell("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
                     showDownloads = true
                 }
-                gridCell("gearshape", "设置") { showHelp = true }
+                menuCell("gearshape", "设置") { showHelp = true }
             }
             HStack(spacing: 0) {
-                gridCell("wrench.and.screwdriver", "工具", soon: true)
-                gridCell("doc.on.doc", "复制") { copyCurrentURL() }
-                gridCell("square.on.square", "多窗", soon: true)
-                gridCell("arrow.clockwise", "刷新") { model.reload() }
+                menuCell("wrench.and.screwdriver", "工具箱", soon: true)
+                menuCell("link", "复制URL") { copyCurrentURL() }
+                menuCell("square.on.square", "多窗口", soon: true)
+                menuCell("arrow.clockwise", "刷新") { model.reload() }
             }
+
+            Divider().padding(.horizontal, 10)
+
+            // PIP / 共享是「开关」不是「功能」，所以放卡片底部单独一行 ——
+            // 留在页面上就又是「固定按钮」了。
+            HStack(spacing: 8) {
+                downloadStatus
+                Spacer(minLength: 4)
+                pill(downloads.pip.isRunning ? "pip.fill" : "pip",
+                     "PIP 保活", on: downloads.pip.isRunning) {
+                    if downloads.pip.isRunning {
+                        downloads.pip.stop()
+                    } else {
+                        showPiPAsk = true          // 先问一句，再趁前台立刻起（学 Stay）
+                    }
+                }
+                pill(downloads.lanOn ? "wifi.circle.fill" : "wifi",
+                     "共享给电脑", on: downloads.lanOn) { showShare = true }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 2)
         }
-        .padding(.top, 5)
-        .padding(.bottom, 3)
-        .background(Color(.secondarySystemBackground))
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.15), radius: 18, y: 6)
     }
 
-    /// 宫格里的一格。
+    /// 卡片里的一格。
     /// - soon: 本轮还没做的功能 —— 画成灰的、点了说明白，别让按钮看着能用却不动。
-    private func gridCell(_ icon: String, _ label: String,
+    private func menuCell(_ icon: String, _ label: String,
                           soon: Bool = false, badge: Int = 0,
                           action: @escaping () -> Void = {}) -> some View {
         Button {
+            showMenu = false                       // 选完就收起
             if soon {
                 model.showToast("「\(label)」下一批加进来")
             } else {
                 action()
             }
         } label: {
-            VStack(spacing: 3) {
+            VStack(spacing: 5) {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: icon)
-                        .font(.system(size: 20))
+                        .font(.system(size: 22))
                     if badge > 0 {
                         Text("\(badge)")
                             .font(.system(size: 9, weight: .bold))
@@ -336,14 +413,15 @@ struct ContentView: View {
                             .padding(.horizontal, 4)
                             .padding(.vertical, 0.5)
                             .background(Color.red, in: Capsule())
-                            .offset(x: 11, y: -7)
+                            .offset(x: 12, y: -8)
                     }
                 }
                 Text(label)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11))
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 46)
+            .frame(height: 54)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -364,71 +442,48 @@ struct ContentView: View {
         model.copy(s)          // 已有实现：写剪贴板 + 弹提示
     }
 
-    // MARK: - 状态条（下载进度 / PIP 保活 / 局域网共享）
-    // 这三个都是「开关状态要一眼看见」的东西，所以不进宫格，常驻一条细条。
-    // 左边下载态：有活跃任务才画，闲着就什么都不画；右边两个胶囊常驻 ——
-    // PIP 和共享的开关必须一直够得着（等批次 3 做出设置页，再把它们收进去）。
-
-    private var statusBar: some View {
-        VStack(spacing: 5) {
-            PiPErrorBanner(pip: downloads.pip)
-
-            HStack(spacing: 8) {
-                downloadStatus
-                Spacer(minLength: 4)
-
-                pill(downloads.pip.isRunning ? "pip.fill" : "pip",
-                     "PIP", on: downloads.pip.isRunning) {
-                    if downloads.pip.isRunning {
-                        downloads.pip.stop()
-                    } else {
-                        showPiPAsk = true      // 先问一句，再趁前台立刻起（学 Stay）
-                    }
-                }
-
-                pill(downloads.lanOn ? "wifi.circle.fill" : "wifi",
-                     "共享", on: downloads.lanOn) { showShare = true }
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color(.secondarySystemBackground))
-    }
+    // MARK: - 底栏顶上那条 2pt 进度线（有活跃下载才出现）
+    // 它只是「状态」，不是按钮 —— 所以不占一行、也不需要点。
 
     @ViewBuilder
-    private var downloadStatus: some View {
-        let act = downloads.jobs.filter { $0.isActive }
-        if !act.isEmpty {
-            let total = act.reduce(0) { $0 + $1.total }
-            let done = act.reduce(0) { $0 + $1.done }
-            HStack(spacing: 6) {
-                if total > 0 {
-                    ProgressView(value: Double(done) / Double(total))
-                        .progressViewStyle(.linear)
-                        .frame(width: 56)
-                    Text("下载中 \(Int(Double(done) / Double(total) * 100))%")
-                        .font(.system(size: 11, weight: .medium))
-                        .monospacedDigit()
-                } else {
-                    // 分片下完了、还没开始转码时 total 会是 0 —— 别显示「0%」误导人
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.65)
-                        .frame(width: 14, height: 14)
-                    Text(act.first?.phase ?? "处理中")
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                }
-                if act.count > 1 {
-                    Text("· \(act.count) 个")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+    private var progressLine: some View {
+        if downloads.activeCount > 0 {
+            if activeTotal > 0 {
+                ProgressView(value: Double(activeDone) / Double(activeTotal))
+                    .progressViewStyle(.linear)
+                    .frame(height: 2)
+            } else {
+                // 分片下完了、还没开始转码时 total 是 0 —— 用不确定态动画，别显示「0%」
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(height: 2)
             }
         }
     }
 
-    /// 状态条上的小胶囊开关：开着是实色，关着是浅底
+    private var activeJobs: [DownloadJob] { downloads.jobs.filter { $0.isActive } }
+    private var activeTotal: Int { activeJobs.reduce(0) { $0 + $1.total } }
+    private var activeDone: Int { activeJobs.reduce(0) { $0 + $1.done } }
+
+    /// 卡片里的下载状态文字（进度条已经画在底栏上了，这里只报数）
+    @ViewBuilder
+    private var downloadStatus: some View {
+        if activeJobs.isEmpty {
+            Text("没有进行中的下载")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        } else if activeTotal > 0 {
+            Text("下载中 \(Int(Double(activeDone) / Double(activeTotal) * 100))%")
+                .font(.system(size: 11, weight: .medium))
+                .monospacedDigit()
+        } else {
+            Text(activeJobs.first?.phase ?? "处理中")
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+        }
+    }
+
+    /// 卡片里的小胶囊开关：开着是实色，关着是浅底
     private func pill(_ icon: String, _ label: String,
                       on: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
