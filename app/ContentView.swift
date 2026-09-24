@@ -102,19 +102,21 @@ final class DownloadCenter: ObservableObject {
 
 /// 画中画需要一个真实存在的视图层级，layer 才稳（这里只要几个像素，几乎看不见）
 struct PiPHost: UIViewRepresentable {
-    let layer: AVSampleBufferDisplayLayer
+    let pip: PiPProgress
 
     func makeUIView(context: Context) -> UIView {
         let v = UIView(frame: CGRect(x: 0, y: 0, width: 3, height: 3))
         v.isUserInteractionEnabled = false
         v.backgroundColor = .clear
-        v.layer.addSublayer(layer)
-        layer.frame = v.bounds
+        v.layer.addSublayer(pip.displayLayer)
+        pip.displayLayer.frame = v.bounds
+        pip.attach(view: v)          // 让 PiP 那边能读窗口/场景状态做诊断
         return v
     }
 
     func updateUIView(_ v: UIView, context: Context) {
-        layer.frame = v.bounds
+        pip.displayLayer.frame = v.bounds
+        pip.attach(view: v)
     }
 }
 
@@ -218,7 +220,7 @@ struct ContentView: View {
         .sheet(isPresented: $showShare) { LanShareView(downloads: downloads) }
         // 画中画的 layer 得挂在一个真实视图上（只要几个像素，几乎看不见）
         .background(alignment: .topLeading) {
-            PiPHost(layer: downloads.pip.displayLayer)
+            PiPHost(pip: downloads.pip)
         }
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板

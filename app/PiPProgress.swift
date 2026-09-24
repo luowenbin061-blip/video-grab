@@ -39,6 +39,28 @@ final class PiPProgress: NSObject, ObservableObject {
 
     private let layer = AVSampleBufferDisplayLayer()
     private var controller: AVPictureInPictureController?
+    /// 必须**留着**这个引用：content source 被释放掉的话画中画会没
+    private var source: AVPictureInPictureController.ContentSource?
+    /// 梯子里是否已经重建过一次控制器（避免无休止重建）
+    private var rebuilt = false
+    /// 宿主视图（层就挂在它上面）—— 只用来读窗口/场景状态做诊断
+    private weak var hostView: UIView?
+
+    /// PiPHost 建好视图后调一下
+    func attach(view: UIView) { hostView = view }
+
+    /// 我们这一侧读到的场景状态（和 AVKit 抱怨的那个 UIScene 对比用）
+    private var sceneText: String {
+        guard let w = hostView?.window else { return "宿主窗口=没有（还没进窗口）" }
+        guard let s = w.windowScene else { return "宿主窗口=在，但没关联场景" }
+        switch s.activationState {
+        case .foregroundActive: return "场景=前台活跃"
+        case .foregroundInactive: return "场景=前台但不活跃"
+        case .background: return "场景=后台"
+        case .unattached: return "场景=未关联"
+        @unknown default: return "场景=其它"
+        }
+    }
     private var timer: Timer?
     private var frameIndex: Int64 = 0
     private var startAttempts = 0
@@ -52,14 +74,40 @@ final class PiPProgress: NSObject, ObservableObject {
     override init() {
         super.init()
         layer.videoGravity = .resizeAspect
-        let source = AVPictureInPictureController.ContentSource(
+        // **故意不在这里建 controller / content source** —— 见 ensureController()
+    }
+
+    /// 懒创建控制器 + content source。
+    ///
+    /// 为什么不能放在 init 里：那时 App 刚启动，这个层还没被挂到任何窗口上
+    /// （PiPHost 还没建），AVKit 给 content source 记下的场景状态不是
+    /// UISceneActivationStateForegroundActive —— 之后无论怎么试都是：
+    ///   AVKitErrorDomain -1001: The UIScene for the content source has an
+    ///   activation state other than UISceneActivationStateForegroundActive,
+    ///   which is not allowed.
+    /// 改成第一次要用的那一刻才建：那时层早就挂在窗口里了（层状态=渲染中就是证据），
+    /// App 也肯定在前台活跃。
+    @discardableResult
+    private func ensureController() -> AVPictureInPictureController? {
+        if let c = controller { return c }
+        let s = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: layer,
             playbackDelegate: self)
-        let c = AVPictureInPictureController(contentSource: source)
+        let c = AVPictureInPictureController(contentSource: s)
         c.delegate = self
-        // 回前台不自动弹；后台起不起由我们自己判断（有任务才起）
+        // 回前台不自动弹；起不起由界面上那个开关决定
         c.canStartPictureInPictureAutomaticallyFromInline = false
+        source = s
         controller = c
+        return c
+    }
+
+    /// 把控制器和 content source 整个丢掉重建（只在梯子中途用一次）
+    private func rebuildController() {
+        guard controller?.isPictureInPictureActive != true else { return }
+        controller = nil
+        source = nil
+        ensureController()
     }
 
     /// 给界面挂载用（layer 要在一个视图层级里，PiP 才稳）
@@ -80,7 +128,7 @@ final class PiPProgress: NSObject, ObservableObject {
     func start() {
         lastError = nil
         guard isSupported else { lastError = "这台设备不支持画中画"; return }
-        guard let c = controller else { lastError = "画中画控制器没建起来"; return }
+        guard let c = ensureController() else { lastError = "画中画控制器没建起来"; return }
         if c.isPictureInPictureActive { return }
 
         // 画中画「必须」有一个 active 的 playback 音频会话才会就绪。
@@ -92,7 +140,8 @@ final class PiPProgress: NSObject, ObservableObject {
 
         starting = true
         startAttempts = 0
-        climb(c)
+        rebuilt = false
+        climb()
     }
 
     /// 先画一帧垫着。AVKit 拒绝给「刚建好、还从没显示过」的层启画中画，
@@ -133,11 +182,7 @@ final class PiPProgress: NSObject, ObservableObject {
     /// 直接拒绝启动 —— 报 AVKitErrorDomain -1001「Failed to start picture in picture」。
     /// 而「层什么时候才算显示好了」事先无从得知，所以按短梯子反复试，
     /// 而不是靠猜一个睡眠时长。顺带也把「确认框关闭动画」这段时间让过去。
-    private func climb(_ c: AVPictureInPictureController) {
-        if c.isPictureInPictureActive {
-            starting = false
-            return
-        }
+    private func climb() {
         startAttempts += 1
         guard startAttempts <= 10 else {
             starting = false
@@ -145,17 +190,35 @@ final class PiPProgress: NSObject, ObservableObject {
             lastError = "画中画没能启动（试了 10 次，约 7 秒）"
                 + (lastFailure.map { "；系统说：\($0)" } ?? "")
                 + (broken ? "；画布层被后台事件打断过，请在前台重开" : "")
-                + "（层状态=\(layerStatusText)，音频会话=\(AppAudio.describe())）"
+                + "（层状态=\(layerStatusText)，\(sceneText)，音频会话=\(AppAudio.describe())）"
             return
         }
 
-        renderFrame()                     // 每次先保证层里真有帧（没显示过的层会被拒）
+        // 前两级失败过 → 把 content source / 控制器整个重建一次再继续试。
+        // 系统若抱怨「content source 的场景状态不对」，这是我们唯一能纠正它那次
+        // 关联的机会（此刻层肯定已在窗口里、App 也肯定在前台活跃）。
+        if startAttempts == 3, lastFailure != nil, !rebuilt {
+            rebuilt = true
+            rebuildController()
+        }
+
+        guard let c = ensureController() else {
+            starting = false
+            lastError = "画中画控制器没建起来"
+            return
+        }
+        if c.isPictureInPictureActive {
+            starting = false
+            return
+        }
+
+        renderFrame()                     // 每次先保证层里真有帧
         c.startPictureInPicture()         // 起不来只会回调失败，不会崩
 
         let ladder: [Double] = [0.35, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0]
-        let wait = ladder[min(startAttempts - 1, ladder.count - 1)]
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-            self?.climb(c)
+        let idx = min(max(startAttempts - 1, 0), ladder.count - 1)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ladder[idx]) { [weak self] in
+            self?.climb()
         }
     }
 
