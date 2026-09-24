@@ -838,13 +838,15 @@ struct LanShareView: View {
     var body: some View {
         NavigationView {
             List {
-                if let url {
+                // 注意：这里不能写成 `if let url` —— 会把 @State 的 url 遮蔽成 let，
+                // 下面「关闭共享」里的 url = nil 就编译不过（CI 抓到的就是这个）
+                if let link = url {
                     Section {
-                        Text(url.absoluteString)
+                        Text(link.absoluteString)
                             .font(.system(size: 14, design: .monospaced))
                             .textSelection(.enabled)
                         Button {
-                            UIPasteboard.general.string = url.absoluteString
+                            UIPasteboard.general.string = link.absoluteString
                             copied = true
                         } label: {
                             Label(copied ? "已复制" : "复制地址",
