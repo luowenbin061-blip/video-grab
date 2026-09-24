@@ -367,9 +367,16 @@
       return null;
     }
 
+    // 这次长按到的视频元素 —— fire 时取 currentSrc（video 实际在播的地址）
+    var pressedVideo = null;
+
     function fire() {
       try {
-        window.webkit.messageHandlers.vgSniff.postMessage({ type: 'longpress' });
+        var u = '';
+        if (pressedVideo) {
+          u = pressedVideo.currentSrc || pressedVideo.src || '';
+        }
+        window.webkit.messageHandlers.vgSniff.postMessage({ type: 'longpress', url: u });
       } catch (e) {}
     }
 
@@ -382,7 +389,9 @@
     }
 
     document.addEventListener('touchstart', function (e) {
-      if (!videoAncestor(e.target)) return;
+      var v = videoAncestor(e.target);
+      if (!v) return;
+      pressedVideo = v;
       if (timer) { clearTimeout(timer); timer = null; }
       timer = setTimeout(function () { timer = null; trigger(); }, 550);
     }, true);
@@ -395,7 +404,8 @@
 
     // 桌面/鼠标右键兜底
     document.addEventListener('contextmenu', function (e) {
-      if (videoAncestor(e.target)) { e.preventDefault(); trigger(); }
+      var v = videoAncestor(e.target);
+      if (v) { pressedVideo = v; e.preventDefault(); trigger(); }
     }, true);
   })();
 

@@ -114,6 +114,9 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var canGoBack = false
     @Published var canGoForward = false
     @Published var longPressFired = false      // 长按视频 → 弹面板
+    /// 长按到的视频地址（JS 在长按事件里带上）。空 = 长按的地方没有视频元素，
+    /// 界面就退回「弹嗅探面板」的旧行为
+    @Published private(set) var longPressURL = ""
     @Published var toast: String?
     @Published var mseSeen = false
     @Published var hint: String?
@@ -576,7 +579,10 @@ extension BrowserModel: WKScriptMessageHandler {
             let isCurrent = (t === self.currentTab)
             if let kind = body["type"] as? String, kind == "longpress" {
                 // 长按只对「你正在看的那个页面」有效
-                if isCurrent { self.longPressFired.toggle() }
+                if isCurrent {
+                    self.longPressURL = (body["url"] as? String) ?? ""
+                    self.longPressFired.toggle()
+                }
                 return
             }
             let href = (body["href"] as? String) ?? ""

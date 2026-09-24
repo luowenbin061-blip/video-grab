@@ -214,6 +214,7 @@ struct ContentView: View {
     @State private var showShare = false
     @State private var showPiPAsk = false
     @State private var showMenu = false        // 底部功能卡片是否展开
+    @State private var showDownloadAsk = false // 长按视频后弹「下载这个视频？」
     // 「说明」现在挂在设置页里，外面不再单独弹 —— 所以 showHelp 这个状态去掉了
     @State private var showBookmarks = false
     @State private var showSettings = false
@@ -297,6 +298,24 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: showMenu)
+        .confirmationDialog("下载这个视频？", isPresented: $showDownloadAsk,
+                            titleVisibility: .visible) {
+            Button("开始下载") {
+                let url = model.longPressURL
+                // 请求上下文优先取嗅探结果里同一条的 —— 防盗链站下载分片
+                // 要带 Referer/Cookie，没有就下不动
+                let hit = model.items.first { $0.url == url }
+                downloads.add(title: model.pageTitle.isEmpty ? "长按下载" : model.pageTitle,
+                              url: url,
+                              referrer: hit?.referrer ?? "",
+                              ua: hit?.ua ?? "",
+                              cookie: hit?.cookie ?? "")
+                model.showToast("已加入下载")
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(model.longPressURL)
+        }
         .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
             Button("取消", role: .cancel) {}
             Button("好的") { downloads.pip.start() }
@@ -326,8 +345,13 @@ struct ContentView: View {
             TabsView(model: model, isPresented: $showTabs)
         }
         .onChange(of: model.longPressFired) { _ in
-            // 长按视频 → 直接弹面板
-            showPanel = true
+            // 长按视频元素：拿得到地址 → 弹「下载这个视频」；
+            // 拿不到（按到的不是视频/地址是空的）→ 退回嗅探面板的旧行为
+            if model.longPressURL.isEmpty {
+                showPanel = true
+            } else {
+                showDownloadAsk = true
+            }
         }
         // 历史记录不再挂在「监听 address 变化」上 —— 有个新问题：
         // 切换标签也会让 address 变，那样每切一次窗口就虚增一次「访问次数」。
