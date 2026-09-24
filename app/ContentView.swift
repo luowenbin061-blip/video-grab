@@ -100,25 +100,8 @@ final class DownloadCenter: ObservableObject {
     }
 }
 
-/// 画中画需要一个真实存在的视图层级，layer 才稳（这里只要几个像素，几乎看不见）
-struct PiPHost: UIViewRepresentable {
-    let pip: PiPProgress
-
-    func makeUIView(context: Context) -> UIView {
-        let v = UIView(frame: CGRect(x: 0, y: 0, width: 3, height: 3))
-        v.isUserInteractionEnabled = false
-        v.backgroundColor = .clear
-        v.layer.addSublayer(pip.displayLayer)
-        pip.displayLayer.frame = v.bounds
-        pip.attach(view: v)          // 让 PiP 那边能读窗口/场景状态做诊断
-        return v
-    }
-
-    func updateUIView(_ v: UIView, context: Context) {
-        pip.displayLayer.frame = v.bounds
-        pip.attach(view: v)
-    }
-}
+/// 画中画的宿主视图**不再由 SwiftUI 承载** —— 见 PiPProgress.attachToWindow()：
+/// 自己把层加到 keyWindow 上，确保 layer.window 一定有值（AVKit 靠它解析 UIScene）。
 
 /// 画中画起不来时把原因显示出来 —— 静静失败是这个项目的老毛病
 struct PiPErrorBanner: View {
@@ -218,10 +201,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showHelp) { HelpView() }
         .sheet(isPresented: $showShare) { LanShareView(downloads: downloads) }
-        // 画中画的 layer 得挂在一个真实视图上（只要几个像素，几乎看不见）
-        .background(alignment: .topLeading) {
-            PiPHost(pip: downloads.pip)
-        }
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板
             showPanel = true

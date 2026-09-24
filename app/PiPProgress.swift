@@ -43,11 +43,49 @@ final class PiPProgress: NSObject, ObservableObject {
     private var source: AVPictureInPictureController.ContentSource?
     /// 梯子里是否已经重建过一次控制器（避免无休止重建）
     private var rebuilt = false
-    /// 宿主视图（层就挂在它上面）—— 只用来读窗口/场景状态做诊断
+    /// 宿主视图（层就挂在它上面）
     private weak var hostView: UIView?
 
-    /// PiPHost 建好视图后调一下
-    func attach(view: UIView) { hostView = view }
+    /// 把层挂到当前窗口上，返回是否挂上了。
+    ///
+    /// 为什么不靠 SwiftUI 的 .background 去承载：那个 UIView 有可能根本没被布局、
+    /// 没进窗口 —— 那样 AVKit 解析 content source 所属 UIScene 时拿不到前台活跃的场景，
+    /// 报的就是那句 -1001。自己加到 keyWindow 上，layer.window 一定有值。
+    @discardableResult
+    func attachToWindow() -> Bool {
+        if let v = hostView, v.window != nil {
+            if layer.superlayer !== v.layer { v.layer.addSublayer(layer) }
+            layer.frame = v.bounds
+            return true
+        }
+        guard let win = Self.keyWindow() else { return false }
+        // 尺寸要给一个明确的非零帧 —— 「3×3 这种几乎不存在的视图」不满足 PiP 对
+        // inline 视图的隐含要求（这一点多家 AI 都点了）。加到最底层（index 0），
+        // 会被上面不透明的页面盖住，用户看不见。
+        let v = UIView(frame: CGRect(x: 0, y: 0, width: 180, height: 101))
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        v.isHidden = false
+        v.clipsToBounds = true
+        v.layer.addSublayer(layer)
+        layer.frame = v.bounds
+        win.insertSubview(v, at: 0)
+        hostView = v
+        return true
+    }
+
+    private static func keyWindow() -> UIWindow? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let active = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return active?.windows.first { $0.isKeyWindow } ?? active?.windows.first
+    }
+
+    /// 至少有一个场景处于「前台活跃」
+    private static func sceneIsForegroundActive() -> Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .contains { $0.activationState == .foregroundActive }
+    }
 
     /// 我们这一侧读到的场景状态（和 AVKit 抱怨的那个 UIScene 对比用）
     private var sceneText: String {
@@ -70,6 +108,8 @@ final class PiPProgress: NSObject, ObservableObject {
     private var starting = false
     /// 系统给的最后一次失败原文（诊断用，含 localizedFailureReason）
     private var lastFailure: String?
+    /// 因为「场景还没回到前台活跃」而空等的次数（不消耗启动尝试次数）
+    private var sceneWaits = 0
 
     override init() {
         super.init()
@@ -140,13 +180,20 @@ final class PiPProgress: NSObject, ObservableObject {
 
         starting = true
         startAttempts = 0
+        sceneWaits = 0
         rebuilt = false
-        climb()
+        prime()          // 先把层挂上窗口、并画一帧垫着
+        startTicking()   // 固定节奏送帧 —— 必须独立于下面的启动重试，见 startTicking 注释
+        // 别贴着「弹窗关闭」那一瞬间调 start：等动画过去、场景稳定后再开始试
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.climb()
+        }
     }
 
     /// 先画一帧垫着。AVKit 拒绝给「刚建好、还从没显示过」的层启画中画，
     /// 所以 App 一开场就让它显示一次，别等用户点开关时才第一次画。
     func prime() {
+        attachToWindow()
         resetIfBroken()
         renderFrame()
     }
@@ -183,11 +230,53 @@ final class PiPProgress: NSObject, ObservableObject {
     /// 而「层什么时候才算显示好了」事先无从得知，所以按短梯子反复试，
     /// 而不是靠猜一个睡眠时长。顺带也把「确认框关闭动画」这段时间让过去。
     private func climb() {
-        startAttempts += 1
-        guard startAttempts <= 10 else {
+        if controller?.isPictureInPictureActive == true {
             starting = false
+            return
+        }
+
+        // 只有场景处于「前台活跃」时才值得去调 start —— 不在就等一会儿再来，
+        // 而且**不消耗尝试次数**，免得把机会浪费在弹窗收起 / 切回前台那一瞬间
+        guard Self.sceneIsForegroundActive() else {
+            sceneWaits += 1
+            guard sceneWaits <= 40 else {          // 12 秒还回不到前台就算了
+                starting = false
+                timer?.invalidate()
+                timer = nil
+                lastError = "画中画没能启动：App 一直没回到前台活跃（\(sceneText)）"
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.climb()
+            }
+            return
+        }
+        sceneWaits = 0
+
+        // 层必须真的在窗口里，才轮到建控制器 —— 因为 AVKit 是在建 content source
+        // 那一步记下场景关联的（不在窗口里 → 记下的是非法关联，之后重试也没用）
+        guard attachToWindow() else {
+            sceneWaits += 1
+            guard sceneWaits <= 40 else {
+                starting = false
+                timer?.invalidate()
+                timer = nil
+                lastError = "画中画没能启动：层一直没能挂进窗口"
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.climb()
+            }
+            return
+        }
+
+        startAttempts += 1
+        guard startAttempts <= 12 else {
+            starting = false
+            timer?.invalidate()
+            timer = nil
             let broken = layer.error.map { ($0 as NSError).code == AVError.operationInterrupted.rawValue } ?? false
-            lastError = "画中画没能启动（试了 10 次，约 7 秒）"
+            lastError = "画中画没能启动（试了 12 次，约 10 秒）"
                 + (lastFailure.map { "；系统说：\($0)" } ?? "")
                 + (broken ? "；画布层被后台事件打断过，请在前台重开" : "")
                 + "（层状态=\(layerStatusText)，\(sceneText)，音频会话=\(AppAudio.describe())）"
@@ -197,7 +286,7 @@ final class PiPProgress: NSObject, ObservableObject {
         // 前两级失败过 → 把 content source / 控制器整个重建一次再继续试。
         // 系统若抱怨「content source 的场景状态不对」，这是我们唯一能纠正它那次
         // 关联的机会（此刻层肯定已在窗口里、App 也肯定在前台活跃）。
-        if startAttempts == 3, lastFailure != nil, !rebuilt {
+        if startAttempts == 4, lastFailure != nil, !rebuilt {
             rebuilt = true
             rebuildController()
         }
@@ -215,7 +304,7 @@ final class PiPProgress: NSObject, ObservableObject {
         renderFrame()                     // 每次先保证层里真有帧
         c.startPictureInPicture()         // 起不来只会回调失败，不会崩
 
-        let ladder: [Double] = [0.35, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0]
+        let ladder: [Double] = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0, 2.0]
         let idx = min(max(startAttempts - 1, 0), ladder.count - 1)
         DispatchQueue.main.asyncAfter(deadline: .now() + ladder[idx]) { [weak self] in
             self?.climb()
@@ -234,17 +323,25 @@ final class PiPProgress: NSObject, ObservableObject {
 
     // MARK: - 画帧
 
-    /// 每秒画一帧（PiP 里看起来像"在动"，也顺便让系统知道我们活着）
+    /// 固定节奏送帧。
+    ///
+    /// 间隔必须**远小于一秒**，而且**与启动重试的梯子各走各的**：
+    /// 画布层长时间收不到帧会被系统判成 failed（也就是 -11847），
+    /// 一旦层 failed，后面无论重试多少次 start 都不会成功 —— 这是之前
+    /// 「重试 10 次全失败」的一个很可能的原因（梯子间隔最长到 2 秒，等于在饿着层）。
     private func startTicking() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             self?.renderFrame()
         }
+        if let t = timer { RunLoop.main.add(t, forMode: .common) }
     }
 
     private func renderFrame() {
         let snap = provider?() ?? Snapshot()
 
+        // 层必须真的在窗口里（不在的话 AVKit 解析不到场景）
+        if hostView?.window == nil { attachToWindow() }
         // 层被打断过（后台事件、被别的 App 抢过）会停在 failed —— 此时塞帧会被忽略
         resetIfBroken()
 
