@@ -13,6 +13,11 @@ final class DownloadJob: ObservableObject, Identifiable {
     let title: String
     let sourceURL: String
     let createdAt: Date
+    /// 嗅探那一刻的页面上下文 —— 下载分片、取 AES key 都要带上。
+    /// 不落盘：中断的任务不能续（下面 start 有守卫），用户会从嗅探面板重新点一次。
+    let referrer: String
+    let ua: String
+    let cookie: String
 
     @Published var phase: String
     @Published var done = 0
@@ -52,10 +57,14 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     // MARK: - 构造
 
-    init(title: String, sourceURL: String) {
+    init(title: String, sourceURL: String,
+         referrer: String = "", ua: String = "", cookie: String = "") {
         id = UUID()
         self.title = title
         self.sourceURL = sourceURL
+        self.referrer = referrer
+        self.ua = ua
+        self.cookie = cookie
         createdAt = Date()
         phase = "排队中"
         finished = false
@@ -71,6 +80,10 @@ final class DownloadJob: ObservableObject, Identifiable {
         title = record.title
         sourceURL = record.sourceURL
         createdAt = record.createdAt
+        // 恢复的历史记录没有（也不需要）请求上下文
+        referrer = ""
+        ua = ""
+        cookie = ""
         phase = record.phaseText
         finished = true
         failed = record.failed
@@ -199,16 +212,20 @@ final class DownloadJob: ObservableObject, Identifiable {
         let tsURL = JobStore.file(named: baseName + ".ts")
         let tempDir = JobStore.dir.appendingPathComponent("parts_\(id.uuidString)")
 
+        // 优先用嗅探时抓到的真实页面上下文；抓不到才退到猜测值。
+        // 之前 referer 只是 "https://源站域名/" 猜的 —— 防盗链站照样 403。
+        let fallbackUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
         var opt = HLSDownloader.Options(
             concurrency: 4,
             timeout: 20,
             retry: 2,
-            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-                + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-            referer: nil,
+            userAgent: ua.isEmpty ? fallbackUA : ua,
+            referer: referrer.isEmpty ? nil : referrer,
             tempDir: tempDir,
             outputURL: tsURL)
-        if let host = src.host { opt.referer = "https://\(host)/" }
+        opt.cookie = cookie.isEmpty ? nil : cookie
+        if opt.referer == nil, let host = src.host { opt.referer = "https://\(host)/" }
 
         var dl = HLSDownloader(options: opt)
         dl.onProgress = { [weak self] d, t, msg in

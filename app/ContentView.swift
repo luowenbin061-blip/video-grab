@@ -15,8 +15,10 @@ final class DownloadCenter: ObservableObject {
     }
 
     @discardableResult
-    func add(title: String, url: String) -> DownloadJob {
-        let job = DownloadJob(title: title, sourceURL: url)
+    func add(title: String, url: String,
+             referrer: String = "", ua: String = "", cookie: String = "") -> DownloadJob {
+        let job = DownloadJob(title: title, sourceURL: url,
+                              referrer: referrer, ua: ua, cookie: cookie)
         job.onUpdate = { [weak self] in self?.save() }
         jobs.insert(job, at: 0)
         save()
@@ -443,7 +445,10 @@ struct SniffPanel: View {
             HStack(spacing: 10) {
                 Button {
                     downloads.add(title: model.pageTitle.isEmpty ? item.fileName : model.pageTitle,
-                                  url: item.url)
+                                  url: item.url,
+                                  referrer: item.referrer,
+                                  ua: item.ua,
+                                  cookie: item.cookie)
                     isPresented = false
                 } label: {
                     Label("开始下载", systemImage: "arrow.down.circle.fill")

@@ -78,6 +78,10 @@
       kind: kindOf(url),
       src: src,
       page: (function () { try { return location.href; } catch (e) { return ''; } })(),
+      // 页面上下文：下载分片、取 AES key 时都要带上（防盗链校验 Referer / 登录态靠 Cookie）
+      ref: (function () { try { return document.referrer || ''; } catch (e) { return ''; } })(),
+      ua: (function () { try { return navigator.userAgent || ''; } catch (e) { return ''; } })(),
+      ck: (function () { try { return document.cookie || ''; } catch (e) { return ''; } })(),
       first: nowMs(),
       last: nowMs(),
       hits: 1,

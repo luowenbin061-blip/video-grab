@@ -11,6 +11,11 @@ struct SniffItem: Identifiable, Hashable {
     let kind: String        // hls / file / dash / blob / segment / other
     var src: String         // 来源：video.src、var now、fetch……（video 来源会覆盖刷新）
     let page: String
+    /// 嗅探那一刻的页面上下文 —— 下载分片和取 AES key 都要用（防盗链 / 鉴权）。
+    /// 老记录里没有这些字段，所以给默认空串。
+    var referrer = ""
+    var ua = ""
+    var cookie = ""
     var hits: Int
     /// 第一次嗅到的时刻（JS 那边记的，绝对时钟）
     var first: Date
@@ -215,7 +220,7 @@ final class BrowserModel: NSObject, ObservableObject {
             let last = Self.date(fromMs: d["last"]) ?? merged[url]?.last ?? now
             let hits = (d["hits"] as? Int) ?? 1
             let isPlaying = (d["playing"] as? Bool) == true
-            let item = SniffItem(
+            var item = SniffItem(
                 url: url,
                 kind: (d["kind"] as? String) ?? "other",
                 src: (d["src"] as? String) ?? "",
@@ -224,6 +229,13 @@ final class BrowserModel: NSObject, ObservableObject {
                 first: first,
                 last: last,
                 playing: isPlaying)
+            // 页面上下文：拿到就用，拿不到（老数据 / 空 cookie）不要覆盖已有的
+            let ref = (d["ref"] as? String) ?? ""
+            let uaStr = (d["ua"] as? String) ?? ""
+            let ck = (d["ck"] as? String) ?? ""
+            if !ref.isEmpty { item.referrer = ref }
+            if !uaStr.isEmpty { item.ua = uaStr }
+            if !ck.isEmpty { item.cookie = ck }
             if var old = merged[url] {
                 // 同一 URL 可能来自主页面和多个 iframe（各自有独立的嗅探实例）
                 old.hits = max(old.hits, hits)          // 取大者 —— 做加法会虚胖
@@ -231,6 +243,9 @@ final class BrowserModel: NSObject, ObservableObject {
                 old.last = max(old.last, last)
                 old.playing = old.playing || isPlaying
                 if item.src.hasPrefix("video") { old.src = item.src }   // video 来源最有说服力
+                if old.referrer.isEmpty { old.referrer = item.referrer }
+                if old.ua.isEmpty { old.ua = item.ua }
+                if old.cookie.isEmpty { old.cookie = item.cookie }
                 merged[url] = old
             } else {
                 merged[url] = item

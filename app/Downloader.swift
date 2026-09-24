@@ -22,6 +22,8 @@ struct HLSDownloader {
         var tempDir: URL
         /// 最终产物
         var outputURL: URL
+        /// Cookie —— 防盗链/需登录的站要带；取 AES key 的请求也用它
+        var cookie: String? = nil
     }
 
     enum Fail: LocalizedError {
@@ -127,10 +129,14 @@ struct HLSDownloader {
         fm.createFile(atPath: options.outputURL.path, contents: nil)
         let out = try FileHandle(forWritingTo: options.outputURL)
 
+        // 一个 key 只拉一次。整条清单共用同一个 key，
+        // 逐分片去拉的话 694 个分片就是 694 次多余请求（还容易被判定为异常流量）。
+        var keyCache: [URL: Data] = [:]
         for (i, _) in segs.enumerated() {
             let part = partURL(i)
             guard let data = try? Data(contentsOf: part) else { continue }
-            let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i)
+            let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
+                                                   keyCache: &keyCache)
             out.write(payload)
             try? fm.removeItem(at: part)
             if i % 25 == 0 {
@@ -153,6 +159,9 @@ struct HLSDownloader {
         r.setValue(options.userAgent, forHTTPHeaderField: "User-Agent")
         if let ref = options.referer, !ref.isEmpty {
             r.setValue(ref, forHTTPHeaderField: "Referer")
+        }
+        if let ck = options.cookie, !ck.isEmpty {
+            r.setValue(ck, forHTTPHeaderField: "Cookie")
         }
         return r
     }
@@ -201,7 +210,8 @@ struct HLSDownloader {
 
     // MARK: - 解密（只有 AES-128 需要）
 
-    private func decodeIfNeeded(data: Data, playlist: M3U8Playlist, index: Int) async throws -> Data {
+    private func decodeIfNeeded(data: Data, playlist: M3U8Playlist, index: Int,
+                                keyCache: inout [URL: Data]) async throws -> Data {
         guard let key = playlist.key,
               key.method.uppercased() == "AES-128",
               let keyURI = key.uri else {
@@ -209,18 +219,26 @@ struct HLSDownloader {
         }
 
         // 取 key 走 async —— 不要在 async 上下文里用信号量阻塞，容易死锁。
-        let (kRaw, resp) = try await URLSession.shared.data(for: request(for: keyURI))
-        if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
-            throw Fail.decryptFailed
+        let kRaw: Data
+        if let cached = keyCache[keyURI] {
+            kRaw = cached
+        } else {
+            let (d, resp) = try await URLSession.shared.data(for: request(for: keyURI))
+            if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+                throw Fail.decryptFailed
+            }
+            guard d.count >= 16 else { throw Fail.decryptFailed }
+            keyCache[keyURI] = d
+            kRaw = d
         }
-        guard kRaw.count >= 16 else { throw Fail.decryptFailed }
 
-        // IV：清单里写了就用它；没写的话规范规定用分片序号（M3U8 解析时已补，这里兜底）
+        // IV：清单里写了就用它；没写的话规范规定用「该分片的媒体序号」——
+        // 是 #EXT-X-MEDIA-SEQUENCE + 分片下标，不是下标本身。转 16 字节大端。
         var iv: Data
         if let explicit = key.iv {
             iv = explicit
         } else {
-            var be = UInt32(index).bigEndian
+            var be = UInt32(playlist.mediaSequence + index).bigEndian
             iv = Data(count: 16)
             withUnsafeBytes(of: &be) { iv.replaceSubrange(12..<16, with: $0) }
         }
