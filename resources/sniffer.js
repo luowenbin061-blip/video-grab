@@ -17,8 +17,11 @@
 //   6. 扫描按代价分三层：媒体元素 + 页面全局变量是「轻活」，定时跑；把整页 HTML
 //      序列化再跑正则是「重活」，只在页面加载完成和用户手动触发时各跑一次。
 //      原来这三样全挂在 1.5 秒定时器 + 无节流的 MutationObserver 上 ——
-//      现代网页一秒能变几十次 DOM，于是每秒几十次全页序列化，
-//      这是「比 Safari 慢、滑动不跟手」的实证来源。
+//      现代网页一秒能变几十次 DOM，于是每秒几十次把整个 DOM 序列化成字符串。
+//      实测（_probe_tmp/bench_regex*.js）：正则本身很便宜（130KB 页面约 0.1 ms，
+//      1MB 最坏 13 ms 且无回溯爆炸）；贵的是 innerHTML 那一步的序列化与字符串
+//      分配，它随 DOM 复杂度线性上涨，而且每跑一次都要让 GC 收拾一次大对象。
+//      所以修法是「把它从热路径上拿掉」，不是去优化正则。
 // ---------------------------------------------------------------------------
 (function () {
   'use strict';
@@ -251,17 +254,12 @@
   }
 
   // ---------- 6c. 重活：把整页 HTML 序列化再跑正则 ----------
-  // 一次就是几百 KB ~ 几 MB 的字符串 + 全量正则。只在两处调用：
-  // 页面加载完成之后、用户手动刷新/长按时。绝不放回定时器或 MutationObserver。
+  // 只在两处调用：页面加载完成之后、用户手动刷新/长按时。
+  // 绝不放回定时器或 MutationObserver —— 那里一秒能跑几十次。
   function scanPageHtml() {
     try {
       var html = document.documentElement ? document.documentElement.innerHTML : '';
       if (!html) return;
-      // 极廉价的预筛：正则只认这几个扩展名，页面里连子串都没有就不可能匹配。
-      // 一次 indexOf（约 1ms）换掉一次全量正则。
-      if (html.indexOf('.m3u8') < 0 && html.indexOf('.mp4') < 0
-          && html.indexOf('.m4v') < 0 && html.indexOf('.mov') < 0
-          && html.indexOf('.flv') < 0 && html.indexOf('.mpd') < 0) return;
       scanText(html, 'page-html');
     } catch (e) {}
   }
