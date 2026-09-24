@@ -44,6 +44,10 @@ final class PiPProgress: NSObject, ObservableObject {
     private var startAttempts = 0
     /// 我们这一份是否持有音频会话（画中画必须有个 active 的 playback 会话才可能就绪）
     private var audioHeld = false
+    /// 正在爬启动梯子 —— 这期间的中间失败不甩给用户，等爬完一次性说清楚
+    private var starting = false
+    /// 系统给的最后一次失败原文（诊断用，含 localizedFailureReason）
+    private var lastFailure: String?
 
     override init() {
         super.init()
@@ -86,13 +90,21 @@ final class PiPProgress: NSObject, ObservableObject {
             if let e = AppAudio.lastError { lastError = e }
         }
 
-        renderFrame()                    // 先入一帧，否则 PiP 起不来
+        starting = true
         startAttempts = 0
-        tryStart(c)
+        climb(c)
+    }
+
+    /// 先画一帧垫着。AVKit 拒绝给「刚建好、还从没显示过」的层启画中画，
+    /// 所以 App 一开场就让它显示一次，别等用户点开关时才第一次画。
+    func prime() {
+        resetIfBroken()
+        renderFrame()
     }
 
     /// 用户点开关关掉、或画中画小窗被系统收起时调用
     func stop() {
+        starting = false
         timer?.invalidate()
         timer = nil
         isRunning = false
@@ -114,32 +126,36 @@ final class PiPProgress: NSObject, ObservableObject {
         if layer.status == .failed { layer.flushAndRemoveImage() }
     }
 
-    /// `isPictureInPicturePossible` 是异步就绪的（要等音频会话激活 + 层里真的有帧），
-    /// 所以重试一段时间；实在不行就把**具体状态**报出来，别只说一句「没就绪」。
-    private func tryStart(_ c: AVPictureInPictureController) {
-        if c.isPictureInPictureActive { return }         // 已经起来了，不再重试
-        if c.isPictureInPicturePossible {
-            lastError = nil
-            c.startPictureInPicture()
+    /// 启动梯子。
+    ///
+    /// 为什么不能「possible 为真就调一次 start」：`isPictureInPicturePossible` 报的是
+    /// **配置对不对**，不是**此刻能不能起**。AVKit 对「没真正在屏幕上显示过」的层会
+    /// 直接拒绝启动 —— 报 AVKitErrorDomain -1001「Failed to start picture in picture」。
+    /// 而「层什么时候才算显示好了」事先无从得知，所以按短梯子反复试，
+    /// 而不是靠猜一个睡眠时长。顺带也把「确认框关闭动画」这段时间让过去。
+    private func climb(_ c: AVPictureInPictureController) {
+        if c.isPictureInPictureActive {
+            starting = false
             return
         }
         startAttempts += 1
-        let limit = 15                                   // 15 × 0.4s = 6 秒
-        guard startAttempts <= limit else {
+        guard startAttempts <= 10 else {
+            starting = false
             let broken = layer.error.map { ($0 as NSError).code == AVError.operationInterrupted.rawValue } ?? false
-            lastError = "画中画没能启动（等了 \(Double(limit) * 0.4) 秒系统仍没就绪）；"
-                + "设备支持=\(isSupported ? "是" : "否")，"
-                + "层状态=\(layerStatusText)，"
-                + (layer.isReadyForMoreMediaData ? "" : "层还没准备好收帧，")
-                + (layer.error.map { "层报错=\($0.localizedDescription)，" } ?? "")
-                + "音频会话=\(AppAudio.describe())"
-                + (broken ? "；画布层被后台事件打断了，请在 App 还在前台时点开关重开" : "")
+            lastError = "画中画没能启动（试了 10 次，约 7 秒）"
+                + (lastFailure.map { "；系统说：\($0)" } ?? "")
+                + (broken ? "；画布层被后台事件打断过，请在前台重开" : "")
+                + "（层状态=\(layerStatusText)，音频会话=\(AppAudio.describe())）"
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self else { return }
-            self.renderFrame()
-            self.tryStart(c)
+
+        renderFrame()                     // 每次先保证层里真有帧（没显示过的层会被拒）
+        c.startPictureInPicture()         // 起不来只会回调失败，不会崩
+
+        let ladder: [Double] = [0.35, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0]
+        let wait = ladder[min(startAttempts - 1, ladder.count - 1)]
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            self?.climb(c)
         }
     }
 
@@ -293,6 +309,7 @@ extension PiPProgress: AVPictureInPictureControllerDelegate {
 
     func pictureInPictureControllerDidStartPictureInPicture(_ c: AVPictureInPictureController) {
         lastError = nil
+        starting = false
         isRunning = true
         startTicking()
     }
@@ -308,10 +325,13 @@ extension PiPProgress: AVPictureInPictureControllerDelegate {
                                     failedToStartPictureInPictureWithError error: Error) {
         // 失败原因要留痕：之前这个项目吃过「错误被静默吞掉」的亏
         isRunning = false
-        if (error as NSError).code == AVError.operationInterrupted.rawValue {
-            lastError = "画中画启动失败：画布层被后台事件打断了（-11847）。请在 App 还在前台时点开关重开。"
-        } else {
-            lastError = "画中画启动失败：\(error.localizedDescription)"
+        let ns = error as NSError
+        // 关键：真正的诊断在 localizedFailureReason 里（很多排查文章都漏了这个字段）
+        lastFailure = "\(ns.domain) \(ns.code)：\(ns.localizedDescription)"
+            + (ns.localizedFailureReason.map { " / \($0)" } ?? " / 无附加原因")
+        // 还在爬梯子就不要把中间失败甩给用户 —— 等爬完再一次性说清楚
+        if !starting {
+            lastError = "画中画启动失败：\(lastFailure ?? "")"
         }
     }
 }

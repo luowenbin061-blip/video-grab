@@ -74,6 +74,7 @@ final class DownloadCenter: ObservableObject {
 
     /// 进后台前调用：把"进度从哪来"告诉 PiP
     func preparePiP() {
+        pip.prime()          // 先让层显示一次（AVKit 拒绝给「从没显示过」的层起画中画）
         pip.provider = { [weak self] in
             guard let self else { return PiPProgress.Snapshot() }
             let act = self.jobs.filter { $0.isActive }
