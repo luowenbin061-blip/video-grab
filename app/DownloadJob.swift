@@ -494,8 +494,9 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// 从相册/「文件」导入的任务卡。跟下载不同：没有网络阶段，
     /// 直接进入「拷进程序内 → 探测能不能播 → 播不了才转码」。
     static func makeImported(originalName: String) -> DownloadJob {
-        let name = originalName.replacingOccurrences(of: "\.\w+$", with: "",
-                                                     options: .regularExpression)
+        // 去扩展名用 NSString 的现成方法 —— 正则写在 Swift 字符串里
+        // 反斜杠转义是个坑（\.\w 会直接编译不过）
+        let name = (originalName as NSString).deletingPathExtension
         let j = DownloadJob(title: name.isEmpty ? "导入的视频" : name,
                             sourceURL: "local://import")
         j.phase = "正在导入…"

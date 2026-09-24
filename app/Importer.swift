@@ -69,7 +69,7 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
             let group = DispatchGroup()
             for p in results.map(\.itemProvider) {
                 group.enter()
-                _ = p.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _, _ in
+                _ = p.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
                     defer { group.leave() }
                     guard let url else { return }
                     box.take(from: url, suggestedName: p.suggestedName)
