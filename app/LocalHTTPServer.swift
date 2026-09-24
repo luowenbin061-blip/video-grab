@@ -61,6 +61,14 @@ final class LocalHTTPServer {
         return URL(string: "http://\(ip):\(port)/\(token)/")
     }
 
+    /// 给 WebDAV 客户端用的根地址：**不带口令段**，口令走 Basic 认证。
+    /// 形如 http://192.168.1.7:18080/ —— 客户端里填这个 + 用户名随便 + 密码＝口令。
+    /// （地址里塞口令那种写法，WebDAV 客户端有的认有的不认，Basic 才是通用做法。）
+    var davURL: URL? {
+        guard lanEnabled, port > 0, let ip = Self.lanIPAddress() else { return nil }
+        return URL(string: "http://\(ip):\(port)/")
+    }
+
     private init() {
         // 往已关闭的 socket 写会收到 SIGPIPE，默认动作是直接杀掉进程。
         // 播放器提前断开连接很容易触发，所以必须忽略。
@@ -274,12 +282,16 @@ final class LocalHTTPServer {
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        guard let head = readRequestHead(fd) else { return }
-        respond(fd, requestHead: head, isLocal: isLocal)
+        guard let req = readRequestHead(fd) else { return }
+        respond(fd, requestHead: req.head, isLocal: isLocal, extraBody: req.extra)
     }
 
-    /// 读到请求头结束（\r\n\r\n）为止
-    private func readRequestHead(_ fd: Int32) -> String? {
+    /// 读到请求头结束（\r\n\r\n）为止。
+    ///
+    /// ★ 必须把「多读到的那截请求体」一起带出去：一次 recv 常常把头和请求体开头
+    ///   一起收进来。以前这里直接丢掉多余字节 —— GET 没有请求体，所以一直没暴露；
+    ///   PUT 上传会因此丢掉文件开头几个字节（值得庆幸的是它坏得很明显）。
+    private func readRequestHead(_ fd: Int32) -> (head: String, extra: Data)? {
         var buf = [UInt8]()
         var chunk = [UInt8](repeating: 0, count: 8192)
         while buf.count < 64 * 1024 {
@@ -290,7 +302,10 @@ final class LocalHTTPServer {
             if n <= 0 { break }
             buf.append(contentsOf: chunk[0..<n])
             if let end = Self.headerEnd(buf) {
-                return String(decoding: buf[0..<end], as: UTF8.self)
+                let bodyStart = end + 4
+                let head = String(decoding: buf[0..<end], as: UTF8.self)
+                let extra = bodyStart < buf.count ? Data(buf[bodyStart...]) : Data()
+                return (head, extra)
             }
         }
         return nil
@@ -308,18 +323,36 @@ final class LocalHTTPServer {
 
     // MARK: - 响应
 
-    private func respond(_ fd: Int32, requestHead: String, isLocal: Bool) {
+    private func respond(_ fd: Int32, requestHead: String, isLocal: Bool,
+                         extraBody: Data = Data()) {
         let lines = requestHead.components(separatedBy: "\r\n")
         guard let first = lines.first, !first.isEmpty else {
             sendSimple(fd, status: 400, reason: "Bad Request")
             return
         }
         let parts = first.split(separator: " ")
-        guard parts.count >= 2, parts[0] == "GET" || parts[0] == "HEAD" else {
+        guard parts.count >= 2 else {
+            sendSimple(fd, status: 400, reason: "Bad Request")
+            return
+        }
+        let method = String(parts[0]).uppercased()
+        let isHead = method == "HEAD"
+        // 允许的方法：GET/HEAD 给浏览器与播放器；后面那一串给 WebDAV 客户端。
+        // 白名单形式（不写 else 兜底）—— 免得将来手滑多认一个方法。
+        let allowed: Set<String> = ["GET", "HEAD", "OPTIONS", "PROPFIND",
+                                    "PUT", "DELETE", "MKCOL", "MOVE", "COPY",
+                                    "LOCK", "UNLOCK"]
+        guard allowed.contains(method) else {
             sendSimple(fd, status: 405, reason: "Method Not Allowed")
             return
         }
-        let isHead = parts[0] == "HEAD"
+        // 非 GET/HEAD 的就是 WebDAV 那套，后面单独走
+        let isDAV = !(method == "GET" || method == "HEAD")
+
+        // ★ 原始路径（含口令前缀）。PROPFIND 要把它原样写回 href ——
+        //   客户端拿 href 认资源，改一个字符它就不认识自己刚列出来的东西了。
+        var rawPath = String(parts[1])
+        if let q = rawPath.firstIndex(of: "?") { rawPath = String(rawPath[..<q]) }
 
         var path = String(parts[1])
         if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
@@ -332,12 +365,23 @@ final class LocalHTTPServer {
             return
         }
 
-        // 局域网访客必须带口令；手机自己的播放器（回环）放行，播放链路零影响
+        // 局域网访客必须带口令；手机自己的播放器（回环）放行，播放链路零影响。
+        // 两种带法都认：
+        //   ① 路径第一段（/<口令>/…）—— 浏览器、播放器、手机自己用这个
+        //   ② HTTP Basic（用户名随意填，密码 = 口令）—— WebDAV 客户端用这个，
+        //      它们通常先不带凭据探一次，我们要回 401 + WWW-Authenticate 引导它重试
         if lanEnabled, !isLocal, !token.isEmpty {
-            if path == token {
+            if path == token || path == "/" + token {
                 path = ""                                    // /<口令> → 根目录
+            } else if path.hasPrefix("/" + token + "/") {
+                path = String(path.dropFirst(token.count + 2))
             } else if path.hasPrefix(token + "/") {
                 path = String(path.dropFirst(token.count + 1))
+            } else if Self.basicAuthPassword(lines) == token {
+                // 凭据对了 —— 路径里不用再带口令
+            } else if isDAV {
+                sendAuthChallenge(fd)
+                return
             } else {
                 sendForbiddenPage(fd)
                 return
@@ -352,6 +396,14 @@ final class LocalHTTPServer {
             : root.appendingPathComponent(path).standardizedFileURL
         guard target.path == rootPath || target.path.hasPrefix(rootPath + "/") else {
             sendSimple(fd, status: 403, reason: "Forbidden")
+            return
+        }
+
+        // ── WebDAV 那套方法在这里处理完就返回（它们对「文件不存在」的含义不同：
+        //    对 PUT 是"新建"，对 DELETE 才是"找不到"）──
+        if isDAV {
+            handleWebDAV(fd, method: method, target: target, rawPath: rawPath,
+                         root: root, lines: lines, extraBody: extraBody)
             return
         }
 
@@ -540,5 +592,341 @@ final class LocalHTTPServer {
         case "mp4", "m4v": return "video/mp4"
         default: return "application/octet-stream"
         }
+    }
+}
+
+
+// MARK: - WebDAV（把手机挂成电脑上的一个盘）
+//
+// 电脑上「映射网络驱动器 / RaiDrive / Cyberduck / Finder」连上来之后，手机就像一个
+// U 盘：能拖文件进出、改名、删掉、用电脑的播放器直接播。走的是 WebDAV 标准协议。
+//
+// 认证：HTTP Basic —— 用户名随便填，密码填界面上那串口令。
+//   客户端第一次通常不带凭据探一下，我们回 401 + WWW-Authenticate，它收到就知道该带凭据了。
+//
+// 边界（写在明处，别让人误以为这是个正经服务器）：
+//   · 只在同一 Wi-Fi 下可用；口令是**门牌不是加密** —— 别在公共 Wi-Fi 开着共享
+//   · LOCK 是「名义上的」：发个 token 就算锁上了，不做真互斥。
+//     单人自用（自己电脑连自己手机）没问题；但别两个客户端同时改同一个文件
+//   · 上传单个文件限 500MB，防止一下把手机塞满
+
+extension LocalHTTPServer {
+
+    /// WebDAV 的方法都从这里走。GET / HEAD 不走这里（它们有自己那条老路）。
+    fileprivate func handleWebDAV(_ fd: Int32, method: String, target: URL,
+                                  rawPath: String, root: URL,
+                                  lines: [String], extraBody: Data) {
+        switch method {
+        case "OPTIONS":  davOptions(fd)
+        case "PROPFIND": davPropfind(fd, target: target, rawPath: rawPath,
+                                     depth: Self.headerValue(lines, "depth") ?? "1")
+        case "PUT":      davPut(fd, target: target, lines: lines, extraBody: extraBody)
+        case "DELETE":   davDelete(fd, target: target, root: root)
+        case "MKCOL":    davMkcol(fd, target: target)
+        case "MOVE":     davMoveOrCopy(fd, from: target, root: root, lines: lines, move: true)
+        case "COPY":     davMoveOrCopy(fd, from: target, root: root, lines: lines, move: false)
+        case "LOCK":     davLock(fd)
+        case "UNLOCK":   sendSimple(fd, status: 204, reason: "No Content")
+        default:         sendSimple(fd, status: 405, reason: "Method Not Allowed")
+        }
+    }
+
+    // MARK: 小工具
+
+    private static func headerValue(_ lines: [String], _ name: String) -> String? {
+        for l in lines {
+            guard let c = l.firstIndex(of: ":") else { continue }
+            if l[..<c].trimmingCharacters(in: .whitespaces).lowercased() == name {
+                return String(l[l.index(after: c)...]).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    /// Basic 认证里的密码（用户名不校验 —— 就一个口令，没必要再要个名字）
+    private static func basicAuthPassword(_ lines: [String]) -> String? {
+        guard let v = headerValue(lines, "authorization") else { return nil }
+        guard v.lowercased().hasPrefix("basic ") else { return nil }
+        let b64 = String(v.dropFirst("basic ".count)).trimmingCharacters(in: .whitespaces)
+        guard let d = Data(base64Encoded: b64),
+              let s = String(data: d, encoding: .utf8),
+              let i = s.firstIndex(of: ":") else { return nil }
+        return String(s[s.index(after: i)...])
+    }
+
+    private static func xmlEsc(_ s: String) -> String {
+        var out = s
+        out = out.replacingOccurrences(of: "&", with: "&amp;")
+        out = out.replacingOccurrences(of: "<", with: "&lt;")
+        out = out.replacingOccurrences(of: ">", with: "&gt;")
+        out = out.replacingOccurrences(of: "\"", with: "&quot;")
+        return out
+    }
+
+    /// 逐段做 URL 编码（保留 /）。中文名、空格、圆括号都得编码，客户端才认。
+    private static func hrefEncode(_ path: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return path.split(separator: "/", omittingEmptySubsequences: false)
+            .map { $0.addingPercentEncoding(withAllowedCharacters: allowed) ?? String($0) }
+            .joined(separator: "/")
+    }
+
+    private static let httpDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return f
+    }()
+    /// ★ DateFormatter 不是线程安全的，而连接是并发处理的（queue 带 .concurrent）
+    ///   → 并发调 string(from:) 可能崩或算出错的日期。加一把锁，代价可忽略。
+    private static let httpDateLock = NSLock()
+
+    private static func httpDate(_ d: Date) -> String {
+        httpDateLock.lock()
+        defer { httpDateLock.unlock() }
+        return httpDateFormatter.string(from: d)
+    }
+
+    // MARK: 各方法
+
+    /// 401 + WWW-Authenticate：WebDAV 客户端看到这个才会弹认证框 / 带凭据重试。
+    /// （浏览器那条路不返回它 —— 那边给一张人话说明页更合适。）
+    fileprivate func sendAuthChallenge(_ fd: Int32) {
+        var h = "HTTP/1.1 401 Unauthorized\r\n"
+        h += "WWW-Authenticate: Basic realm=\"VideoGrab\"\r\n"
+        h += "Content-Length: 0\r\n"
+        h += "Connection: close\r\n\r\n"
+        _ = writeAll(fd, Data(h.utf8))
+    }
+
+    private func davOptions(_ fd: Int32) {
+        var h = "HTTP/1.1 200 OK\r\n"
+        h += "DAV: 1, 2\r\n"
+        h += "Allow: OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK\r\n"
+        h += "MS-Author-Via: DAV\r\n"        // Windows 资源管理器认这个头才会继续往下走
+        h += "Content-Length: 0\r\n"
+        h += "Connection: close\r\n\r\n"
+        _ = writeAll(fd, Data(h.utf8))
+    }
+
+    /// 列目录（就是 WebDAV 版的「目录列表页」）。
+    /// Depth: 0 只列自己；1 再带上直接子项；infinity 按 1 处理（安全）。
+    private func davPropfind(_ fd: Int32, target: URL, rawPath: String, depth: String) {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: target.path, isDirectory: &isDir) else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+        var xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        xml += "<D:multistatus xmlns:D=\"DAV:\">"
+        xml += Self.davResponse(url: target, href: rawPath)
+
+        if depth.lowercased() != "0", isDir.boolValue {
+            let base = rawPath.hasSuffix("/") ? rawPath : rawPath + "/"
+            let kids = (try? fm.contentsOfDirectory(
+                at: target,
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles])) ?? []
+            for k in kids.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                xml += Self.davResponse(url: k, href: base + k.lastPathComponent)
+            }
+        }
+        xml += "</D:multistatus>"
+
+        var h = "HTTP/1.1 207 Multi-Status\r\n"
+        h += "Content-Type: application/xml; charset=utf-8\r\n"
+        h += "Content-Length: \(xml.utf8.count)\r\n"
+        h += "Connection: close\r\n\r\n"
+        _ = writeAll(fd, Data(h.utf8) + Data(xml.utf8))
+    }
+
+    private static func davResponse(url: URL, href: String) -> String {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let isDir = (attrs?[.type] as? FileAttributeType) == .typeDirectory
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let mtime = (attrs?[.modificationDate] as? Date) ?? Date()
+
+        var s = "<D:response><D:href>\(xmlEsc(hrefEncode(href)))</D:href>"
+        s += "<D:propstat><D:prop>"
+        s += "<D:displayname>\(xmlEsc(url.lastPathComponent))</D:displayname>"
+        if isDir {
+            s += "<D:resourcetype><D:collection/></D:resourcetype>"
+        } else {
+            s += "<D:resourcetype/>"
+            s += "<D:getcontentlength>\(size)</D:getcontentlength>"
+            s += "<D:getcontenttype>\(mimeType(for: url.pathExtension))</D:getcontenttype>"
+        }
+        s += "<D:getlastmodified>\(httpDate(mtime))</D:getlastmodified>"
+        s += "</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
+        return s
+    }
+
+    /// 上传：边收边写，先写 .part 再改名 ——
+    /// 中途断线只会留个 .part，不会留下一个「看起来完整」的半截视频。
+    private func davPut(_ fd: Int32, target: URL, lines: [String], extraBody: Data) {
+        guard let clStr = Self.headerValue(lines, "content-length"), let cl = Int(clStr) else {
+            sendSimple(fd, status: 411, reason: "Length Required")
+            return
+        }
+        guard cl <= 500 * 1024 * 1024 else {
+            sendSimple(fd, status: 413, reason: "Payload Too Large")
+            return
+        }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir), isDir.boolValue {
+            sendSimple(fd, status: 409, reason: "Conflict")
+            return
+        }
+
+        let part = target.appendingPathExtension("part")
+        try? FileManager.default.removeItem(at: part)
+        guard FileManager.default.createFile(atPath: part.path, contents: nil),
+              let fh = try? FileHandle(forWritingTo: part) else {
+            sendSimple(fd, status: 500, reason: "Cannot Write")
+            return
+        }
+
+        var written = 0
+        if !extraBody.isEmpty {                      // 跟着请求头一起到达的那截
+            let n = min(extraBody.count, cl)
+            if (try? fh.write(contentsOf: extraBody.prefix(n))) != nil { written += n }
+        }
+        var chunk = [UInt8](repeating: 0, count: 256 * 1024)
+        while written < cl {
+            let want = min(chunk.count, cl - written)
+            let n = chunk.withUnsafeMutableBytes { raw -> Int in
+                guard let b = raw.baseAddress else { return -1 }
+                return recv(fd, b, want, 0)
+            }
+            if n <= 0 { break }
+            if (try? fh.write(contentsOf: Data(chunk[0..<n]))) == nil { break }
+            written += n
+        }
+        try? fh.close()
+
+        guard written == cl else {
+            try? FileManager.default.removeItem(at: part)
+            sendSimple(fd, status: 500, reason: "Incomplete Upload")
+            return
+        }
+        try? FileManager.default.removeItem(at: target)
+        do {
+            try FileManager.default.moveItem(at: part, to: target)
+            sendSimple(fd, status: 201, reason: "Created")
+        } catch {
+            try? FileManager.default.removeItem(at: part)
+            sendSimple(fd, status: 500, reason: "Cannot Save")
+        }
+    }
+
+    private func davDelete(_ fd: Int32, target: URL, root: URL) {
+        // 根目录不给删（客户端手滑一下，整个下载库没了）
+        if target.standardizedFileURL.path == root.standardizedFileURL.path {
+            sendSimple(fd, status: 403, reason: "Forbidden")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: target)
+            sendSimple(fd, status: 204, reason: "No Content")
+        } catch {
+            sendSimple(fd, status: 500, reason: "Delete Failed")
+        }
+    }
+
+    private func davMkcol(_ fd: Int32, target: URL) {
+        if FileManager.default.fileExists(atPath: target.path) {
+            sendSimple(fd, status: 405, reason: "Already Exists")
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+            sendSimple(fd, status: 201, reason: "Created")
+        } catch {
+            sendSimple(fd, status: 409, reason: "Cannot Create")
+        }
+    }
+
+    private func davMoveOrCopy(_ fd: Int32, from: URL, root: URL,
+                               lines: [String], move: Bool) {
+        guard let dest = Self.headerValue(lines, "destination"),
+              let to = Self.destinationURL(dest, root: root,
+                                           token: lanEnabled ? token : nil) else {
+            sendSimple(fd, status: 400, reason: "Bad Destination")
+            return
+        }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: from.path) else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+        let overwrite = (Self.headerValue(lines, "overwrite") ?? "T").uppercased() != "F"
+        let existed = fm.fileExists(atPath: to.path)
+        if existed {
+            guard overwrite else {
+                sendSimple(fd, status: 412, reason: "Precondition Failed")
+                return
+            }
+            try? fm.removeItem(at: to)
+        }
+        do {
+            if move { try fm.moveItem(at: from, to: to) }
+            else { try fm.copyItem(at: from, to: to) }
+            if existed { sendSimple(fd, status: 204, reason: "No Content") }
+            else { sendSimple(fd, status: 201, reason: "Created") }
+        } catch {
+            sendSimple(fd, status: 500, reason: "Failed")
+        }
+    }
+
+    /// Destination 头可能是完整 URL，也可能只是绝对路径；两种都剥掉口令段，
+    /// 再拼到 root 上，最后做一次越界检查（跟 GET 那条路的防护一致）。
+    private static func destinationURL(_ raw: String, root: URL, token: String?) -> URL? {
+        var p = raw
+        if let r = p.range(of: "://") {
+            let after = p[r.upperBound...]
+            if let slash = after.firstIndex(of: "/") { p = String(after[slash...]) }
+            else { p = "/" }
+        }
+        p = p.removingPercentEncoding ?? p
+        if p.hasPrefix("/") { p = String(p.dropFirst()) }
+        if let t = token, !t.isEmpty {
+            if p == t { p = "" }
+            else if p.hasPrefix(t + "/") { p = String(p.dropFirst(t.count + 1)) }
+        }
+        let target = p.isEmpty
+            ? root.standardizedFileURL
+            : root.appendingPathComponent(p).standardizedFileURL
+        var rootPath = root.standardizedFileURL.path
+        while rootPath.hasSuffix("/") { rootPath.removeLast() }
+        guard target.path == rootPath || target.path.hasPrefix(rootPath + "/") else { return nil }
+        return target
+    }
+
+    /// 锁：**名义上的**实现 —— 发个 token 就当锁上了，不做真互斥。
+    /// 真互斥要维护锁表 + 超时，对「自己电脑连自己手机」是过度设计；
+    /// 但不少客户端（Finder、RaiDrive）看不到锁就只肯给只读挂载，所以得有这一个。
+    private func davLock(_ fd: Int32) {
+        let token = "opaquelocktoken:" + UUID().uuidString
+        let xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<D:prop xmlns:D=\"DAV:\"><D:lockdiscovery><D:activelock>"
+            + "<D:locktype><D:write/></D:locktype>"
+            + "<D:lockscope><D:exclusive/></D:lockscope>"
+            + "<D:depth>infinity</D:depth>"
+            + "<D:timeout>Second-3600</D:timeout>"
+            + "<D:locktoken><D:href>\(token)</D:href></D:locktoken>"
+            + "</D:activelock></D:lockdiscovery></D:prop>"
+        var h = "HTTP/1.1 200 OK\r\n"
+        h += "Lock-Token: <\(token)>\r\n"
+        h += "Content-Type: application/xml; charset=utf-8\r\n"
+        h += "Content-Length: \(xml.utf8.count)\r\n"
+        h += "Connection: close\r\n\r\n"
+        _ = writeAll(fd, Data(h.utf8) + Data(xml.utf8))
     }
 }

@@ -1296,6 +1296,8 @@ struct LanShareView: View {
     @State private var url: URL?
     @State private var problem: String?
     @State private var copied = false
+    @State private var davCopied = false        // WebDAV 地址复制过了
+    @State private var tokenCopied = false      // 口令复制过了
 
     var body: some View {
         NavigationView {
@@ -1320,9 +1322,37 @@ struct LanShareView: View {
                         Text("电脑和手机要在同一个 Wi-Fi。地址里那串口令是门牌：同一 Wi-Fi 下拿到地址的人都能下载，所以用完记得关掉。")
                     }
 
+                    // ── WebDAV：把手机挂成电脑上的一个盘（能拖进去、能改名能删）──
+                    if let dav = LocalHTTPServer.shared.davURL {
+                        Section {
+                            Text(dav.absoluteString)
+                                .font(.system(size: 14, design: .monospaced))
+                                .textSelection(.enabled)
+                            Button {
+                                UIPasteboard.general.string = dav.absoluteString
+                                davCopied = true
+                            } label: {
+                                Label(davCopied ? "已复制" : "复制 WebDAV 地址",
+                                      systemImage: davCopied ? "checkmark" : "doc.on.doc")
+                            }
+                            Button {
+                                UIPasteboard.general.string = LocalHTTPServer.shared.token
+                                tokenCopied = true
+                            } label: {
+                                Label(tokenCopied ? "已复制" : "复制口令（当密码用）",
+                                      systemImage: tokenCopied ? "checkmark" : "key")
+                            }
+                        } header: {
+                            Text("挂成电脑上的一个盘（WebDAV）")
+                        } footer: {
+                            Text("电脑上装个 WebDAV 客户端（Windows 推荐 RaiDrive 免费版，也可用 Cyberduck）：地址填上面那个，用户名随便填，密码填这串口令。连上后手机就出现在「此电脑」里 —— 能拖文件进去、改名、删除。")
+                        }
+                    }
+
                     Section("怎么用") {
                         bullet("手机保持这个 App 开着就行，锁屏也能用（会自动弹一个小窗保持运行）。")
-                        bullet("电脑上点文件名即开始下载。mp4 一般能直接在线播放；m3u8 建议下载后用播放器打开。")
+                        bullet("浏览器方式（只读）：电脑上点文件名即开始下载。mp4 一般能直接在线播放；m3u8 建议下载后用播放器打开。")
+                        bullet("WebDAV 方式（能读能写）：手机在电脑里就像一个 U 盘。注意 —— 拿到地址和口令的人都能改删文件，用完记得关。")
                         bullet("电脑打不开时：先确认手机连的是 Wi-Fi（只有蜂窝网时不开局域网），再看系统设置里有没有允许这个 App 访问「本地网络」。")
                     }
 
