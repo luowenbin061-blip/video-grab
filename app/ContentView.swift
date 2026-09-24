@@ -123,6 +123,71 @@ struct PiPErrorBanner: View {
     }
 }
 
+/// 多窗口管理卡片（点功能卡片里的「多窗口」调出）。
+/// 只做三件事：看开了几个、切过去、关掉/新建。
+struct TabsView: View {
+    @ObservedObject var model: BrowserModel
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(Array(model.tabTitles.indices), id: \.self) { i in
+                        Button {
+                            model.switchTo(i)
+                            isPresented = false
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: i == model.currentTabIndex
+                                      ? "largecircle.fill.circle" : "circle")
+                                    .font(.system(size: 17))
+                                    .foregroundStyle(i == model.currentTabIndex
+                                                     ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(model.tabTitle(i))
+                                        .font(.system(size: 15))
+                                        .lineLimit(1)
+                                    Text(i == model.currentTabIndex ? "正在显示" : "点一下切过去")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .onDelete { idx in
+                        // ★ 倒序删：正序删的话，删掉一个之后后面的下标集体前移，
+                        //   下一刀就砍到别人身上了。
+                        for i in idx.sorted(by: >) { model.closeTab(i) }
+                    }
+                } header: {
+                    Text("已开 \(model.tabCount) / \(BrowserModel.maxTabs) 个窗口")
+                } footer: {
+                    Text("左滑可以关掉一个窗口。每个窗口的网页都真的在内存里跑着（所以切回去不用重新加载），代价是占内存 —— 开满 \(BrowserModel.maxTabs) 个之后新建会先自动回收一个。")
+                }
+
+                Section {
+                    Button {
+                        model.newTab()
+                    } label: {
+                        Label("新建窗口", systemImage: "plus.square.on.square")
+                    }
+                    .disabled(model.tabCount >= BrowserModel.maxTabs)
+                }
+            }
+            .navigationTitle("多窗口")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { isPresented = false }
+                }
+            }
+        }
+    }
+}
+
 struct ContentView: View {
 
     @StateObject private var model = BrowserModel()
@@ -139,15 +204,25 @@ struct ContentView: View {
     @State private var showBookmarks = false
     @State private var showSettings = false
     @State private var showToolbox = false
+    @State private var showTabs = false        // 多窗口管理卡片
     @State private var input = ""
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            // 标签条只在开了 2 个以上窗口时出现 —— 只有一个标签时界面跟以前
+            // 一模一样，不凭空多一条横条（页面上东西越少越好）。
+            if model.tabCount > 1 {
+                Divider()
+                tabStrip
+            }
             Divider()
 
             ZStack(alignment: .bottomTrailing) {
                 BrowserView(model: model)
+                    // 切标签时整体重建 → 挂上新标签的 WebView。
+                    // 少了这个 .id，SwiftUI 会复用旧视图，画面还是上一个标签的。
+                    .id(model.currentTabIndex)
                     .ignoresSafeArea(edges: .bottom)
 
                 if model.isLoading {
@@ -233,15 +308,16 @@ struct ContentView: View {
         .sheet(isPresented: $showToolbox) {
             ToolboxView(model: model, isPresented: $showToolbox)
         }
+        .sheet(isPresented: $showTabs) {
+            TabsView(model: model, isPresented: $showTabs)
+        }
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板
             showPanel = true
         }
-        .onChange(of: model.address) { _ in
-            // 每次加载完成地址都会变 → 自动记一笔历史（同一地址由 store 合并，
-            // 不会把列表刷成一堆重复项）。about:blank 之类由 store 自己挡掉。
-            store.record(url: model.address, title: model.pageTitle)
-        }
+        // 历史记录不再挂在「监听 address 变化」上 —— 有个新问题：
+        // 切换标签也会让 address 变，那样每切一次窗口就虚增一次「访问次数」。
+        // 改成挂在「页面真的加载完成」上，见下面 onAppear 里的 model.onPageFinished。
         .onChange(of: scenePhase) { ph in
             // 进后台/被打断前把记录落盘 —— 不然被系统杀掉就丢
             if ph != .active { downloads.save() }
@@ -259,6 +335,12 @@ struct ContentView: View {
         .onAppear {
             input = model.address
             downloads.preparePiP()
+            // 历史只记「真的加载完成的、你正在看的」那一页
+            // （同一地址由 store 合并，不会把列表刷成一堆重复项；
+            //   about:blank 之类由 store 自己挡掉）
+            model.onPageFinished = { url, title in
+                store.record(url: url, title: title)
+            }
         }
     }
 
@@ -306,6 +388,65 @@ struct ContentView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .background(Color(.secondarySystemBackground))
+    }
+
+    /// 标签条（只在开了 2 个以上窗口时出现）。
+    /// 每个小片：点一下切过去、点叉关掉；最右边「+」新建。
+    /// 每片两个独立按钮并排（不是嵌套）—— 这样点「切过去」和点「关掉」互不干扰。
+    private var tabStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                // 这里用下标而不是解构元组（`{ i, title in }` 那种写法本身是合法的，
+                // 项目里别处也在用）—— 选下标是为了能配 tabTitle(_:) 做越界保护：
+                // 列表在渲染的间隙可能刚好少了一个（你点关闭那一瞬）。
+                ForEach(Array(model.tabTitles.indices), id: \.self) { i in
+                    HStack(spacing: 6) {
+                        Button {
+                            model.switchTo(i)
+                        } label: {
+                            Text(model.tabTitle(i))
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .frame(maxWidth: 130, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            model.closeTab(i)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("关闭这个窗口")
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        i == model.currentTabIndex
+                            ? Color.accentColor.opacity(0.16)
+                            : Color(.tertiarySystemFill),
+                        in: Capsule())
+                    .foregroundStyle(i == model.currentTabIndex
+                                     ? Color.accentColor : Color.primary)
+                }
+
+                Button {
+                    model.newTab()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("新建窗口")
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+        }
         .background(Color(.secondarySystemBackground))
     }
 
@@ -375,7 +516,8 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
                 menuCell("link", "复制URL") { copyCurrentURL() }
-                menuCell("square.on.square", "多窗口", soon: true)
+                menuCell("square.on.square", "多窗口",
+                         badge: model.tabCount > 1 ? model.tabCount : 0) { showTabs = true }
                 menuCell("arrow.clockwise", "刷新") { model.reload() }
             }
 

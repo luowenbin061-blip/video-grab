@@ -120,11 +120,44 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 列表最后一次刷新时间（面板上显示，让用户知道数据新不新）
     @Published var lastUpdated: Date?
 
+    /// 当前标签的 WebView。
+    /// ★ 它仍然是 weak —— 真正持有 WebView 的是每个标签对象（BrowserTab）
+    ///   以及界面上的 BrowserView。多标签之后后台标签没有视图撑着，
+    ///   必须靠标签对象强引用，否则一切换就被回收。
     weak var webView: WKWebView?
 
-    /// 预热用的那次导航（about:blank）。它的回调要整段忽略 —— 否则启动瞬间
-    /// 会闪一下加载态，还会把 about:blank 写进标题和地址栏。
-    private var warmupNav: WKNavigation?
+    // MARK: - 标签（多窗口）
+
+    /// 最多同时开几个窗口。一个 WebView 光它的渲染进程就要几十 MB，
+    /// 小屏手机上 5 个是「够用、又不至于被系统连累着杀」的量。
+    static let maxTabs = 5
+
+    /// 所有标签（数组保序 —— 标签条按这个顺序显示）
+    private var tabs: [BrowserTab] = []
+
+    /// WebView → 标签 的反查表。
+    /// ★ 这是多标签能省一大截改动的关键：导航回调和 JS 消息**都自带来源 WebView**
+    ///   （didFinish 的 wv 参数、WKScriptMessage.webView），靠这张表就能知道
+    ///   这条消息属于哪个标签 —— 不用再额外造一层「消息中转对象」。
+    private var byWebView: [ObjectIdentifier: BrowserTab] = [:]
+
+    /// 当前标签序号。界面用 .id(currentTabIndex) 监听它 —— 一变就整体重建
+    /// BrowserView，从而把新标签的 WebView 挂上去。
+    @Published private(set) var currentTabIndex = 0
+
+    /// 标签条显示用（不把 WKWebView 暴露给界面）
+    @Published private(set) var tabTitles: [String] = []
+
+    var tabCount: Int { tabs.count }
+
+    var currentTab: BrowserTab? {
+        tabs.indices.contains(currentTabIndex) ? tabs[currentTabIndex] : nil
+    }
+
+    /// 页面真的加载完成时回调（地址、标题）。
+    /// 历史记录挂在这里，而**不是**监听 address 变化 —— 切换标签也会让
+    /// address 变，监听它的话每切一次窗口就虚增一次「访问次数」。
+    var onPageFinished: ((String, String) -> Void)?
 
     /// 注入脚本的源码（从 bundle 读 resources/sniffer.js）
     static let snifferSource: String = {
@@ -135,7 +168,9 @@ final class BrowserModel: NSObject, ObservableObject {
         return s
     }()
 
-    func makeWebView() -> WKWebView {
+    /// 建一个「裸」的 WebView（不登记成标签）。
+    /// 配置跟单窗口时代完全一致 —— 嗅探脚本、消息通道、查找开关、UA 一个都不能少。
+    private func makeRawWebView() -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.allowsInlineMediaPlayback = true
         // 自用工具：不要求用户手势就能自动播放，方便页面自己把视频跑起来
@@ -153,12 +188,13 @@ final class BrowserModel: NSObject, ObservableObject {
         ucc.addUserScript(script)
         // 注意：这个方法名在 Swift 里是 add(_:contentWorld:name:)，
         // 老的 addScriptMessageHandler(_:contentWorld:name:) 已被废弃。
+        // 每个标签的 WebView 有自己的 configuration/ucc，但 handler 都是 self ——
+        // 靠 WKScriptMessage.webView 认领是哪个标签（见 didReceive）。
         ucc.add(self, contentWorld: world, name: "vgSniff")
 
         let wv = WKWebView(frame: .zero, configuration: cfg)
         // 工具箱的「页内查找」：iOS 16 起 WKWebView 自带系统的 UIFindInteraction，
         // 但**默认是关的** —— 不打开这个开关，wv.findInteraction 就是 nil。
-        // 上一版漏了这行，导致点「页内查找」时拿不到对象，还被错报成「要 iOS 16 以上」。
         if #available(iOS 16.0, *) {
             wv.isFindInteractionEnabled = true
         }
@@ -169,13 +205,146 @@ final class BrowserModel: NSObject, ObservableObject {
         // 有些站会检测「是不是 App 内置浏览器」，用桌面 UA 降低被拒概率
         wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-        webView = wv
+        return wv
+    }
+
+    /// 界面当前该显示的那个 WebView。首次调用会把第一个标签建出来
+    /// （WebView 必须由界面这一步创建 —— 它进了视图层级才会渲染）。
+    func currentWebView() -> WKWebView {
+        if tabs.isEmpty { newTab() }
+        return tabs[min(currentTabIndex, tabs.count - 1)].webView
+    }
+
+    // MARK: - 标签操作
+
+    /// 新建一个窗口（顺带切过去）
+    @discardableResult
+    func newTab(load url: String? = nil) -> BrowserTab {
+        if tabs.count >= Self.maxTabs { reclaimOne() }
+        let wv = makeRawWebView()
+        let tab = BrowserTab(webView: wv)
+        tabs.append(tab)
+        byWebView[ObjectIdentifier(wv)] = tab
         // 预热：立刻加载一次空白页。不为显示任何东西（WebView 本来就是白的），
         // 而是让 WebKit 提前把 WebContent / 网络进程拉起来 —— 用户第一次真正
-        // 导航时就不用再等这套冷启动。这是「不如 Safari 快」里唯一能自己消掉的
-        // 一段：Safari 的那套进程一直是热的。
-        warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
-        return wv
+        // 导航时就不用再等这套冷启动。这次导航的回调整段忽略。
+        tab.warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
+        switchTo(tabs.count - 1)
+        if let url, !url.isEmpty { load(url) }
+        return tab
+    }
+
+    /// 切到某个窗口。
+    /// 允许重复切（幂等）—— 建第一个标签时也走这条路径，省一个分支。
+    func switchTo(_ index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        stash()                          // 界面状态 → 原来那个标签
+        currentTabIndex = index
+        restore(tabs[index])             // 新标签的快照 → 界面状态
+        syncTabTitles()
+        // 切过来补扫一次：这个页面的嗅探可能是在后台跑的时候完成的
+        webView?.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
+    }
+
+    /// 关掉某个窗口。只剩一个时不真关，而是把它清回空白页。
+    func closeTab(_ index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        guard tabs.count > 1 else { resetOnlyTab(); return }
+        dispose(tabs[index])
+        tabs.remove(at: index)
+        if index < currentTabIndex {
+            currentTabIndex -= 1         // 关的是前面的 → 当前标签下标前移
+        } else if index == currentTabIndex {
+            currentTabIndex = min(index, tabs.count - 1)
+            restore(tabs[currentTabIndex])
+        }
+        syncTabTitles()
+    }
+
+    /// 界面状态 → 当前标签的快照
+    private func stash() {
+        guard let t = currentTab else { return }
+        t.title = pageTitle
+        t.address = address
+        t.items = items
+        t.groups = groups
+        t.mseSeen = mseSeen
+        t.hint = hint
+        t.lastUpdated = lastUpdated
+        t.isLoading = isLoading
+        t.canGoBack = canGoBack
+        t.canGoForward = canGoForward
+    }
+
+    /// 某个标签的快照 → 界面状态
+    private func restore(_ t: BrowserTab) {
+        pageTitle = t.title
+        address = t.address
+        items = t.items
+        groups = t.groups
+        mseSeen = t.mseSeen
+        hint = t.hint
+        lastUpdated = t.lastUpdated
+        isLoading = t.isLoading
+        canGoBack = t.canGoBack
+        canGoForward = t.canGoForward
+        webView = t.webView
+    }
+
+    /// 放掉一个标签。
+    /// ★ 必须摘掉消息处理器：ucc 是**强引用 self** 的，不摘就形成
+    ///   BrowserModel → tabs → webView → configuration → ucc → BrowserModel 的环，
+    ///   被关掉的窗口永远不释放（开着开着就爆内存）。
+    private func dispose(_ t: BrowserTab) {
+        t.webView.stopLoading()
+        t.webView.navigationDelegate = nil
+        t.webView.uiDelegate = nil
+        t.webView.configuration.userContentController
+            .removeScriptMessageHandler(forName: "vgSniff", contentWorld: .page)
+        byWebView[ObjectIdentifier(t.webView)] = nil
+    }
+
+    /// 最后一个窗口的「关闭」= 清回空白页（真关掉的话界面就空了）
+    private func resetOnlyTab() {
+        guard let t = currentTab else { return }
+        items = []; groups = []; mseSeen = false
+        hint = nil; lastUpdated = nil
+        address = ""; pageTitle = ""
+        canGoBack = false; canGoForward = false
+        t.items = []; t.groups = []; t.mseSeen = false
+        t.hint = nil; t.lastUpdated = nil
+        t.address = ""; t.title = ""
+        t.canGoBack = false; t.canGoForward = false
+        t.webView.load(URLRequest(url: URL(string: "about:blank")!))
+        syncTabTitles()
+        showToast("已回到空白页")
+    }
+
+    /// 到上限了：优先丢「没用过的空窗口」，否则丢最旧的（绝不动当前窗口）
+    private func reclaimOne() {
+        if let i = tabs.firstIndex(where: { $0.isPristine && $0 !== currentTab }) {
+            closeTab(i)
+            return
+        }
+        if let i = tabs.firstIndex(where: { $0 !== currentTab }) {
+            closeTab(i)
+        }
+    }
+
+    private func syncTabTitles() {
+        tabTitles = tabs.map { $0.displayTitle }
+    }
+
+    /// 界面按序号取标题。
+    /// 不直接写 tabTitles[i]：列表在渲染间隙可能刚好少了一个（你点关闭那一瞬），
+    /// 越界会崩 —— 界面取值一律走这里。
+    func tabTitle(_ i: Int) -> String {
+        tabTitles.indices.contains(i) ? tabTitles[i] : "新标签页"
+    }
+
+    /// 这条回调 / 消息来自哪个标签。不认识的 WebView（已关闭）返回 nil。
+    private func tab(for wv: WKWebView) -> BrowserTab? {
+        byWebView[ObjectIdentifier(wv)]
     }
 
     // MARK: - 导航
@@ -249,9 +418,14 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 从 JS 收到的数据
 
-    fileprivate func ingest(href: String, mse: Bool, raw: [[String: Any]]) {
+    /// 收到**某个标签**的嗅探结果。
+    /// ★ 多标签的关键分流：先写进这个标签自己的快照；
+    ///   只有它是当前标签时，才同步到界面状态上 ——
+    ///   否则你在 A 页面上会看到 B 页面（后台正在跑的那个）嗅出来的地址。
+    fileprivate func ingest(tab t: BrowserTab, isCurrent: Bool,
+                            href: String, mse: Bool, raw: [[String: Any]]) {
         var merged: [String: SniffItem] = [:]
-        for old in items { merged[old.url] = old }
+        for old in t.items { merged[old.url] = old }
         let now = Date()
         for d in raw {
             guard let url = d["url"] as? String, !url.isEmpty else { continue }
@@ -293,21 +467,31 @@ final class BrowserModel: NSObject, ObservableObject {
         }
         let all = Array(merged.values)
         let order: [String: Int] = ["hls": 0, "file": 1, "dash": 2, "blob": 3, "other": 4, "segment": 9]
-        items = all.sorted {
+        let sorted = all.sorted {
             let a = order[$0.kind] ?? 5, b = order[$1.kind] ?? 5
             if a != b { return a < b }
             // 同类里**最近嗅到的排前面** —— 用户一般就是要刚出来的那一条
             if $0.last != $1.last { return $0.last > $1.last }
             return $0.url < $1.url
         }
-        groups = Self.makeGroups(all)
+
+        // 先落到这个标签自己身上
+        t.items = sorted
+        t.groups = Self.makeGroups(sorted)
+        t.lastUpdated = now
+        t.mseSeen = mse
+        t.hint = Self.hint(for: sorted)
+        if t.address.isEmpty { t.address = href }
+
+        guard isCurrent else { return }      // 后台标签：到此为止，不碰界面状态
+
+        items = sorted
+        groups = t.groups
         lastUpdated = now
         mseSeen = mse
-        if let web = webView, web.url?.absoluteString != href {
-            // 只在第一次同步地址栏，避免打字时被覆盖
-            if address.isEmpty { address = href }
-        }
-        updateHint()
+        hint = t.hint
+        if address.isEmpty { address = href }
+        syncTabTitles()
     }
 
     /// 同目录的清单变体（master / media / 线路）合并成一组，每组选一条代表：
@@ -348,16 +532,19 @@ final class BrowserModel: NSObject, ObservableObject {
         return SniffItem.clockText(t)
     }
 
-    private func updateHint() {
+    /// 面板上的提示语。
+    /// 原来叫 updateHint，直接改 self.hint —— 多标签后改成「按一组结果算出来」，
+    /// 因为后台标签也要各自算自己的提示。
+    static func hint(for items: [SniffItem]) -> String? {
         let hasHls = items.contains { $0.kind == "hls" }
         if hasHls {
-            hint = nil
+            return nil
         } else if items.isEmpty {
-            hint = "还没嗅到东西。让视频先播几秒，再点右下角圆圈刷新。"
+            return "还没嗅到东西。让视频先播几秒，再点右下角圆圈刷新。"
         } else if items.allSatisfy({ $0.kind == "segment" }) {
-            hint = "只看到分片。往上翻，通常能找到一个 .m3u8 —— 那个才是要下的。"
+            return "只看到分片。往上翻，通常能找到一个 .m3u8 —— 那个才是要下的。"
         } else {
-            hint = "看到地址了，但没有 m3u8。用长按视频再试，或换个线路。"
+            return "看到地址了，但没有 m3u8。用长按视频再试，或换个线路。"
         }
     }
 }
@@ -368,15 +555,21 @@ extension BrowserModel: WKScriptMessageHandler {
     nonisolated func userContentController(_ ucc: WKUserContentController,
                                            didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
+        // ★ 多标签：消息自带来源 WebView（message.webView），靠它认领标签 ——
+        //   这样后台标签的上报只会写进它自己的快照，不会串到当前界面上。
+        let src = message.webView
         Task { @MainActor in
-            if let t = body["type"] as? String, t == "longpress" {
-                if !self.items.isEmpty || true { self.longPressFired.toggle() }
+            guard let wv = src, let t = self.tab(for: wv) else { return }
+            let isCurrent = (t === self.currentTab)
+            if let kind = body["type"] as? String, kind == "longpress" {
+                // 长按只对「你正在看的那个页面」有效
+                if isCurrent { self.longPressFired.toggle() }
                 return
             }
             let href = (body["href"] as? String) ?? ""
             let mse = (body["mse"] as? Bool) ?? false
             let raw = (body["items"] as? [[String: Any]]) ?? []
-            self.ingest(href: href, mse: mse, raw: raw)
+            self.ingest(tab: t, isCurrent: isCurrent, href: href, mse: mse, raw: raw)
         }
     }
 }
@@ -385,20 +578,35 @@ extension BrowserModel: WKScriptMessageHandler {
 
 extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
+    /// 回调回来第一件事：认领这是哪个标签的 WebView。
+    /// 认不到（窗口已关）或属于预热那次空白页导航 → 整段忽略。
     nonisolated func webView(_ wv: WKWebView, didStartProvisionalNavigation n: WKNavigation!) {
         Task { @MainActor in
-            if n === self.warmupNav { return }        // 预热页：不理它
-            self.isLoading = true
+            guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            t.isLoading = true
+            if t === self.currentTab { self.isLoading = true }
         }
     }
 
     nonisolated func webView(_ wv: WKWebView, didFinish n: WKNavigation!) {
         Task { @MainActor in
-            if n === self.warmupNav { return }        // 预热页：不理它
-            self.isLoading = false
-            self.pageTitle = wv.title ?? ""
-            self.address = wv.url?.absoluteString ?? self.address
-            self.syncNav(wv)
+            guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            t.isLoading = false
+            t.title = wv.title ?? ""
+            t.address = wv.url?.absoluteString ?? t.address
+            t.canGoBack = wv.canGoBack
+            t.canGoForward = wv.canGoForward
+
+            if t === self.currentTab {
+                self.isLoading = false
+                self.pageTitle = t.title
+                self.address = t.address
+                self.canGoBack = t.canGoBack
+                self.canGoForward = t.canGoForward
+                self.syncTabTitles()
+                // 历史只记「你正在看的这一页」—— 后台标签加载完成不算你访问过
+                self.onPageFinished?(t.address, t.title)
+            }
             // 页面加载完再补扫一次（有些地址是 DOM 造好之后才有的）
             wv.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
         }
@@ -406,26 +614,28 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
     nonisolated func webView(_ wv: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
-            if n === self.warmupNav { return }        // 预热页：不理它
-            self.isLoading = false
-            self.showToast("加载失败：\(e.localizedDescription)")
+            guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            t.isLoading = false
+            // 后台标签加载失败不弹提示 —— 又没在你眼前，弹了只会莫名其妙
+            if t === self.currentTab {
+                self.isLoading = false
+                self.showToast("加载失败：\(e.localizedDescription)")
+            }
         }
     }
 
     nonisolated func webView(_ wv: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
-            if n === self.warmupNav { return }        // 预热页：不理它
-            self.isLoading = false
-            self.showToast("打不开：\(e.localizedDescription)")
+            guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            t.isLoading = false
+            if t === self.currentTab {
+                self.isLoading = false
+                self.showToast("打不开：\(e.localizedDescription)")
+            }
         }
     }
 
-    private func syncNav(_ wv: WKWebView) {
-        canGoBack = wv.canGoBack
-        canGoForward = wv.canGoForward
-    }
-
-    /// 站内 target=_blank 之类的，直接在同一个 WebView 里打开，
+    /// 站内 target=_blank 之类的，直接在**它自己那个** WebView 里打开，
     /// 免得弹出一个我们嗅探不到的新窗口。
     nonisolated func webView(_ wv: WKWebView,
                              createWebViewWith cfg: WKWebViewConfiguration,
