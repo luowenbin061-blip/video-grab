@@ -6,6 +6,8 @@ import UIKit
 
 /// 后台保活：把下载进度**画进「画中画」小窗**（Stay 用的就是这一招）。
 ///
+/// 画面尺寸做成 6:1 的横条，小窗就细，不挡屏幕；文字绘制要翻坐标（见 renderFrame）。
+///
 /// 原理：sample-buffer PiP —— 不做任何视频解码/播放，我们自己往
 /// `AVSampleBufferDisplayLayer` 里塞进度帧；iOS 把这条渲染管道当成
 /// 「正在播放的媒体」，于是在 App 进后台后继续给它运行时间。
@@ -34,8 +36,10 @@ final class PiPProgress: NSObject, ObservableObject {
     /// 画中画小窗现在是开着还是关着（界面上的开关靠它显示状态）
     @Published private(set) var isRunning = false
 
-    private let fw: CGFloat = 480          // 帧尺寸（16:9，够 PiP 小窗用）
-    private let fh: CGFloat = 270
+    // 帧尺寸决定画中画小窗的长宽比 —— 故意做成又宽又扁（6:1），
+    // 小窗就像 Stay 那样是一条细横条，不挡屏幕上的内容。
+    private let fw: CGFloat = 600
+    private let fh: CGFloat = 100
 
     private let layer = AVSampleBufferDisplayLayer()
     private var controller: AVPictureInPictureController?
@@ -369,6 +373,12 @@ final class PiPProgress: NSObject, ObservableObject {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                               | CGBitmapInfo.byteOrder32Little.rawValue) else { return }
 
+        // 关键：CGBitmapContext 的坐标是 y 轴朝上，而 UIKit 的文字绘制按
+        // 「y 轴朝下」做补偿 —— 不翻转的话整幅画面上下颠倒（实测「字都是反的」就是它）。
+        // 翻转之后，draw() 里的 y 坐标就可以按「0 在顶部」来写。
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
+
         UIGraphicsPushContext(ctx)
         draw(snap, in: ctx)
         UIGraphicsPopContext()
@@ -377,6 +387,7 @@ final class PiPProgress: NSObject, ObservableObject {
         layer.enqueue(sb)
     }
 
+    /// 画面布局：横条形状（600×100），左上标题 + 右上百分比 + 细进度条贴底
     private func draw(_ snap: Snapshot, in ctx: CGContext) {
         let w = fw, h = fh
 
@@ -384,52 +395,57 @@ final class PiPProgress: NSObject, ObservableObject {
         ctx.setFillColor(UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
 
-        // 标题（顶行）
-        let title = snap.activeCount > 1 ? "\(snap.title) 等 \(snap.activeCount) 个任务" : snap.title
+        // 标题（左上）
+        let title = snap.activeCount > 1 ? "\(snap.title) +另外 \(snap.activeCount - 1) 个" : snap.title
         drawText(title,
-                 rect: CGRect(x: 20, y: 22, width: w - 40, height: 26),
-                 font: .systemFont(ofSize: 17, weight: .semibold),
+                 rect: CGRect(x: 14, y: 9, width: w - 136, height: 20),
+                 font: .systemFont(ofSize: 14, weight: .semibold),
                  color: .white, align: .left)
 
-        // 大号百分比（居中）
+        // 百分比（右上）
         let pct = Int((max(0, min(1, snap.progress)) * 100).rounded())
         drawText("\(pct)%",
-                 rect: CGRect(x: 0, y: h / 2 - 34, width: w, height: 56),
-                 font: .monospacedDigitSystemFont(ofSize: 46, weight: .bold),
+                 rect: CGRect(x: w - 126, y: 6, width: 112, height: 26),
+                 font: .monospacedDigitSystemFont(ofSize: 22, weight: .bold),
                  color: UIColor(red: 0.42, green: 0.72, blue: 1, alpha: 1),
-                 align: .center)
+                 align: .right)
 
-        // 进度条
-        let barW = w - 80
-        let barRect = CGRect(x: 40, y: h - 86, width: barW, height: 10)
+        // 状态（标题下一行）
+        drawText(snap.detail,
+                 rect: CGRect(x: 14, y: 35, width: w - 28, height: 16),
+                 font: .systemFont(ofSize: 11),
+                 color: UIColor(white: 0.7, alpha: 1),
+                 align: .left)
+
+        // 进度条（贴着底边，细）
+        let barW = w - 28
+        let barY = h - 17
+        let barRect = CGRect(x: 14, y: barY, width: barW, height: 5)
         ctx.setFillColor(UIColor(white: 1, alpha: 0.14).cgColor)
-        ctx.addPath(CGPath(roundedRect: barRect, cornerWidth: 5, cornerHeight: 5, transform: nil))
+        ctx.addPath(CGPath(roundedRect: barRect, cornerWidth: 2.5, cornerHeight: 2.5, transform: nil))
         ctx.fillPath()
 
         let filled = CGFloat(max(0, min(1, snap.progress))) * barW
         if filled > 1 {
-            let fillRect = CGRect(x: 40, y: h - 86, width: filled, height: 10)
+            let fillRect = CGRect(x: 14, y: barY, width: filled, height: 5)
             ctx.setFillColor(UIColor(red: 0.17, green: 0.42, blue: 1, alpha: 1).cgColor)
-            ctx.addPath(CGPath(roundedRect: fillRect, cornerWidth: 5, cornerHeight: 5, transform: nil))
+            ctx.addPath(CGPath(roundedRect: fillRect, cornerWidth: 2.5, cornerHeight: 2.5, transform: nil))
             ctx.fillPath()
         }
-
-        // 状态文字（底行）
-        drawText(snap.detail,
-                 rect: CGRect(x: 20, y: h - 50, width: w - 40, height: 22),
-                 font: .systemFont(ofSize: 13),
-                 color: UIColor(white: 0.72, alpha: 1),
-                 align: .left)
     }
 
-    private enum Align { case left, center }
+    private enum Align { case left, center, right }
 
     private func drawText(_ text: String, rect: CGRect, font: UIFont,
                           color: UIColor, align: Align) {
         guard !text.isEmpty else { return }
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingTail
-        style.alignment = align == .center ? .center : .left
+        switch align {
+        case .center: style.alignment = .center
+        case .right: style.alignment = .right
+        case .left: style.alignment = .left
+        }
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
