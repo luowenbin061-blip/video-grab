@@ -39,6 +39,8 @@ final class PiPProgress: NSObject, ObservableObject {
     private var timer: Timer?
     private var frameIndex: Int64 = 0
     private var startAttempts = 0
+    /// 我们这一份是否持有音频会话（画中画必须有个 active 的 playback 会话才可能就绪）
+    private var audioHeld = false
 
     override init() {
         super.init()
@@ -68,6 +70,14 @@ final class PiPProgress: NSObject, ObservableObject {
         guard let c = controller else { lastError = "画中画控制器没建起来"; return }
         if c.isPictureInPictureActive { return }
 
+        // 关键：画中画「必须」有一个 active 的 playback 音频会话才会就绪。
+        // 之前没有这一步 → isPictureInPicturePossible 永远是 false → 一直重试到放弃。
+        if !audioHeld {
+            AppAudio.acquire()
+            audioHeld = true
+            if let e = AppAudio.lastError { lastError = e }
+        }
+
         renderFrame()                    // 先入一帧，否则 PiP 起不来
         startAttempts = 0
         tryStart(c)
@@ -80,24 +90,46 @@ final class PiPProgress: NSObject, ObservableObject {
         if controller?.isPictureInPictureActive == true {
             controller?.stopPictureInPicture()
         }
+        if audioHeld {
+            AppAudio.release()
+            audioHeld = false
+        }
     }
 
-    /// `isPictureInPicturePossible` 是异步就绪的（要先有帧），所以重试几次
+    /// `isPictureInPicturePossible` 是异步就绪的（要等音频会话激活 + 层里真的有帧），
+    /// 所以重试一段时间；实在不行就把**具体状态**报出来，别只说一句「没就绪」。
     private func tryStart(_ c: AVPictureInPictureController) {
         if c.isPictureInPictureActive { return }         // 已经起来了，不再重试
         if c.isPictureInPicturePossible {
+            lastError = nil
             c.startPictureInPicture()
             return
         }
         startAttempts += 1
-        guard startAttempts <= 8 else {
-            lastError = "画中画没能启动（系统一直没就绪）"
+        let limit = 15                                   // 15 × 0.4s = 6 秒
+        guard startAttempts <= limit else {
+            lastError = "画中画没能启动（等了 \(Double(limit) * 0.4) 秒系统仍没就绪）；"
+                + "设备支持=\(isSupported ? "是" : "否")，"
+                + "层状态=\(layerStatusText)，"
+                + (layer.isReadyForMoreMediaData ? "" : "层还没准备好收帧，")
+                + (layer.error.map { "层报错=\($0.localizedDescription)，" } ?? "")
+                + "音频会话=\(AppAudio.describe())"
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
             self.renderFrame()
             self.tryStart(c)
+        }
+    }
+
+    /// 层的状态转成人看得懂的字（诊断画中画为什么起不来用）
+    private var layerStatusText: String {
+        switch layer.status {
+        case .unknown: return "未知"
+        case .rendering: return "渲染中"
+        case .failed: return "失败"
+        @unknown default: return "其它"
         }
     }
 

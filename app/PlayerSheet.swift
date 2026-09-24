@@ -93,8 +93,16 @@ struct PlayerSheet: View {
             .background(.thinMaterial, in: Capsule())
             .padding(14)
         }
-        .onAppear { box.start() }
-        .onDisappear { box.stop() }
+        .onAppear {
+            // 关键：不配音频会话的话，默认类别会被侧面静音拨片静掉 ——
+            // 表现为「同一条视频导出去有声音、在 App 里没声音」。
+            AppAudio.acquire()
+            box.start()
+        }
+        .onDisappear {
+            box.stop()
+            AppAudio.release()
+        }
     }
 }
 
