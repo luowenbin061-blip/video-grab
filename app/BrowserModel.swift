@@ -216,6 +216,33 @@ final class BrowserModel: NSObject, ObservableObject {
         showToast("已清空列表")
     }
 
+    // MARK: - 给收藏 / 工具箱用的三个小接口
+
+    /// 当前真实页面地址（空串与 about:blank 视为「没有页面」）。
+    /// 收藏、复制 URL、翻译都走这里 —— 判断只写一处，免得各写一遍又漏一处。
+    var currentURL: String? {
+        let s = webView?.url?.absoluteString ?? address
+        guard !s.isEmpty, s != "about:blank" else { return nil }
+        return s
+    }
+
+    /// 工具箱 · 截图：拿当前网页的画面（async 版，省得在回调里绕 MainActor）
+    func snapshotImage() async -> UIImage? {
+        guard let wv = webView else { return nil }
+        return await withCheckedContinuation { c in
+            wv.takeSnapshot(with: nil) { img, _ in c.resume(returning: img) }
+        }
+    }
+
+    /// 工具箱 · 页内查找：调系统原生查找条（iOS 16+）。返回有没有调起来。
+    func presentFind() -> Bool {
+        if #available(iOS 16.0, *), let fi = webView?.findInteraction {
+            fi.presentFindNavigator(showingReplace: false)
+            return true
+        }
+        return false
+    }
+
     // MARK: - 从 JS 收到的数据
 
     fileprivate func ingest(href: String, mse: Bool, raw: [[String: Any]]) {

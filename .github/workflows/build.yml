@@ -67,6 +67,8 @@ jobs:
             -sdk iphoneos \
             -configuration Release \
             -derivedDataPath build \
+            MARKETING_VERSION=1.0.${{ github.run_number }} \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

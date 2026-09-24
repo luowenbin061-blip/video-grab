@@ -127,14 +127,18 @@ struct ContentView: View {
 
     @StateObject private var model = BrowserModel()
     @StateObject private var downloads = DownloadCenter()
+    @StateObject private var store = BookmarkStore()      // 收藏 + 历史
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showPanel = false
     @State private var showDownloads = false
-    @State private var showHelp = false
     @State private var showShare = false
     @State private var showPiPAsk = false
     @State private var showMenu = false        // 底部功能卡片是否展开
+    // 「说明」现在挂在设置页里，外面不再单独弹 —— 所以 showHelp 这个状态去掉了
+    @State private var showBookmarks = false
+    @State private var showSettings = false
+    @State private var showToolbox = false
     @State private var input = ""
 
     var body: some View {
@@ -216,11 +220,27 @@ struct ContentView: View {
         .sheet(isPresented: $showDownloads) {
             DownloadList(center: downloads, isPresented: $showDownloads)
         }
-        .sheet(isPresented: $showHelp) { HelpView() }
         .sheet(isPresented: $showShare) { LanShareView(downloads: downloads) }
+        .sheet(isPresented: $showBookmarks) {
+            BookmarksView(store: store, isPresented: $showBookmarks) { url in
+                input = url
+                model.load(url)
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(downloads: downloads, store: store, isPresented: $showSettings)
+        }
+        .sheet(isPresented: $showToolbox) {
+            ToolboxView(model: model, isPresented: $showToolbox)
+        }
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板
             showPanel = true
+        }
+        .onChange(of: model.address) { _ in
+            // 每次加载完成地址都会变 → 自动记一笔历史（同一地址由 store 合并，
+            // 不会把列表刷成一堆重复项）。about:blank 之类由 store 自己挡掉。
+            store.record(url: model.address, title: model.pageTitle)
         }
         .onChange(of: scenePhase) { ph in
             // 进后台/被打断前把记录落盘 —— 不然被系统杀掉就丢
@@ -345,15 +365,15 @@ struct ContentView: View {
     private var funcMenuCard: some View {
         VStack(spacing: 4) {
             HStack(spacing: 0) {
-                menuCell("clock.arrow.circlepath", "收藏/历史", soon: true)
-                menuCell("bookmark", "收藏网址", soon: true)
+                menuCell("clock.arrow.circlepath", "收藏/历史") { showBookmarks = true }
+                menuCell("bookmark", "收藏网址") { toggleBookmark() }
                 menuCell("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
                     showDownloads = true
                 }
-                menuCell("gearshape", "设置") { showHelp = true }
+                menuCell("gearshape", "设置") { showSettings = true }
             }
             HStack(spacing: 0) {
-                menuCell("wrench.and.screwdriver", "工具箱", soon: true)
+                menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
                 menuCell("link", "复制URL") { copyCurrentURL() }
                 menuCell("square.on.square", "多窗口", soon: true)
                 menuCell("arrow.clockwise", "刷新") { model.reload() }
@@ -440,6 +460,16 @@ struct ContentView: View {
             return
         }
         model.copy(s)          // 已有实现：写剪贴板 + 弹提示
+    }
+
+    /// 收藏 / 取消收藏当前页（同一个入口，看当前状态决定）
+    private func toggleBookmark() {
+        guard let page = model.currentURL else {
+            model.showToast("还没打开网页")
+            return
+        }
+        let marked = store.toggleMark(url: page, title: model.pageTitle)
+        model.showToast(marked ? "已收藏" : "已取消收藏")
     }
 
     // MARK: - 底栏顶上那条 2pt 进度线（有活跃下载才出现）
