@@ -122,6 +122,10 @@ final class BrowserModel: NSObject, ObservableObject {
 
     weak var webView: WKWebView?
 
+    /// 预热用的那次导航（about:blank）。它的回调要整段忽略 —— 否则启动瞬间
+    /// 会闪一下加载态，还会把 about:blank 写进标题和地址栏。
+    private var warmupNav: WKNavigation?
+
     /// 注入脚本的源码（从 bundle 读 resources/sniffer.js）
     static let snifferSource: String = {
         guard let url = Bundle.main.url(forResource: "sniffer", withExtension: "js"),
@@ -160,6 +164,11 @@ final class BrowserModel: NSObject, ObservableObject {
         wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
         webView = wv
+        // 预热：立刻加载一次空白页。不为显示任何东西（WebView 本来就是白的），
+        // 而是让 WebKit 提前把 WebContent / 网络进程拉起来 —— 用户第一次真正
+        // 导航时就不用再等这套冷启动。这是「不如 Safari 快」里唯一能自己消掉的
+        // 一段：Safari 的那套进程一直是热的。
+        warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
         return wv
     }
 
@@ -346,11 +355,15 @@ extension BrowserModel: WKScriptMessageHandler {
 extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
     nonisolated func webView(_ wv: WKWebView, didStartProvisionalNavigation n: WKNavigation!) {
-        Task { @MainActor in self.isLoading = true }
+        Task { @MainActor in
+            if n === self.warmupNav { return }        // 预热页：不理它
+            self.isLoading = true
+        }
     }
 
     nonisolated func webView(_ wv: WKWebView, didFinish n: WKNavigation!) {
         Task { @MainActor in
+            if n === self.warmupNav { return }        // 预热页：不理它
             self.isLoading = false
             self.pageTitle = wv.title ?? ""
             self.address = wv.url?.absoluteString ?? self.address
@@ -362,6 +375,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
     nonisolated func webView(_ wv: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
+            if n === self.warmupNav { return }        // 预热页：不理它
             self.isLoading = false
             self.showToast("加载失败：\(e.localizedDescription)")
         }
@@ -369,6 +383,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
     nonisolated func webView(_ wv: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
+            if n === self.warmupNav { return }        // 预热页：不理它
             self.isLoading = false
             self.showToast("打不开：\(e.localizedDescription)")
         }

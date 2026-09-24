@@ -14,6 +14,11 @@
 //   4. hook 时保留原生引用，防止站点二次覆写把我们顶掉。
 //   5. iOS 16 的 WebKit 不支持 MediaSource —— 所以靠 MSE 的播放器会回退到原生 HLS
 //      （video.src = xxx.m3u8），这对我们反而有利：地址直接落在 DOM 里。
+//   6. 扫描按代价分三层：媒体元素 + 页面全局变量是「轻活」，定时跑；把整页 HTML
+//      序列化再跑正则是「重活」，只在页面加载完成和用户手动触发时各跑一次。
+//      原来这三样全挂在 1.5 秒定时器 + 无节流的 MutationObserver 上 ——
+//      现代网页一秒能变几十次 DOM，于是每秒几十次全页序列化，
+//      这是「比 Safari 慢、滑动不跟手」的实证来源。
 // ---------------------------------------------------------------------------
 (function () {
   'use strict';
@@ -195,8 +200,8 @@
     }
   }
 
-  // ---------- 6. 扫 DOM + 读页面全局变量（苹果 CMS 的关键路径） ----------
-  function scanDom() {
+  // ---------- 6. 扫媒体元素（轻活：只查三个标签，走元素索引，代价很小） ----------
+  function scanMediaEls() {
     try {
       var els = document.querySelectorAll('video, audio, source');
       for (var i = 0; i < els.length; i++) {
@@ -222,9 +227,12 @@
         } catch (e) {}
       }
     } catch (e) {}
+  }
 
-    // 苹果 CMS：真实地址常明文写在播放页的 var 里
-    // var now="...m3u8";  var player_aaaa={"url":"..."};  var player_data={...}
+  // ---------- 6b. 读页面全局变量（轻活：只是几次属性读取） ----------
+  // 苹果 CMS：真实地址常明文写在播放页的 var 里
+  // var now="...m3u8";  var player_aaaa={"url":"..."};  var player_data={...}
+  function scanGlobals() {
     try { if (typeof window.now === 'string') add(window.now, 'var now'); } catch (e) {}
     try {
       var cands = [window.player_aaaa, window.player_data, window.player_bbb,
@@ -240,12 +248,28 @@
         }
       }
     } catch (e) {}
+  }
 
-    // 页面源码里直接搜（有些站把地址写在 script 文本里）
+  // ---------- 6c. 重活：把整页 HTML 序列化再跑正则 ----------
+  // 一次就是几百 KB ~ 几 MB 的字符串 + 全量正则。只在两处调用：
+  // 页面加载完成之后、用户手动刷新/长按时。绝不放回定时器或 MutationObserver。
+  function scanPageHtml() {
     try {
       var html = document.documentElement ? document.documentElement.innerHTML : '';
-      if (html && html.length > 0) scanText(html, 'page-html');
+      if (!html) return;
+      // 极廉价的预筛：正则只认这几个扩展名，页面里连子串都没有就不可能匹配。
+      // 一次 indexOf（约 1ms）换掉一次全量正则。
+      if (html.indexOf('.m3u8') < 0 && html.indexOf('.mp4') < 0
+          && html.indexOf('.m4v') < 0 && html.indexOf('.mov') < 0
+          && html.indexOf('.flv') < 0 && html.indexOf('.mpd') < 0) return;
+      scanText(html, 'page-html');
     } catch (e) {}
+  }
+
+  // 轻活合集 —— 定时器 / MutationObserver 只用这个
+  function scanLive() {
+    scanMediaEls();
+    scanGlobals();
   }
 
   // ---------- 7. performance 资源计时回溯 ----------
@@ -290,9 +314,17 @@
     return out.slice(0, 60);
   }
 
-  function report(force) {
+  // 上报最小间隔 500ms。跨进程 postMessage 不免费 —— 原生每收到一次都要重排
+  // 整个列表并刷新界面。短时间内的多次变化合并成一次；force（手动刷新 / 长按）
+  // 不受限，必须立刻到。
+  var reportTimer = null;
+  var lastReportAt = 0;
+
+  function flush(force) {
+    if (reportTimer) { clearTimeout(reportTimer); reportTimer = null; }
     if (!dirty && !force) return;
     dirty = false;
+    lastReportAt = nowMs();
     try {
       window.webkit.messageHandlers.vgSniff.postMessage({
         type: 'sniff',
@@ -303,9 +335,19 @@
     } catch (e) {}
   }
 
+  function report(force) {
+    if (force) { flush(true); return; }
+    if (reportTimer) return;                 // 已经排过一次，等它就行
+    var wait = 500 - (nowMs() - lastReportAt);
+    reportTimer = setTimeout(function () { reportTimer = null; flush(false); },
+                             wait > 0 ? wait : 0);
+  }
+
+  // 手动触发（原生下拉刷新 / 页面加载完成）：轻活 + 重活都跑，并立刻上报
   window.__vgScan = function () {
-    scanDom();
+    scanLive();
     scanPerf();
+    scanPageHtml();
     report(true);
     return payload().length;
   };
@@ -334,8 +376,9 @@
     }
 
     function trigger() {
-      scanDom();
+      scanLive();
       scanPerf();
+      scanPageHtml();
       report(true);
       fire();
     }
@@ -358,24 +401,48 @@
     }, true);
   })();
 
-  // ---------- 11. 定时 + DOM 变化时自动扫 ----------
-  scanDom();
-  scanPerf();
-  report(true);
+  // ---------- 11. 定时 + DOM 变化时自动扫（都只做轻活；重活见 scanPageHtml） ----------
 
+  // 首扫推迟到 DOM 建好之后。以前在 document-start 就扫一遍：那时 DOM 还是空的，
+  // 等于白跑一次整页序列化。而且本脚本同步阻塞解析（必须抢在页面之前装 hook），
+  // 越早做重活越拖首屏。
+  function boot() {
+    scanLive();
+    scanPerf();
+    report(true);
+    // DOMContentLoaded 之后有些播放器才把地址注进页面，稍后补一次重活
+    setTimeout(function () { scanPageHtml(); scanPerf(); report(false); }, 1200);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+
+  // 定时：1.5 秒 → 3 秒，且只做轻活（不再含整页序列化）。
   setInterval(function () {
-    scanDom();
+    scanLive();
     scanPerf();
     report(false);
-  }, 1500);
+  }, 3000);
 
+  // DOM 变化：合并 400ms 内的所有变动，只跑一次轻活。
+  // 原来是「每变一次就全量扫一次」。另外补上 attributes 过滤：有些播放器用
+  // setAttribute('src', ...) 写地址，那条路不经过我们 hook 的 setter，只能靠这里兜。
   try {
+    var moTimer = null;
     var mo = new MutationObserver(function () {
-      scanDom();
+      if (moTimer) return;
+      moTimer = setTimeout(function () { moTimer = null; scanLive(); report(false); }, 400);
     });
     var start = function () {
       try {
-        mo.observe(document.documentElement || document, { childList: true, subtree: true });
+        mo.observe(document.documentElement || document, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['src', 'data-src']
+        });
       } catch (e) {}
     };
     if (document.documentElement) start();
