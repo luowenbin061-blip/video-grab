@@ -117,6 +117,8 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 长按到的视频地址（JS 在长按事件里带上）。空 = 长按的地方没有视频元素，
     /// 界面就退回「弹嗅探面板」的旧行为
     @Published private(set) var longPressURL = ""
+    /// 系统长按菜单里的「Download」被点 —— 界面接线成真正的下载动作
+    var onDownloadRequest: ((String) -> Void)?
     @Published var toast: String?
     @Published var mseSeen = false
     @Published var hint: String?
@@ -434,6 +436,14 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 从 JS 收到的数据
 
+    /// 这个地址像不像媒体 —— 决定系统长按菜单里给不给 Download。
+    /// 用 contains 不用结尾匹配：很多站的地址带查询串（?url=xx.m3u8）也该中。
+    static func looksLikeMedia(_ s: String) -> Bool {
+        let lower = s.lowercased()
+        let exts = [".m3u8", ".mp4", ".ts", ".m4s", ".mov", ".webm", ".flv", ".avi", ".mkv", ".mpd"]
+        return exts.contains { lower.contains($0) }
+    }
+
     /// 收到**某个标签**的嗅探结果。
     /// ★ 多标签的关键分流：先写进这个标签自己的快照；
     ///   只有它是当前标签时，才同步到界面状态上 ——
@@ -596,6 +606,31 @@ extension BrowserModel: WKScriptMessageHandler {
 // MARK: - WKNavigationDelegate / WKUIDelegate
 
 extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
+
+    /// 长按链接的原生菜单 —— WebKit 只对「链接」弹这个（JS 已把视频盖成链接）。
+    /// 媒体地址 → 只给「Download」（对齐 Stay）；普通链接 → 系统默认菜单。
+    nonisolated func webView(_ webView: WKWebView,
+                             contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
+                             completionHandler: @escaping (UIContextMenuConfiguration?) -> Void) {
+        let link = elementInfo.linkURL
+        Task { @MainActor in
+            guard let link, Self.looksLikeMedia(link.absoluteString) else {
+                completionHandler(nil)
+                return
+            }
+            let s = link.absoluteString
+            let cfg = UIContextMenuConfiguration(identifier: nil, previewProvider: nil,
+                                                 actionProvider: { _ in
+                UIMenu(children: [
+                    UIAction(title: "Download",
+                             image: UIImage(systemName: "arrow.down.circle.fill")) { _ in
+                        Task { @MainActor in self.onDownloadRequest?(s) }
+                    }
+                ])
+            })
+            completionHandler(cfg)
+        }
+    }
 
     /// 回调回来第一件事：认领这是哪个标签的 WebView。
     /// 认不到（窗口已关）或属于预热那次空白页导航 → 整段忽略。

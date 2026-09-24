@@ -379,6 +379,17 @@ struct ContentView: View {
             model.onPageFinished = { url, title in
                 store.record(url: url, title: title)
             }
+            // 系统长按菜单里的「Download」被点 → 真正开始下载。
+            // 请求上下文复用嗅探结果同一条（防盗链站的分片要带 Referer/Cookie）。
+            model.onDownloadRequest = { u in
+                let hit = model.items.first { $0.url == u }
+                downloads.add(title: model.pageTitle.isEmpty ? "Download" : model.pageTitle,
+                              url: u,
+                              referrer: hit?.referrer ?? "",
+                              ua: hit?.ua ?? "",
+                              cookie: hit?.cookie ?? "")
+                model.showToast("已加入下载")
+            }
         }
     }
 

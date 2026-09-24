@@ -367,8 +367,41 @@
       return null;
     }
 
-    // 这次长按到的视频元素 —— fire 时取 currentSrc（video 实际在播的地址）
+    // ─── 长按视频：盖一层透明 <a> 让系统弹原生链接预览菜单，原生在里面加「Download」───
+    // （Stay 的交互就是这个：长按 → 视频预览卡 + Download。
+    //   WebKit 只对「链接」弹这种菜单 —— 所以长按开始后 150ms 把视频盖成链接。
+    //   延迟 150ms 是为了不干扰快速点击：点画面播放/暂停时 overlay 还没出现。）
     var pressedVideo = null;
+    var overlayTimer = null;
+    var overlayOn = false;
+
+    function removeOverlay() {
+      var a = document.getElementById('__vg_lp');
+      if (a && a.parentNode) a.parentNode.removeChild(a);
+      overlayOn = false;
+    }
+
+    function makeOverlay(v) {
+      removeOverlay();
+      var src = v.currentSrc || v.src || '';
+      if (!src) return false;
+      var r = v.getBoundingClientRect();
+      if (r.width < 40 || r.height < 40) return false;
+      var a = document.createElement('a');
+      a.href = src;
+      a.addEventListener('click', function (e) { e.preventDefault(); });
+      a.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:'
+          + r.width + 'px;height:' + r.height + 'px;z-index:2147483647;opacity:0;';
+      a.id = '__vg_lp';
+      document.documentElement.appendChild(a);
+      overlayOn = true;
+      return true;
+    }
+
+    function clearPending() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    }
 
     function fire() {
       try {
@@ -392,17 +425,32 @@
       var v = videoAncestor(e.target);
       if (!v) return;
       pressedVideo = v;
-      if (timer) { clearTimeout(timer); timer = null; }
-      timer = setTimeout(function () { timer = null; trigger(); }, 550);
+      clearPending();
+      overlayTimer = setTimeout(function () {
+        overlayTimer = null;
+        // 盖成功 → 交给系统菜单（~500ms 弹出）；盖失败（没 src 等）→ 走兜底
+        if (!makeOverlay(v)) {
+          timer = setTimeout(function () { timer = null; trigger(); }, 1050);
+        }
+      }, 150);
     }, true);
 
-    ['touchend', 'touchmove', 'touchcancel'].forEach(function (ev) {
+    ['touchend', 'touchcancel'].forEach(function (ev) {
       document.addEventListener(ev, function () {
-        if (timer) { clearTimeout(timer); timer = null; }
+        clearPending();
+        // 不能立刻删：系统菜单正靠这个 <a> 撑着，删了菜单跟着消失。
+        // 延迟 700ms —— 菜单已弹出并自持，那时删就无所谓了。
+        setTimeout(removeOverlay, 700);
       }, true);
     });
 
-    // 桌面/鼠标右键兜底
+    // 滚动 = 不是长按，立刻撤
+    document.addEventListener('touchmove', function () {
+      clearPending();
+      removeOverlay();
+    }, true);
+
+    // 桌面/鼠标右键兜底（桌面上没有预览菜单，直接走 fire → 界面弹下载确认）
     document.addEventListener('contextmenu', function (e) {
       var v = videoAncestor(e.target);
       if (v) { pressedVideo = v; e.preventDefault(); trigger(); }
