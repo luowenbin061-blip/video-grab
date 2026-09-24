@@ -45,6 +45,11 @@ targets:
         CFBundleDevelopmentRegion: zh_CN
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
+        # 后台保活：画中画（PiP）归在这条背景模式里。
+        # App 进后台时用 sample-buffer PiP 把下载进度画进小窗，
+        # 系统据此继续给运行时间 —— 这样锁屏/切走时下载和转码不会停。
+        UIBackgroundModes:
+          - audio
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:

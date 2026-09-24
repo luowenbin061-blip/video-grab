@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 /// 所有下载任务的容器。**记录会落盘**，重启程序后还在。
@@ -48,6 +49,62 @@ final class DownloadCenter: ObservableObject {
 
     var activeCount: Int { jobs.filter { $0.isActive }.count }
     var usedSpace: Int64 { JobStore.totalSize() }
+
+    // MARK: - 后台保活（画中画进度窗）
+
+    /// 把进度画进画中画小窗，让 App 进后台也继续跑（Stay 用的同一招）
+    let pip = PiPProgress()
+
+    /// 进后台前调用：把"进度从哪来"告诉 PiP
+    func preparePiP() {
+        pip.provider = { [weak self] in
+            guard let self else { return PiPProgress.Snapshot() }
+            let act = self.jobs.filter { $0.isActive }
+            let total = act.reduce(0) { $0 + $1.total }
+            let done = act.reduce(0) { $0 + $1.done }
+            let first = act.first
+            return PiPProgress.Snapshot(
+                title: first?.title ?? "视频抓取",
+                detail: first?.phase ?? "",
+                progress: total > 0 ? Double(done) / Double(total) : 0,
+                activeCount: act.count)
+        }
+    }
+}
+
+/// 画中画需要一个真实存在的视图层级，layer 才稳（这里只要几个像素，几乎看不见）
+struct PiPHost: UIViewRepresentable {
+    let layer: AVSampleBufferDisplayLayer
+
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView(frame: CGRect(x: 0, y: 0, width: 3, height: 3))
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        v.layer.addSublayer(layer)
+        layer.frame = v.bounds
+        return v
+    }
+
+    func updateUIView(_ v: UIView, context: Context) {
+        layer.frame = v.bounds
+    }
+}
+
+/// 画中画起不来时把原因显示出来 —— 静静失败是这个项目的老毛病
+struct PiPErrorBanner: View {
+    @ObservedObject var pip: PiPProgress
+
+    var body: some View {
+        if let e = pip.lastError {
+            Text(e)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(.tertiarySystemBackground), in: Capsule())
+                .padding(.bottom, 10)
+        }
+    }
 }
 
 struct ContentView: View {
@@ -117,6 +174,13 @@ struct ContentView: View {
             DownloadList(center: downloads, isPresented: $showDownloads)
         }
         .sheet(isPresented: $showHelp) { HelpView() }
+        // 画中画的 layer 得挂在一个真实视图上（只要几个像素，几乎看不见）
+        .background(alignment: .topLeading) {
+            PiPHost(layer: downloads.pip.displayLayer)
+        }
+        .overlay(alignment: .bottom) {
+            PiPErrorBanner(pip: downloads.pip)
+        }
         .onChange(of: model.longPressFired) { _ in
             // 长按视频 → 直接弹面板
             showPanel = true
@@ -124,8 +188,19 @@ struct ContentView: View {
         .onChange(of: scenePhase) { ph in
             // 进后台/被打断前把记录落盘 —— 不然被系统杀掉就丢
             if ph != .active { downloads.save() }
+            // 进后台且有任务在跑 → 起画中画保活（用户能看见进度，进程也继续跑）
+            if ph == .background {
+                downloads.preparePiP()
+                if downloads.activeCount > 0 { downloads.pip.start() }
+            } else if ph == .active {
+                // 回前台就不需要它了（它只在后台有意义）
+                downloads.pip.stop()
+            }
         }
-        .onAppear { input = model.address }
+        .onAppear {
+            input = model.address
+            downloads.preparePiP()
+        }
     }
 
     // MARK: - 地址栏
