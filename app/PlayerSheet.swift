@@ -21,12 +21,20 @@ import UIKit
 struct PlayerSheet: View {
     let url: URL
     let title: String
+    /// 下载保活那个小窗（可以不传）。iOS 同时只允许一个小窗 ——
+    /// 播放要占小窗时得让它先让位，否则两个抢同一个位子，结果不确定。
+    let pip: PiPProgress?
+    /// 播放小窗的总开关（设置页里那个）。关掉就完全不给小窗。
+    @AppStorage("playerPiPEnabled") private var pipEnabled = true
     @Environment(\.dismiss) private var dismiss
     @StateObject private var box: PlayerBox
+    /// 这次播放是否让下载保活窗让了位 —— 结束时要还回去
+    @State private var pipHandedOver = false
 
-    init(url: URL, title: String = "") {
+    init(url: URL, title: String = "", pip: PiPProgress? = nil) {
         self.url = url
         self.title = title
+        self.pip = pip
         _box = StateObject(wrappedValue: PlayerBox(url: url))
     }
 
@@ -34,7 +42,7 @@ struct PlayerSheet: View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
 
-            PlayerVC(player: box.player)
+            PlayerVC(player: box.player, allowsPiP: pipEnabled)
                 .ignoresSafeArea()
 
             if box.loading && box.error == nil {
@@ -98,10 +106,19 @@ struct PlayerSheet: View {
             // 表现为「同一条视频导出去有声音、在 App 里没声音」。
             AppAudio.acquire()
             box.start()
+            // 播放优先：iOS 同时只允许一个小窗，下载保活窗先让位。
+            // 让位后下载照旧在跑（App 在前台不会被挂起），只是不显示那个小窗。
+            if let pip, pip.isRunning {
+                pipHandedOver = true
+                pip.stop()
+            }
         }
         .onDisappear {
             box.stop()
             AppAudio.release()
+            // 把刚才让位的下载保活窗还回去。
+            // 此刻用户刚关掉播放器、App 一定在前台 —— 起画中画的前置条件正好满足。
+            if pipHandedOver { pip?.start() }
         }
     }
 }
@@ -254,13 +271,17 @@ final class PlayerBox: ObservableObject {
 /// 不用 SwiftUI 的 VideoPlayer 封装 —— 那个在 sheet 里容易被反复重建，是白屏的主因。
 private struct PlayerVC: UIViewControllerRepresentable {
     let player: AVPlayer
+    let allowsPiP: Bool
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
         vc.player = player
         vc.showsPlaybackControls = true
         vc.videoGravity = .resizeAspect
-        vc.allowsPictureInPicturePlayback = false
+        // 打开它：播放器上出现画中画按钮，App 进后台时系统也会把画面接进小窗。
+        // 前提是 Info.plist 里有 UIBackgroundModes=audio（我们有）——
+        // 小窗播放靠的就是那条后台模式。
+        vc.allowsPictureInPicturePlayback = allowsPiP
         vc.updatesNowPlayingInfoCenter = false
         vc.view.backgroundColor = .black
         return vc
@@ -269,5 +290,9 @@ private struct PlayerVC: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
+        // 开关可能播放中途被改（用户去设置里拨），跟着变
+        if vc.allowsPictureInPicturePlayback != allowsPiP {
+            vc.allowsPictureInPicturePlayback = allowsPiP
+        }
     }
 }

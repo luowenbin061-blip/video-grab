@@ -10,22 +10,26 @@ struct SettingsView: View {
     @State private var confirmClearHistory = false
     @State private var showHelp = false
     @State private var note: String?
+    /// 播放小窗（App 里播放视频时切出去继续播）。
+    /// 跟「下载保活」是两件事，所以是两个开关。
+    @AppStorage("playerPiPEnabled") private var playerPiP = true
 
     var body: some View {
         NavigationView {
             Form {
                 Section {
-                    Toggle("画中画保活（切后台下载不停）", isOn: pipBinding)
+                    Toggle("下载保活（切后台下载不停）", isOn: pipBinding)
                     if let e = downloads.pip.lastError {
                         Text(e).font(.system(size: 12)).foregroundStyle(.orange)
                     } else if !downloads.pip.isSupported {
                         Text("这台设备不支持画中画。").font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
+                    Toggle("播放小窗（切出去继续播）", isOn: $playerPiP)
                 } header: {
-                    Text("后台保活")
+                    Text("画中画")
                 } footer: {
-                    Text("开启后立刻出现一个画中画小窗，里面就是下载进度。回前台不会自动关掉它，随时关小窗即可停用。")
+                    Text("下载保活：开了会立刻出现一个小窗，里面是下载进度；随时关小窗即可停用。\n播放小窗：在 App 里播视频时切到别的 App，画面缩成小窗继续播（也能直接点播放器上的画中画按钮）。\n两个小窗同时只能有一个 —— 播放时下载保活窗会先让位，播完自动还回来。")
                 }
 
                 Section {

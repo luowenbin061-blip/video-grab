@@ -981,7 +981,7 @@ struct DownloadList: View {
                         }
                         Section {
                             ForEach(shownJobs) { job in
-                                JobRow(job: job)
+                                JobRow(job: job, pip: center.pip)
                             }
                             .onDelete { idx in
                                 let victims = idx.compactMap {
@@ -1057,6 +1057,10 @@ struct SheetURL: Identifiable {
 
 struct JobRow: View {
     @ObservedObject var job: DownloadJob
+    /// 只是转交给播放器用（播放时给下载保活窗让位）。
+    /// 故意用裸 let 而不是 @ObservedObject：这里不需要订阅画中画的每次变动，
+    /// 订阅了反而会让列表每一行都跟着重绘。
+    let pip: PiPProgress
     @State private var playSheet: SheetURL?
     @State private var exportSheet: SheetURL?
     @State private var showLog = false
@@ -1232,7 +1236,7 @@ struct JobRow: View {
         // 改成 .sheet(item:)：URL 本身就是触发源，有值才有 sheet，
         // "弹出了但内容是空的"这种情况从结构上不可能发生。
         .sheet(item: $playSheet) { s in
-            PlayerSheet(url: s.url, title: job.title)
+            PlayerSheet(url: s.url, title: job.title, pip: pip)
         }
         .sheet(item: $exportSheet) { s in
             DocumentExporter(url: s.url, onFinish: { ok in
