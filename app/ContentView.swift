@@ -138,7 +138,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            addressBar
+            topBar
             Divider()
 
             ZStack(alignment: .bottomTrailing) {
@@ -182,9 +182,9 @@ struct ContentView: View {
             }
 
             Divider()
-            pipBar
+            statusBar
             Divider()
-            toolbar
+            gridBar
         }
         .overlay(alignment: .top) { toastView }
         .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
@@ -225,132 +225,228 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 地址栏
+    // MARK: - 顶部（只有这一行：后退 / 前进 / 地址栏 / 前往）
+    // 原来「后退 前进 刷新」挤在底部工具栏里，三条工具栏 + 一排图标按钮堆在一起，
+    // 功能看着重叠。现在顶上一行只管「去哪儿」，其余全部收到下面。
 
-    private var addressBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "globe")
-                .foregroundStyle(.secondary)
+    private var topBar: some View {
+        HStack(spacing: 4) {
+            navButton("chevron.left", "后退", enabled: model.canGoBack) { model.goBack() }
+            navButton("chevron.right", "前进", enabled: model.canGoForward) { model.goForward() }
 
-            TextField("输入网址，或打开一个视频页", text: $input)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-                .keyboardType(.URL)
-                .font(.system(size: 14))
-                .onSubmit { model.load(input) }
-                .submitLabel(.go)
+            HStack(spacing: 6) {
+                Image(systemName: "globe")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
 
-            if !input.isEmpty {
-                Button {
-                    input = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                TextField("输入网址，或打开一个视频页", text: $input)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .keyboardType(.URL)
+                    .font(.system(size: 14))
+                    .onSubmit { model.load(input) }
+                    .submitLabel(.go)
+
+                if !input.isEmpty {
+                    Button {
+                        input = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清空地址")
                 }
             }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9))
 
             Button("前往") { model.load(input) }
                 .font(.system(size: 14, weight: .medium))
                 .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+                .padding(.horizontal, 2)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
         .background(Color(.secondarySystemBackground))
     }
 
-    // MARK: - 底部工具栏
-
-    private var toolbar: some View {
-        HStack {
-            HStack(spacing: 0) {
-                toolButton("chevron.left", "后退", enabled: model.canGoBack) { model.goBack() }
-                toolButton("chevron.right", "前进", enabled: model.canGoForward) { model.goForward() }
-                toolButton("arrow.clockwise", "刷新", enabled: true) { model.reload() }
-            }
-
-            Spacer()
-
-            Button {
-                showDownloads = true
-            } label: {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 19))
-                    if downloads.activeCount > 0 {
-                        Circle().fill(Color.red)
-                            .frame(width: 8, height: 8)
-                            .offset(x: 5, y: -4)
-                    }
-                }
-            }
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                toolButton("questionmark.circle", "说明", enabled: true) { showHelp = true }
-                toolButton(downloads.lanOn ? "wifi.circle.fill" : "wifi", "共享给电脑",
-                           enabled: true, active: downloads.lanOn) { showShare = true }
-                toolButton("list.bullet.rectangle", "嗅探结果", enabled: true) { showPanel = true }
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(Color(.secondarySystemBackground))
-    }
-
-    private func toolButton(_ icon: String, _ label: String,
-                            enabled: Bool, active: Bool = false,
-                            action: @escaping () -> Void) -> some View {
+    /// 顶部导航按钮（44×44，够手指点）
+    private func navButton(_ icon: String, _ label: String,
+                           enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 19))
-                .foregroundStyle(active ? Color.accentColor : Color.primary)
-                .frame(width: 44, height: 32)
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 44, height: 40)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.35)
+        .opacity(enabled ? 1 : 0.3)
+        .accessibilityLabel(label)
     }
 
-    // MARK: - 后台保活开关（学 Stay：在前台由用户点开，不偷偷在后台起）
+    // MARK: - 底部宫格（4 列 × 2 行，每格 2 字）
+    // 「按钮杂乱 + 文案啰嗦」的解法在这里：主界面只留这些高频入口，
+    // 每个按钮只写两个字，长说明一律不放界面上。
 
-    private var pipBar: some View {
-        VStack(spacing: 6) {
+    private var gridBar: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 0) {
+                gridCell("star", "收藏", soon: true)
+                gridCell("bookmark", "网址", soon: true)
+                gridCell("arrow.down.circle", "下载", badge: downloads.activeCount) {
+                    showDownloads = true
+                }
+                gridCell("gearshape", "设置") { showHelp = true }
+            }
+            HStack(spacing: 0) {
+                gridCell("wrench.and.screwdriver", "工具", soon: true)
+                gridCell("doc.on.doc", "复制") { copyCurrentURL() }
+                gridCell("square.on.square", "多窗", soon: true)
+                gridCell("arrow.clockwise", "刷新") { model.reload() }
+            }
+        }
+        .padding(.top, 5)
+        .padding(.bottom, 3)
+        .background(Color(.secondarySystemBackground))
+    }
+
+    /// 宫格里的一格。
+    /// - soon: 本轮还没做的功能 —— 画成灰的、点了说明白，别让按钮看着能用却不动。
+    private func gridCell(_ icon: String, _ label: String,
+                          soon: Bool = false, badge: Int = 0,
+                          action: @escaping () -> Void = {}) -> some View {
+        Button {
+            if soon {
+                model.showToast("「\(label)」下一批加进来")
+            } else {
+                action()
+            }
+        } label: {
+            VStack(spacing: 3) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 20))
+                    if badge > 0 {
+                        Text("\(badge)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 0.5)
+                            .background(Color.red, in: Capsule())
+                            .offset(x: 11, y: -7)
+                    }
+                }
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 46)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(soon ? Color.secondary.opacity(0.5) : Color.primary)
+        .accessibilityLabel(label)
+        .accessibilityHint(soon ? "下一批开放" : "")
+    }
+
+    /// 复制当前页地址（不是地址栏里正在输入的半截内容）
+    /// 用 model.address：它在每次加载完成时被同步成真实页面地址；
+    /// 走 webView.url 的话这个文件还得 import WebKit，没必要。
+    private func copyCurrentURL() {
+        let s = model.address
+        guard !s.isEmpty, s != "about:blank" else {
+            model.showToast("还没打开网页")
+            return
+        }
+        model.copy(s)          // 已有实现：写剪贴板 + 弹提示
+    }
+
+    // MARK: - 状态条（下载进度 / PIP 保活 / 局域网共享）
+    // 这三个都是「开关状态要一眼看见」的东西，所以不进宫格，常驻一条细条。
+    // 左边下载态：有活跃任务才画，闲着就什么都不画；右边两个胶囊常驻 ——
+    // PIP 和共享的开关必须一直够得着（等批次 3 做出设置页，再把它们收进去）。
+
+    private var statusBar: some View {
+        VStack(spacing: 5) {
             PiPErrorBanner(pip: downloads.pip)
 
             HStack(spacing: 8) {
-                Button {
+                downloadStatus
+                Spacer(minLength: 4)
+
+                pill(downloads.pip.isRunning ? "pip.fill" : "pip",
+                     "PIP", on: downloads.pip.isRunning) {
                     if downloads.pip.isRunning {
                         downloads.pip.stop()
                     } else {
-                        showPiPAsk = true          // 先问一句，再趁前台立刻起
+                        showPiPAsk = true      // 先问一句，再趁前台立刻起（学 Stay）
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: downloads.pip.isRunning ? "pip.fill" : "pip")
-                            .font(.system(size: 11, weight: .medium))
-                        Text(downloads.pip.isRunning ? "PIP 后台下载中 · 点此停用" : "PIP 后台下载")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 6)
-                    .background(downloads.pip.isRunning ? Color.accentColor : Color(.tertiarySystemFill),
-                                in: Capsule())
-                    .foregroundStyle(downloads.pip.isRunning ? Color.white : Color.primary)
                 }
-                .buttonStyle(.plain)
 
-                Spacer()
+                pill(downloads.lanOn ? "wifi.circle.fill" : "wifi",
+                     "共享", on: downloads.lanOn) { showShare = true }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(.secondarySystemBackground))
+    }
 
-                if downloads.pip.isRunning, downloads.activeCount == 0 {
-                    Text("现在还没有下载任务")
+    @ViewBuilder
+    private var downloadStatus: some View {
+        let act = downloads.jobs.filter { $0.isActive }
+        if !act.isEmpty {
+            let total = act.reduce(0) { $0 + $1.total }
+            let done = act.reduce(0) { $0 + $1.done }
+            HStack(spacing: 6) {
+                if total > 0 {
+                    ProgressView(value: Double(done) / Double(total))
+                        .progressViewStyle(.linear)
+                        .frame(width: 56)
+                    Text("下载中 \(Int(Double(done) / Double(total) * 100))%")
+                        .font(.system(size: 11, weight: .medium))
+                        .monospacedDigit()
+                } else {
+                    // 分片下完了、还没开始转码时 total 会是 0 —— 别显示「0%」误导人
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.65)
+                        .frame(width: 14, height: 14)
+                    Text(act.first?.phase ?? "处理中")
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                }
+                if act.count > 1 {
+                    Text("· \(act.count) 个")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(Color(.secondarySystemBackground))
+    }
+
+    /// 状态条上的小胶囊开关：开着是实色，关着是浅底
+    private func pill(_ icon: String, _ label: String,
+                      on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .medium))
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(on ? Color.accentColor : Color(.tertiarySystemFill), in: Capsule())
+            .foregroundStyle(on ? Color.white : Color.primary)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityValue(on ? "已开启" : "已关闭")
     }
 
     // MARK: - Toast
