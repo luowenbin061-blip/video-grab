@@ -11,7 +11,7 @@ struct BookmarksView: View {
     @State private var confirmClear = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             VStack(spacing: 0) {
                 Picker("", selection: $tab) {
                     Text("收藏 \(store.marks.count)").tag(0)
@@ -61,7 +61,9 @@ struct BookmarksView: View {
                     row(title: m.label, host: m.host, extra: m.timeText) { open(m.url) }
                 }
                 .onDelete { idx in
-                    for i in idx { store.removeMark(url: store.marks[i].url) }
+                    // 先把要删的地址收集出来再删 —— 边删边按下标取会错位
+                    let urls = idx.map { store.marks[$0].url }
+                    urls.forEach { store.removeMark(url: $0) }
                 }
             }
             .listStyle(.plain)
@@ -81,7 +83,8 @@ struct BookmarksView: View {
                     }
                 }
                 .onDelete { idx in
-                    for i in idx { store.removeHistory(url: store.history[i].url) }
+                    let urls = idx.map { store.history[$0].url }
+                    urls.forEach { store.removeHistory(url: $0) }
                 }
             }
             .listStyle(.plain)

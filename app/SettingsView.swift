@@ -12,7 +12,7 @@ struct SettingsView: View {
     @State private var note: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section {
                     Toggle("画中画保活（切后台下载不停）", isOn: pipBinding)

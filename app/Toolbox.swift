@@ -3,6 +3,12 @@ import UIKit
 
 /// 工具箱：截图 / 页内查找 / 翻译 —— 都只作用于当前网页。
 /// 三个动作都是「先收起这张卡片再动手」：卡片盖着的时候网页那层不是最新画面。
+///
+/// ★ 这里必须显式写 @MainActor：BrowserModel 是 @MainActor 类型，
+///   用 @ObservedObject / @StateObject 包住它的 View 会被自动推断成 @MainActor，
+///   但本页用的是裸 `let model: BrowserModel`，拿不到那层推断 →
+///   直接调 model.currentURL / model.load() 会被判成 non-isolated 而编译不过。
+@MainActor
 struct ToolboxView: View {
     let model: BrowserModel
     @Binding var isPresented: Bool
@@ -10,7 +16,7 @@ struct ToolboxView: View {
     @State private var note: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section("当前网页") {
                     Button { shoot() } label: {
