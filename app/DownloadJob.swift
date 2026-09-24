@@ -29,6 +29,13 @@ final class DownloadJob: ObservableObject, Identifiable {
     @Published var phase: String
     @Published var done = 0
     @Published var total = 0
+    /// 暂停（用户点的，或被系统中断）—— 分片都留在磁盘上，点「继续」从断点接着下
+    @Published var paused = false
+    /// 当前阶段 + 本阶段计数 + 累计字节 —— 总百分比和 MB/s 都从这来
+    @Published private(set) var stage: HLSDownloader.Stage = .prepare
+    @Published private(set) var bytesDone: Int64 = 0
+    @Published private(set) var convertProgress: Double = 0
+    @Published private(set) var speedBytesPerSec: Int64 = 0
     @Published var finished: Bool
     @Published var failed: String?
     /// 能直接播的那个产物（转成功是 .mp4；没转成是 .ts）
@@ -61,9 +68,51 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     private var task: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
+    /// 自动重试只用一次（每次 start 重置）—— 无限自动重试会一直烧流量
+    private var autoRetried = false
 
+    /// 本阶段内的进度（下载/拼接共用分片计数）
     var progress: Double { total > 0 ? Double(done) / Double(total) : 0 }
-    var isActive: Bool { !finished && failed == nil }
+
+    /// 整条流程（下载 → 拼接 → 转码）的总百分比。
+    /// 权重：下载 0.85 / 拼接 0.07 / 转码 0.08。转码是 -c copy 只换壳（秒级），
+    /// 真正耗时的是下载 —— 给转码大头的话，条子会长时间停在高位不动，那是在骗人。
+    var overall: Double {
+        switch stage {
+        case .prepare:  return 0
+        case .download: return progress * 0.85
+        case .join:     return 0.85 + progress * 0.07
+        case .convert:  return 0.92 + convertProgress * 0.08
+        case .finished: return 1
+        }
+    }
+
+    var isActive: Bool { !finished && failed == nil && !paused }
+
+    // MARK: - 速度（MB/s）
+
+    /// 字节采样（近 6 秒的滑动平均 —— 单点跳动太大没法看）
+    private var speedSamples: [(t: Date, b: Int64)] = []
+
+    private func markSpeedSample() {
+        let now = Date()
+        speedSamples.append((now, bytesDone))
+        while speedSamples.count > 2, now.timeIntervalSince(speedSamples[0].t) > 6 {
+            speedSamples.removeFirst()
+        }
+        guard let first = speedSamples.first, speedSamples.count >= 2 else { return }
+        let dt = now.timeIntervalSince(first.t)
+        guard dt > 0.5 else { return }          // 间隔太短算出来会跳
+        speedBytesPerSec = Int64(Double(bytesDone - first.b) / dt)
+    }
+
+    /// 给人看的速度；没在动的时候是空串
+    var speedText: String {
+        guard speedBytesPerSec > 0 else { return "" }
+        let mb = Double(speedBytesPerSec) / 1_048_576
+        return mb >= 1 ? String(format: "%.1f MB/s", mb)
+                       : String(format: "%.0f KB/s", Double(speedBytesPerSec) / 1024)
+    }
 
     // MARK: - 构造
 
@@ -90,9 +139,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         title = record.title
         sourceURL = record.sourceURL
         createdAt = record.createdAt
-        // 恢复的历史记录没有（也不需要）请求上下文
-        referrer = ""
-        ua = ""
+        // 请求上下文：Referer/UA 现在落盘 —— 跨重启续传要靠它们过防盗链；
+        // Cookie 仍然不存（登录凭据写磁盘的代价大于收益，续传失败大不了
+        // 从嗅探面板重开一次）。
+        referrer = record.referrer ?? ""
+        ua = record.ua ?? ""
         cookie = ""
         phase = record.phaseText
         finished = true
@@ -105,10 +156,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         resolution = record.resolution
         notes = record.notes
 
-        // 上次是下到一半被关掉的
+        // 上次是下到一半被关掉的 —— 标成「非自愿暂停」，界面上给「继续」
         if !record.finished, record.failed == nil {
             failed = "上次运行中被中断（没下完）"
             phase = "中断"
+            paused = true
         }
         let t = Self.thumbName(for: record.id)
         thumbName = JobStore.exists(named: t) ? t : nil
@@ -126,6 +178,8 @@ final class DownloadJob: ObservableObject, Identifiable {
         JobRecord(id: id,
                   title: title,
                   sourceURL: sourceURL,
+                  referrer: referrer,
+                  ua: ua,
                   createdAt: createdAt,
                   finishedAt: finished ? Date() : nil,
                   finished: finished,
@@ -143,8 +197,31 @@ final class DownloadJob: ObservableObject, Identifiable {
     // MARK: - 控制
 
     func start() {
-        guard task == nil, !finished else { return }
+        guard task == nil, !finished, !paused else { return }
+        autoRetried = false
         task = Task { [weak self] in await self?.run() }
+    }
+
+    /// 用户点「暂停」。已下的分片都留在磁盘上，「继续」时从断点接着下。
+    func pause() {
+        guard task != nil else { return }
+        paused = true                 // 先置标志：run() 的取消分支看到它就不会标成完成
+        task?.cancel()
+        task = nil
+        phase = "已暂停（已下的分片保留）"
+        onUpdate?()
+    }
+
+    /// 「继续 / 重试」是同一个动作：从已下的分片接着下（下过的不会重下）。
+    /// 按钮文案分开（暂停→继续、失败→重试）只是给用户看的语义，底层没有区别。
+    func resumeDownload() {
+        guard task == nil, !isActive else { return }
+        notes.append("· 继续下载（已下的 \(done) 个分片保留）")
+        paused = false
+        failed = nil
+        finished = false
+        phase = "继续下载…"
+        start()
     }
 
     func cancel() {
@@ -250,19 +327,22 @@ final class DownloadJob: ObservableObject, Identifiable {
         if opt.referer == nil, let host = src.host { opt.referer = "https://\(host)/" }
 
         var dl = HLSDownloader(options: opt)
-        dl.onProgress = { [weak self] d, t, msg in
+        dl.onProgress = { [weak self] p in
             Task { @MainActor in
                 guard let self else { return }
-                self.done = d
-                self.total = t
-                self.phase = msg
+                self.stage = p.stage
+                self.done = p.done
+                self.total = p.total
+                self.bytesDone = p.bytes
+                self.phase = p.message
+                self.markSpeedSample()
             }
         }
 
         phase = "开始…"
         do {
             let result = try await dl.run(sourceURL: src)
-            if Task.isCancelled { return }
+            if Task.isCancelled { paused = true; onUpdate?(); return }
 
             duration = result.duration
             fileSize = JobStore.size(of: tsURL.lastPathComponent)
@@ -284,13 +364,16 @@ final class DownloadJob: ObservableObject, Identifiable {
                 hls: wrotePlaylist ? LocalHTTPServer.shared.url(playName) : nil,
                 remote: src,
                 mp4: mp4URL,
-                onProgress: { [weak self] _, msg in
+                onProgress: { [weak self] p, msg in
                     Task { @MainActor in
-                        self?.phase = msg.isEmpty ? "正在转成 MP4…" : msg
+                        guard let self else { return }
+                        self.stage = .convert
+                        self.convertProgress = p
+                        self.phase = msg.isEmpty ? "正在转成 MP4…" : msg
                     }
                 })
 
-            if Task.isCancelled { return }
+            if Task.isCancelled { paused = true; onUpdate?(); return }
             notes.append(contentsOf: log.map(\.line))
 
             var thumbSource: URL?          // 转成功了才有片子可抽
@@ -322,9 +405,23 @@ final class DownloadJob: ObservableObject, Identifiable {
 
         } catch {
             if Task.isCancelled {
-                finished = true
+                // 暂停 / 外部取消：已下分片都在，点「继续」从断点接着下。
+                // 老代码在这里置 finished = true —— 界面写着「可再点继续」、
+                // 点了却被 start() 的守卫拒绝，那个矛盾就是这么来的。
+                paused = true
                 onUpdate?()
                 return
+            }
+            // 自动重试一次：网络抖动占失败的大头，隔 1.5 秒再试能救回一大半。
+            // 只自动试一次 —— 无限重试会一直烧流量，剩下的交给人工点「重试」。
+            if !autoRetried {
+                autoRetried = true
+                notes.append("· 自动重试（第 1 次）—— 上次失败：\(error.localizedDescription)")
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if !Task.isCancelled {
+                    await run()
+                    return
+                }
             }
             failed = error.localizedDescription
             phase = "失败"

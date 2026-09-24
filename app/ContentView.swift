@@ -1075,10 +1075,19 @@ struct JobRow: View {
                 thumb
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(job.title)
-                        .font(.system(size: 14, weight: .medium))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(job.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if job.isActive {
+                            Spacer(minLength: 8)
+                            // 大号总百分比：整条流程（下载+拼接+转码）
+                            Text("\(Int((job.overall * 100).rounded()))%")
+                                .font(.system(size: 17, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(.tint)
+                        }
+                    }
 
                     Text(JobRecord.formatter.string(from: job.createdAt))
                         .font(.system(size: 10.5).monospacedDigit())
@@ -1095,7 +1104,7 @@ struct JobRow: View {
             }
 
             if job.isActive {
-                ProgressView(value: job.progress)
+                ProgressView(value: job.overall)
             }
 
             HStack {
@@ -1104,10 +1113,17 @@ struct JobRow: View {
                     .foregroundStyle(job.failed != nil ? .red : .secondary)
                     .lineLimit(2)
                 Spacer()
-                if job.total > 0 && job.isActive {
-                    Text("\(job.done)/\(job.total)")
-                        .font(.system(size: 11.5).monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                if job.isActive {
+                    if !job.speedText.isEmpty {
+                        Text(job.speedText)
+                            .font(.system(size: 11.5).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    if job.total > 0 {
+                        Text("\(job.done)/\(job.total)")
+                            .font(.system(size: 11.5).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
 
@@ -1125,6 +1141,29 @@ struct JobRow: View {
                 Text(n)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.green)
+            }
+
+            // 进行中 → 暂停；已暂停/被中断 → 继续；失败 → 重试。
+            // 文案分开是给用户看的语义，底层都是「保留已下分片，从断点接着来」。
+            if job.isActive {
+                Button {
+                    job.pause()
+                } label: {
+                    Label("暂停", systemImage: "pause.fill")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            } else if job.paused || job.failed != nil {
+                Button {
+                    job.resumeDownload()
+                } label: {
+                    Label(job.paused ? "继续" : "重试",
+                          systemImage: job.paused ? "play.circle.fill" : "arrow.clockwise")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
 
             // 操作按钮

@@ -43,8 +43,22 @@ struct HLSDownloader {
     }
 
     let options: Options
-    /// (已完成, 总数, 阶段文字)
-    var onProgress: (Int, Int, String) -> Void = { _, _, _ in }
+
+    /// 下载进行到哪个阶段 —— 界面的「总百分比」按阶段加权（下载是大头，
+    /// 拼接/转码都是秒级）。转码那一档由 DownloadJob 自己接 FFmpeg 的回调。
+    enum Stage { case prepare, download, join, convert, finished }
+
+    /// 一次进度上报。done/total 是**本阶段内**的计数（下载=分片数、拼接=分片数）；
+    /// bytes 是累计已下载字节数（算 MB/s 用，拿分片个数换算是糊弄人）。
+    struct Progress {
+        let stage: Stage
+        let done: Int
+        let total: Int
+        let bytes: Int64
+        let message: String
+    }
+
+    var onProgress: (Progress) -> Void = { _ in }
 
     /// 下载产物。除了文件本身，还带出时长和分片数 ——
     /// 时长要用来写一条只含单个分片的 m3u8（播放器需要 #EXTINF）。
@@ -60,7 +74,7 @@ struct HLSDownloader {
         try FileManager.default.createDirectory(at: options.tempDir,
                                                 withIntermediateDirectories: true)
 
-        onProgress(0, 0, "读取 m3u8…")
+        onProgress(Progress(stage: .prepare, done: 0, total: 0, bytes: 0, message: "读取 m3u8…"))
         let first = try await loadPlaylist(url: sourceURL)
 
         // ★ 关键：master playlist 不含分片，必须先挑一个清晰度再取子列表。
@@ -70,7 +84,8 @@ struct HLSDownloader {
         if first.isMaster {
             guard let v = first.bestVariant() else { throw Fail.noVariant }
             let label = v.resolution ?? (v.bandwidth.map { "\($0 / 1000)kbps" } ?? "默认清晰度")
-            onProgress(0, 0, "选中清晰度 \(label)，读取分片列表…")
+            onProgress(Progress(stage: .prepare, done: 0, total: 0, bytes: 0,
+                                message: "选中清晰度 \(label)，读取分片列表…"))
             playlist = try await loadPlaylist(url: v.url)
         } else {
             playlist = first
@@ -82,7 +97,8 @@ struct HLSDownloader {
 
         // 1) 并发下载（已存在的分片文件直接跳过 = 天然断点续传）
         var done = 0
-        await withTaskGroup(of: Bool.self) { group in
+        var bytesDone: Int64 = 0
+        await withTaskGroup(of: Int64?.self) { group in
             var next = 0
             var inflight = 0
             let limit = max(1, options.concurrency)
@@ -90,12 +106,12 @@ struct HLSDownloader {
             func addTask(_ i: Int) {
                 group.addTask {
                     do {
-                        try await downloadSegment(index: i,
-                                                  url: segs[i],
-                                                  playlist: playlist)
-                        return true
+                        // 返回本次新下载的字节数 —— 界面的 MB/s 用真实字节算
+                        return try await downloadSegment(index: i,
+                                                         url: segs[i],
+                                                         playlist: playlist)
                     } catch {
-                        return false
+                        return nil
                     }
                 }
                 inflight += 1
@@ -104,14 +120,17 @@ struct HLSDownloader {
             while next < total && inflight < limit {
                 addTask(next); next += 1
             }
-            while let ok = await group.next() {
+            while let n = await group.next() {
                 inflight -= 1
-                if !ok {
+                guard let n else {
                     group.cancelAll()
                     break
                 }
                 done += 1
-                onProgress(done, total, "下载分片 \(done)/\(total)")
+                bytesDone += n
+                onProgress(Progress(stage: .download, done: done, total: total,
+                                    bytes: bytesDone,
+                                    message: "下载分片 \(done)/\(total)"))
                 if next < total { addTask(next); next += 1 }
             }
         }
@@ -121,7 +140,7 @@ struct HLSDownloader {
         }
 
         // 2) 按顺序拼接（边拼边删，控制磁盘占用）
-        onProgress(total, total, "正在拼接…")
+        onProgress(Progress(stage: .join, done: 0, total: total, bytes: bytesDone, message: "正在拼接…"))
         let fm = FileManager.default
         if fm.fileExists(atPath: options.outputURL.path) {
             try? fm.removeItem(at: options.outputURL)
@@ -140,13 +159,14 @@ struct HLSDownloader {
             out.write(payload)
             try? fm.removeItem(at: part)
             if i % 25 == 0 {
-                onProgress(total, total, "拼接 \(i + 1)/\(total)")
+                onProgress(Progress(stage: .join, done: i + 1, total: total,
+                                    bytes: bytesDone, message: "拼接 \(i + 1)/\(total)"))
             }
         }
         try? out.close()
 
         try? fm.removeItem(at: options.tempDir)
-        onProgress(total, total, "完成")
+        onProgress(Progress(stage: .finished, done: total, total: total, bytes: bytesDone, message: "完成"))
         return Output(fileURL: options.outputURL,
                       duration: playlist.totalDuration,
                       segmentCount: total)
@@ -182,11 +202,12 @@ struct HLSDownloader {
         options.tempDir.appendingPathComponent(String(format: "seg_%06d.part", i))
     }
 
-    private func downloadSegment(index: Int, url: URL, playlist: M3U8Playlist) async throws {
+    /// 下载单个分片。返回**本次新下载**的字节数（续传跳过的返回 0）。
+    private func downloadSegment(index: Int, url: URL, playlist: M3U8Playlist) async throws -> Int64 {
         let dest = partURL(index)
         // 已经下过就跳过（断点续传 / 重复点击不重下）
         if let sz = try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int, sz > 0 {
-            return
+            return 0
         }
         var lastErr: Error?
         for attempt in 0...options.retry {
@@ -197,7 +218,7 @@ struct HLSDownloader {
                 }
                 guard !data.isEmpty else { throw Fail.badStatus(0, "空响应") }
                 try data.write(to: dest, options: .atomic)
-                return
+                return Int64(data.count)
             } catch {
                 lastErr = error
                 if attempt < options.retry {

@@ -88,6 +88,11 @@ struct JobRecord: Codable {
     var id: UUID
     var title: String
     var sourceURL: String
+    /// 嗅探时的页面上下文。Referer/UA 落盘（跨重启续传过防盗链用）；
+    /// **Cookie 故意不存** —— 那是登录凭据，写磁盘的代价大于收益。
+    /// 可选类型：旧记录里没有这两个键，读进来是 nil，整份记录不受影响。
+    var referrer: String?
+    var ua: String?
     var createdAt: Date
     var finishedAt: Date?
     var finished: Bool
