@@ -157,8 +157,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:30F33610-4843-4C04-99B0-734F24ADAB6B, OS:17.4, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
-{ platform:iOS Simulator, id:DEF56884-0CAE-4027-8B61-C4E279F151AA, OS:18.1, name:iPhone 15 }
-{ platform:iOS Simulator, id:DEF56884-0CAE-4027-8B61-C4E279F151AA, OS:18.1, name:iPhone 15 }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:D4463870-0237-4022-B154-00CCA82A0636, OS:17.2, name:iPhone 15 Plus }
@@ -167,8 +165,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:9E6981FD-68F6-499B-9715-54D0AC6B324E, OS:17.4, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:30F1C48C-6BC7-45CB-B041-148DB55012B0, OS:18.1, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:30F1C48C-6BC7-45CB-B041-148DB55012B0, OS:18.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:0C511E31-82CB-4CE3-AF79-548A755737AE, OS:17.2, name:iPhone 15 Pro }
@@ -177,8 +173,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:E63A4C69-8ADF-4037-A5EE-AE47A98E069B, OS:17.4, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:B15C98D2-D2CB-4366-B470-4881BB76708E, OS:17.5, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:B15C98D2-D2CB-4366-B470-4881BB76708E, OS:17.5, name:iPhone 15 Pro }
-{ platform:iOS Simulator, id:9FFD0946-6E80-4F15-BFE9-AE7F0A657795, OS:18.1, name:iPhone 15 Pro }
-{ platform:iOS Simulator, id:9FFD0946-6E80-4F15-BFE9-AE7F0A657795, OS:18.1, name:iPhone 15 Pro }
+{ platform:iOS Simulator, id:56148F0E-2277-4D0F-9B11-9AFDEC61DF63, OS:18.1, name:iPhone 15 Pro }
+{ platform:iOS Simulator, id:56148F0E-2277-4D0F-9B11-9AFDEC61DF63, OS:18.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:78A14695-FEEB-4A7C-A0FA-91541B02259E, OS:17.0.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:78A14695-FEEB-4A7C-A0FA-91541B02259E, OS:17.0.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:753632A6-2C76-413F-80EA-EA5B7C90310B, OS:17.2, name:iPhone 15 Pro Max }
@@ -187,6 +183,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:F2188A35-1A84-46E5-AD89-58890B04C591, OS:17.4, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:841D7184-699B-47B2-85C0-20A631E82E5A, OS:18.1, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:841D7184-699B-47B2-85C0-20A631E82E5A, OS:18.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:EDC4F281-97FB-4004-B8FA-3ED2BD36749C, OS:18.2, name:iPhone 16 }
@@ -241,15 +239,15 @@ ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/X
 
 ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld -version_details
 
-Build description signature: 92021f17884949eb27a29f37669e6019
-Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/92021f17884949eb27a29f37669e6019.xcbuilddata
-CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products
-    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
-    builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Products
-
+Build description signature: 1e929507c8a1fc4bb27225abc9777c1c
+Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/1e929507c8a1fc4bb27225abc9777c1c.xcbuilddata
 ClangStatCache /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
     /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -o /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
+
+CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products
+    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
+    builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Products
 
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
@@ -349,7 +347,7 @@ SwiftDriver\ Compilation VideoGrab normal arm64 com.apple.xcode.tools.swift.comp
 
 SwiftGeneratePch normal arm64 Compiling\ bridging\ header (in target 'VideoGrab' from project 'VideoGrab')
     cd /Users/runner/work/video-grab/video-grab
-    builtin-swiftTaskExecution -- /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend -target arm64-apple-ios15.0 -Xllvm -aarch64-use-tbi -enable-objc-interop -stack-check -sdk /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -I /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -F /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -no-color-diagnostics -g -module-cache-path /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex -swift-version 5 -enforce-exclusivity\=checked -O -serialize-debugging-options -const-gather-protocols-file /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/Objects-normal/arm64/VideoGrab_const_extract_protocols.json -enable-bare-slash-regex -empty-abi-descriptor -validate-clang-modules-once -clang-build-session-file /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex/Session.modulevalidation -Xcc -working-directory -Xcc /Users/runner/work/video-grab/video-grab -resource-dir /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift -Xcc -ivfsstatcache -Xcc /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/swift-overrides.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-generated-files.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-own-target-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-project-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/include -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources-normal/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources -import-objc-header /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h -module-name VideoGrab -disable-clang-spi -target-sdk-version 17.5 -target-sdk-name iphoneos17.5 -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/lib/swift/host/plugins -emit-pch -serialize-diagnostics-path /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders/VideoGrab-Bridging-Header-1dlevdebklaho.dia -pch-output-dir /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h
+    builtin-swiftTaskExecution -- /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend -target arm64-apple-ios15.0 -Xllvm -aarch64-use-tbi -enable-objc-interop -stack-check -sdk /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -I /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -F /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -no-color-diagnostics -g -module-cache-path /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex -swift-version 5 -enforce-exclusivity\=checked -O -serialize-debugging-options -const-gather-protocols-file /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/Objects-normal/arm64/VideoGrab_const_extract_protocols.json -enable-bare-slash-regex -empty-abi-descriptor -validate-clang-modules-once -clang-build-session-file /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex/Session.modulevalidation -Xcc -working-directory -Xcc /Users/runner/work/video-grab/video-grab -resource-dir /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift -Xcc -ivfsstatcache -Xcc /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/swift-overrides.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-generated-files.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-own-target-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-project-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/include -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources-normal/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources -import-objc-header /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h -module-name VideoGrab -disable-clang-spi -target-sdk-version 17.5 -target-sdk-name iphoneos17.5 -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/lib/swift/host/plugins -emit-pch -serialize-diagnostics-path /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders/VideoGrab-Bridging-Header-2piix6ihkinu1.dia -pch-output-dir /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h
 
 SwiftDriverJobDiscovery normal arm64 Compiling bridging header (in target 'VideoGrab' from project 'VideoGrab')
 
@@ -443,8 +441,8 @@ note: Metadata extraction skipped. No AppIntents.framework dependency found. (in
 AppIntentsSSUTraining (in target 'VideoGrab' from project 'VideoGrab')
     cd /Users/runner/work/video-grab/video-grab
     /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/appintentsnltrainingprocessor --infoplist-path /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app/Info.plist --temp-dir-path /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/ssu --bundle-id com.videograb.app --product-path /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app --extracted-metadata-path /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app/Metadata.appintents --archive-ssu-assets
-2026-09-24 07:05:25.242 appintentsnltrainingprocessor[6244:21890] Parsing options for appintentsnltrainingprocessor
-2026-09-24 07:05:25.244 appintentsnltrainingprocessor[6244:21890] No AppShortcuts found - Skipping.
+2026-09-24 07:18:44.475 appintentsnltrainingprocessor[16188:45114] Parsing options for appintentsnltrainingprocessor
+2026-09-24 07:18:44.478 appintentsnltrainingprocessor[16188:45114] No AppShortcuts found - Skipping.
 
 RegisterExecutionPolicyException /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app (in target 'VideoGrab' from project 'VideoGrab')
     cd /Users/runner/work/video-grab/video-grab
@@ -471,7 +469,7 @@ codesign: OK
 1
       cmd LC_CODE_SIGNATURE
   cmdsize 16
-  dataoff 21786944
+  dataoff 21787728
 found app: build/Build/Products/Release-iphoneos/VideoGrab.app
 --- Payload 结构 ---
 out/Payload
@@ -485,7 +483,7 @@ out/Payload/VideoGrab.app/sniffer.js
 out/Payload/VideoGrab.app/Info.plist
 out/Payload/VideoGrab.app/VideoGrab
 out/Payload/VideoGrab.app/PkgInfo
--rw-r--r--  1 runner  staff  9720223 Sep 24 07:05 ../VideoGrab-unsigned.ipa
+-rw-r--r--  1 runner  staff  9721012 Sep 24 07:18 ../VideoGrab-unsigned.ipa
 
 === (中间省略) ===
 
@@ -648,8 +646,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:30F33610-4843-4C04-99B0-734F24ADAB6B, OS:17.4, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
 { platform:iOS Simulator, id:CC86AE0C-952D-43BA-B4CA-7A9A56FB3E00, OS:17.5, name:iPhone 15 }
-{ platform:iOS Simulator, id:DEF56884-0CAE-4027-8B61-C4E279F151AA, OS:18.1, name:iPhone 15 }
-{ platform:iOS Simulator, id:DEF56884-0CAE-4027-8B61-C4E279F151AA, OS:18.1, name:iPhone 15 }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:17A8C012-E83F-467F-888A-25C2977491AB, OS:17.0.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:D4463870-0237-4022-B154-00CCA82A0636, OS:17.2, name:iPhone 15 Plus }
@@ -658,8 +654,6 @@ Build settings from command line:
 { platform:iOS Simulator, id:9E6981FD-68F6-499B-9715-54D0AC6B324E, OS:17.4, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:4AA0BA9A-F857-4E14-B7E2-0886D349E70F, OS:17.5, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:30F1C48C-6BC7-45CB-B041-148DB55012B0, OS:18.1, name:iPhone 15 Plus }
-{ platform:iOS Simulator, id:30F1C48C-6BC7-45CB-B041-148DB55012B0, OS:18.1, name:iPhone 15 Plus }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:E3BBCD6B-A52D-45EF-B6E0-96D3151F472D, OS:17.0.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:0C511E31-82CB-4CE3-AF79-548A755737AE, OS:17.2, name:iPhone 15 Pro }
@@ -668,8 +662,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:E63A4C69-8ADF-4037-A5EE-AE47A98E069B, OS:17.4, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:B15C98D2-D2CB-4366-B470-4881BB76708E, OS:17.5, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:B15C98D2-D2CB-4366-B470-4881BB76708E, OS:17.5, name:iPhone 15 Pro }
-{ platform:iOS Simulator, id:9FFD0946-6E80-4F15-BFE9-AE7F0A657795, OS:18.1, name:iPhone 15 Pro }
-{ platform:iOS Simulator, id:9FFD0946-6E80-4F15-BFE9-AE7F0A657795, OS:18.1, name:iPhone 15 Pro }
+{ platform:iOS Simulator, id:56148F0E-2277-4D0F-9B11-9AFDEC61DF63, OS:18.1, name:iPhone 15 Pro }
+{ platform:iOS Simulator, id:56148F0E-2277-4D0F-9B11-9AFDEC61DF63, OS:18.1, name:iPhone 15 Pro }
 { platform:iOS Simulator, id:78A14695-FEEB-4A7C-A0FA-91541B02259E, OS:17.0.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:78A14695-FEEB-4A7C-A0FA-91541B02259E, OS:17.0.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:753632A6-2C76-413F-80EA-EA5B7C90310B, OS:17.2, name:iPhone 15 Pro Max }
@@ -678,6 +672,8 @@ Build settings from command line:
 { platform:iOS Simulator, id:F2188A35-1A84-46E5-AD89-58890B04C591, OS:17.4, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:B67BB802-8F6F-4830-A0C0-81D202D4AE98, OS:17.5, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:841D7184-699B-47B2-85C0-20A631E82E5A, OS:18.1, name:iPhone 15 Pro Max }
+{ platform:iOS Simulator, id:841D7184-699B-47B2-85C0-20A631E82E5A, OS:18.1, name:iPhone 15 Pro Max }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:A5B144E6-A071-4106-B457-76AA34C952DD, OS:18.1, name:iPhone 16 }
 { platform:iOS Simulator, id:EDC4F281-97FB-4004-B8FA-3ED2BD36749C, OS:18.2, name:iPhone 16 }
@@ -732,15 +728,15 @@ ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/X
 
 ExecuteExternalTool /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld -version_details
 
-Build description signature: 92021f17884949eb27a29f37669e6019
-Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/92021f17884949eb27a29f37669e6019.xcbuilddata
-CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products
-    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
-    builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Products
-
+Build description signature: 1e929507c8a1fc4bb27225abc9777c1c
+Build description path: /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/XCBuildData/1e929507c8a1fc4bb27225abc9777c1c.xcbuilddata
 ClangStatCache /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
     /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -o /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache
+
+CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Products
+    cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
+    builtin-create-build-directory /Users/runner/work/video-grab/video-grab/build/Build/Products
 
 CreateBuildDirectory /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex
     cd /Users/runner/work/video-grab/video-grab/VideoGrab.xcodeproj
@@ -840,7 +836,7 @@ SwiftDriver\ Compilation VideoGrab normal arm64 com.apple.xcode.tools.swift.comp
 
 SwiftGeneratePch normal arm64 Compiling\ bridging\ header (in target 'VideoGrab' from project 'VideoGrab')
     cd /Users/runner/work/video-grab/video-grab
-    builtin-swiftTaskExecution -- /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend -target arm64-apple-ios15.0 -Xllvm -aarch64-use-tbi -enable-objc-interop -stack-check -sdk /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -I /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -F /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -no-color-diagnostics -g -module-cache-path /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex -swift-version 5 -enforce-exclusivity\=checked -O -serialize-debugging-options -const-gather-protocols-file /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/Objects-normal/arm64/VideoGrab_const_extract_protocols.json -enable-bare-slash-regex -empty-abi-descriptor -validate-clang-modules-once -clang-build-session-file /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex/Session.modulevalidation -Xcc -working-directory -Xcc /Users/runner/work/video-grab/video-grab -resource-dir /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift -Xcc -ivfsstatcache -Xcc /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/swift-overrides.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-generated-files.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-own-target-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-project-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/include -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources-normal/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources -import-objc-header /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h -module-name VideoGrab -disable-clang-spi -target-sdk-version 17.5 -target-sdk-name iphoneos17.5 -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/lib/swift/host/plugins -emit-pch -serialize-diagnostics-path /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders/VideoGrab-Bridging-Header-1dlevdebklaho.dia -pch-output-dir /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h
+    builtin-swiftTaskExecution -- /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend -target arm64-apple-ios15.0 -Xllvm -aarch64-use-tbi -enable-objc-interop -stack-check -sdk /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk -I /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -F /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos -no-color-diagnostics -g -module-cache-path /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex -swift-version 5 -enforce-exclusivity\=checked -O -serialize-debugging-options -const-gather-protocols-file /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/Objects-normal/arm64/VideoGrab_const_extract_protocols.json -enable-bare-slash-regex -empty-abi-descriptor -validate-clang-modules-once -clang-build-session-file /Users/runner/work/video-grab/video-grab/build/ModuleCache.noindex/Session.modulevalidation -Xcc -working-directory -Xcc /Users/runner/work/video-grab/video-grab -resource-dir /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift -Xcc -ivfsstatcache -Xcc /Users/runner/work/video-grab/video-grab/build/SDKStatCaches.noindex/iphoneos17.5-21F77-f0fa7969d082b13145125136a829df3a.sdkstatcache -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/swift-overrides.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-generated-files.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-own-target-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/VideoGrab-project-headers.hmap -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/include -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources-normal/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources/arm64 -Xcc -I/Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/DerivedSources -import-objc-header /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h -module-name VideoGrab -disable-clang-spi -target-sdk-version 17.5 -target-sdk-name iphoneos17.5 -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS17.5.sdk/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/local/lib/swift/host/plugins\#/Applications/Xcode_15.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins -plugin-path /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/lib/swift/host/plugins -emit-pch -serialize-diagnostics-path /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders/VideoGrab-Bridging-Header-2piix6ihkinu1.dia -pch-output-dir /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/PrecompiledHeaders /Users/runner/work/video-grab/video-grab/app/VideoGrab-Bridging-Header.h
 
 SwiftDriverJobDiscovery normal arm64 Compiling bridging header (in target 'VideoGrab' from project 'VideoGrab')
 
@@ -934,8 +930,8 @@ note: Metadata extraction skipped. No AppIntents.framework dependency found. (in
 AppIntentsSSUTraining (in target 'VideoGrab' from project 'VideoGrab')
     cd /Users/runner/work/video-grab/video-grab
     /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/appintentsnltrainingprocessor --infoplist-path /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app/Info.plist --temp-dir-path /Users/runner/work/video-grab/video-grab/build/Build/Intermediates.noindex/VideoGrab.build/Release-iphoneos/VideoGrab.build/ssu --bundle-id com.videograb.app --product-path /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app --extracted-metadata-path /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app/Metadata.appintents --archive-ssu-assets
-2026-09-24 07:05:25.242 appintentsnltrainingprocessor[6244:21890] Parsing options for appintentsnltrainingprocessor
-2026-09-24 07:05:25.244 appintentsnltrainingprocessor[6244:21890] No AppShortcuts found - Skipping.
+2026-09-24 07:18:44.475 appintentsnltrainingprocessor[16188:45114] Parsing options for appintentsnltrainingprocessor
+2026-09-24 07:18:44.478 appintentsnltrainingprocessor[16188:45114] No AppShortcuts found - Skipping.
 
 RegisterExecutionPolicyException /Users/runner/work/video-grab/video-grab/build/Build/Products/Release-iphoneos/VideoGrab.app (in target 'VideoGrab' from project 'VideoGrab')
     cd /Users/runner/work/video-grab/video-grab
@@ -962,7 +958,7 @@ codesign: OK
 1
       cmd LC_CODE_SIGNATURE
   cmdsize 16
-  dataoff 21786944
+  dataoff 21787728
 found app: build/Build/Products/Release-iphoneos/VideoGrab.app
 --- Payload 结构 ---
 out/Payload
@@ -976,4 +972,4 @@ out/Payload/VideoGrab.app/sniffer.js
 out/Payload/VideoGrab.app/Info.plist
 out/Payload/VideoGrab.app/VideoGrab
 out/Payload/VideoGrab.app/PkgInfo
--rw-r--r--  1 runner  staff  9720223 Sep 24 07:05 ../VideoGrab-unsigned.ipa
+-rw-r--r--  1 runner  staff  9721012 Sep 24 07:18 ../VideoGrab-unsigned.ipa
