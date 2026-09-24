@@ -946,6 +946,19 @@ struct DownloadList: View {
     @ObservedObject var center: DownloadCenter
     @Binding var isPresented: Bool
 
+    @State private var query = ""
+
+    /// 搜索过滤（按标题或原始地址）。
+    /// ★ 过滤后左滑删除必须**按对象**删、不能按下标删 —— 过滤后的下标跟
+    ///   center.jobs 的下标不是一回事，按下标删会删错人。
+    private var shownJobs: [DownloadJob] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return center.jobs }
+        return center.jobs.filter {
+            $0.title.lowercased().contains(q) || $0.sourceURL.lowercased().contains(q)
+        }
+    }
+
     var body: some View {
         NavigationView {
             Group {
@@ -964,19 +977,30 @@ struct DownloadList: View {
                 } else {
                     List {
                         Section {
-                            ForEach(center.jobs) { job in
+                            storageBar
+                        }
+                        Section {
+                            ForEach(shownJobs) { job in
                                 JobRow(job: job)
                             }
-                            .onDelete { idx in center.remove(at: idx) }
+                            .onDelete { idx in
+                                let victims = idx.compactMap {
+                                    shownJobs.indices.contains($0) ? shownJobs[$0] : nil
+                                }
+                                for j in victims { center.remove(j) }
+                            }
                         } footer: {
                             HStack {
-                                Text("共 \(center.jobs.count) 个任务")
+                                Text(query.isEmpty
+                                     ? "共 \(center.jobs.count) 个任务"
+                                     : "筛出 \(shownJobs.count) 个 · 共 \(center.jobs.count) 个")
                                 Spacer()
                                 Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
                             }
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .searchable(text: $query, prompt: "搜标题或地址")
                 }
             }
             .navigationTitle("下载")
@@ -988,6 +1012,38 @@ struct DownloadList: View {
             }
         }
         .navigationViewStyle(.stack)
+    }
+
+    /// 顶部存储条：这个 App 占了多少、设备还剩多少。
+    /// 分母取「占用 + 可用」—— 这样这条子反映的是「本 App 在整机可用空间里的分量」，
+    /// 而不是一个没参照物的百分比。
+    private var storageBar: some View {
+        let used = center.usedSpace
+        let free = Self.deviceFreeSpace
+        let total = max(1, used + free)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "internaldrive")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("下载占用 \(DownloadJob.sizeText(used))")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+                Text("设备可用 \(DownloadJob.sizeText(free))")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView(value: Double(used), total: Double(total))
+                .progressViewStyle(.linear)
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// 设备可用空间（拿不到就 0，界面会显示「—」）
+    static var deviceFreeSpace: Int64 {
+        let u = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage ?? 0
     }
 }
 
@@ -1004,17 +1060,34 @@ struct JobRow: View {
     @State private var playSheet: SheetURL?
     @State private var exportSheet: SheetURL?
     @State private var showLog = false
+    /// 缩略图（转码成功后抽的那一帧）。读盘一次就存下来，
+    /// 不放在 body 里每次重算都读 —— 列表滚动时会很难看。
+    @State private var thumbImage: UIImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text(job.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .lineLimit(1)
-                Spacer()
-                Text(JobRecord.formatter.string(from: job.createdAt))
-                    .font(.system(size: 10.5).monospacedDigit())
-                    .foregroundStyle(.tertiary)
+            // 左缩略图 + 右信息：列表里一眼能认出是哪个片子
+            HStack(alignment: .top, spacing: 10) {
+                thumb
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(job.title)
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(JobRecord.formatter.string(from: job.createdAt))
+                        .font(.system(size: 10.5).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+
+                    if job.finished && !job.fileMissing {
+                        HStack(spacing: 10) {
+                            if job.duration > 0 { meta("clock", DownloadJob.durationText(job.duration)) }
+                            if job.fileSize > 0 { meta("internaldrive", DownloadJob.sizeText(job.fileSize)) }
+                            if let r = job.resolution, !r.isEmpty { meta("film", r) }
+                        }
+                    }
+                }
             }
 
             if job.isActive {
@@ -1031,15 +1104,6 @@ struct JobRow: View {
                     Text("\(job.done)/\(job.total)")
                         .font(.system(size: 11.5).monospacedDigit())
                         .foregroundStyle(.tertiary)
-                }
-            }
-
-            // 文件信息
-            if job.finished && !job.fileMissing {
-                HStack(spacing: 10) {
-                    if job.duration > 0 { meta("clock", DownloadJob.durationText(job.duration)) }
-                    if job.fileSize > 0 { meta("internaldrive", DownloadJob.sizeText(job.fileSize)) }
-                    if let r = job.resolution, !r.isEmpty { meta("film", r) }
                 }
             }
 
@@ -1075,6 +1139,7 @@ struct JobRow: View {
                         } label: {
                             Label("播放", systemImage: "play.fill")
                                 .font(.system(size: 12.5, weight: .medium))
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                     } else {
@@ -1089,6 +1154,7 @@ struct JobRow: View {
                         } label: {
                             Label("在线播放", systemImage: "play")
                                 .font(.system(size: 12.5, weight: .medium))
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                     }
@@ -1098,7 +1164,8 @@ struct JobRow: View {
                     } label: {
                         Label(job.savedToPhotos ? "已存相册" : "存相册",
                               systemImage: job.savedToPhotos ? "checkmark.circle.fill" : "photo.on.rectangle")
-                            .font(.system(size: 12.5, weight: .medium))
+                            .font(.system(size: 12.5))
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .disabled(!job.canSaveToPhotos)
@@ -1111,7 +1178,8 @@ struct JobRow: View {
                         }
                     } label: {
                         Label("存文件夹", systemImage: "folder")
-                            .font(.system(size: 12.5, weight: .medium))
+                            .font(.system(size: 12.5))
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
@@ -1170,6 +1238,38 @@ struct JobRow: View {
             DocumentExporter(url: s.url, onFinish: { ok in
                 job.show(ok ? "已保存到你选的位置" : "已取消")
             })
+        }
+    }
+
+    /// 左侧缩略图（16:9）。
+    /// 图是转码成功后抽的一帧；抽不到（比如原样 .ts 没能转成 mp4）就显示占位图标 ——
+    /// 列表照样能用，只是少了「一眼认出是哪个片子」这点便利。
+    private var thumb: some View {
+        ZStack {
+            Color(.tertiarySystemFill)
+            if let img = thumbImage {
+                Image(uiImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: job.isActive ? "arrow.down.circle" : "film")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(width: 104, height: 58)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
+        // thumbName 从 nil 变成文件名（图落盘了）时才去读一次
+        .task(id: job.thumbName) {
+            if let u = job.thumbURL {
+                thumbImage = UIImage(contentsOfFile: u.path)
+            } else {
+                thumbImage = nil
+            }
         }
     }
 

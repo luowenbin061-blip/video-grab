@@ -1,5 +1,12 @@
 import AVFoundation
 import Foundation
+import UIKit
+
+/// 一次性闸门：continuation 只允许 resume 一次（多一次就崩），
+/// 抽帧回调理论上只来一次，但防一下更省心。
+private final class ResumeOnce {
+    var done = false
+}
 
 /// 一个下载任务的全部状态。
 ///
@@ -26,6 +33,9 @@ final class DownloadJob: ObservableObject, Identifiable {
     @Published var failed: String?
     /// 能直接播的那个产物（转成功是 .mp4；没转成是 .ts）
     @Published var outputName: String?
+    /// 列表缩略图的文件名（转码成功后抽一帧存的）。
+    /// 抽不出来（.ts 没转成 / 抽帧失败）时是 nil —— 界面显示占位图，不影响功能。
+    @Published var thumbName: String?
     @Published var mp4Ready: Bool
     /// 没转成 mp4 时，本地 .ts 要靠本机 HTTP 包成 HLS 才能播，这是清单文件名
     @Published var playlistName: String?
@@ -100,6 +110,9 @@ final class DownloadJob: ObservableObject, Identifiable {
             failed = "上次运行中被中断（没下完）"
             phase = "中断"
         }
+        let t = Self.thumbName(for: record.id)
+        thumbName = JobStore.exists(named: t) ? t : nil
+
         if !JobStore.exists(named: record.outputName) {
             fileMissing = true
             if record.outputName != nil {
@@ -167,6 +180,15 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     var canSaveToPhotos: Bool { mp4Ready && JobStore.exists(named: outputName) }
 
+    /// 缩略图路径（文件还在才有值）
+    var thumbURL: URL? {
+        guard let n = thumbName, JobStore.exists(named: n) else { return nil }
+        return JobStore.file(named: n)
+    }
+
+    /// 缩略图按任务 id 命名 —— 跟标题无关，以后改标题也不会错位
+    static func thumbName(for id: UUID) -> String { "thumb_\(id.uuidString).jpg" }
+
     func saveToPhotos() async {
         guard let u = exportURL() else {
             show("文件不在了"); return
@@ -196,7 +218,7 @@ final class DownloadJob: ObservableObject, Identifiable {
     func deleteFiles() {
         task?.cancel()
         task = nil
-        JobStore.remove([outputName, playlistName, baseName + ".ts"])
+        JobStore.remove([outputName, playlistName, baseName + ".ts", thumbName])
     }
 
     var baseName: String { "\(Self.safeFileName(title))_\(Self.stamp(createdAt))" }
@@ -271,6 +293,7 @@ final class DownloadJob: ObservableObject, Identifiable {
             if Task.isCancelled { return }
             notes.append(contentsOf: log.map(\.line))
 
+            var thumbSource: URL?          // 转成功了才有片子可抽
             if ok {
                 mp4Ready = true
                 outputName = mp4URL.lastPathComponent
@@ -283,6 +306,7 @@ final class DownloadJob: ObservableObject, Identifiable {
                 JobStore.remove([tsURL.lastPathComponent, playName])
                 phase = "完成 · MP4 已就绪"
                 notes.append("✓ 已转成 MP4（程序内保存，需要的话点「存相册」或「存文件夹」）")
+                thumbSource = mp4URL
             } else {
                 remuxError = log.last?.detail ?? "没成功"
                 outputName = tsURL.lastPathComponent
@@ -292,6 +316,9 @@ final class DownloadJob: ObservableObject, Identifiable {
 
             finished = true
             onUpdate?()
+            // 缩略图放在「完成」之后抽：界面立刻变成完成态，图晚一两秒自己出现。
+            // 抽不出来也没关系 —— 列表显示占位图，功能一点不受影响。
+            if let s = thumbSource { await makeThumbnail(from: s) }
 
         } catch {
             if Task.isCancelled {
@@ -305,6 +332,39 @@ final class DownloadJob: ObservableObject, Identifiable {
             finished = true
             onUpdate?()
         }
+    }
+
+    /// 从成片里抽一帧当列表缩略图。
+    ///
+    /// 只用系统自带的 AVAssetImageGenerator：mp4 本来就是原生支持的格式，零依赖。
+    /// 没转成 mp4 的任务（原样 .ts）抽不了 —— iOS 不认 TS，这恰好也是我们当初
+    /// 非要转 mp4 的原因；那种情况列表显示占位图，不影响任何功能。
+    private func makeThumbnail(from video: URL) async {
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+        gen.appliesPreferredTrackTransform = true      // 竖屏视频别被转成横的
+        gen.maximumSize = CGSize(width: 480, height: 480)
+
+        // 取「10% 处」那一帧 —— 比第 0 帧好看：开场往往是黑屏、台标或片头
+        let d = duration > 0 ? duration : 1
+        let t = CMTime(seconds: min(2.0, d * 0.1), preferredTimescale: 600)
+
+        let cg: CGImage? = await withCheckedContinuation { cont in
+            let once = ResumeOnce()
+            gen.generateCGImagesAsynchronously(forTimes: [NSValue(time: t)]) { _, img, _, result, _ in
+                // continuation 只能 resume 一次，多来一次会直接崩。
+                // 这个回调理论上只会来一次，但值得防。
+                if once.done { return }
+                once.done = true
+                cont.resume(returning: result == .succeeded ? img : nil)
+            }
+        }
+        guard let cg, let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.72) else {
+            notes.append("· 缩略图没抽出来（不影响播放和保存）")
+            return
+        }
+        let n = Self.thumbName(for: id)
+        try? data.write(to: JobStore.file(named: n), options: .atomic)
+        thumbName = n
     }
 
     /// 给拼好的 .ts 写一条「只有一个分片」的 m3u8（HLS 允许单分片、长度任意）
