@@ -646,7 +646,10 @@ private struct PlayerVC: UIViewControllerRepresentable {
             //   读呈现层才是"现在屏幕上什么样" —— 要跟视觉同步必须看后者。
             //   阈值 0.05（不是 0.8）：0.8 要等系统动画快走完才认"显示"，那就是慢半拍。
             //   0.05 意味着"系统刚一开始出现，我们立刻跟上"，也不会在过渡中间来回抖。
-            let shown = !v.isHidden && ((v.layer.presentation()?.opacity ?? v.alpha) > 0.05)
+            // 注意类型：CALayer.opacity 是 Float，UIView.alpha 是 CGFloat —— 直接在 ?? 里
+            // 混用会编译不过（run #76 就死在这），统一先转 CGFloat。
+            let op = CGFloat(v.layer.presentation()?.opacity ?? Float(v.alpha))
+            let shown = !v.isHidden && op > 0.05
             // 连续两次读数一致才认（33ms 一次 → 最多晚 66ms）：滤掉单帧抖动，
             // 又不到人能感觉出来的程度。
             guard shown == pendingVisible else { pendingVisible = shown; return }
