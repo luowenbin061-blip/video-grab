@@ -23,6 +23,12 @@ struct PlayerSheet: View {
     /// 视频名 —— **故意不显示**（用户要求：播放器上不要出现视频名）。
     /// 参数先留着：错误页/以后要用时不至于再改一遍调用方。
     let title: String
+    /// 横屏按钮的位置：距右边 / 距底部（pt）。
+    /// 初值是按截图量的 —— 目标是跟系统那排「隔空播放 / …」同一行、并在它左边留出间距。
+    /// 真机上看着还不对，改这两个数就行。
+    private static let landscapeTrailing: CGFloat = 96
+    private static let landscapeBottom: CGFloat = 74
+
     /// 下载保活那个小窗（可以不传）。iOS 同时只允许一个小窗 ——
     /// 播放要占小窗时得让它先让位，否则两个抢同一个位子，结果不确定。
     let pip: PiPProgress?
@@ -40,27 +46,12 @@ struct PlayerSheet: View {
         _box = StateObject(wrappedValue: PlayerBox(url: url))
     }
 
-    /// 播放器上的小圆按钮：白色图标 + 毛玻璃底 + 一圈细描边。
-    /// 不用文字按钮 —— 系统那套控制条全是图标，混两个蓝字进去就显脏（用户反馈）。
-    /// 38pt 是够手指点的尺寸（苹果建议 44，播放器上让一点、别有压迫感）。
-    private func iconButton(_ name: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)          // 关键：不然图标会被染成系统蓝
-        .contentShape(Circle())
-    }
-
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            PlayerVC(player: box.player, allowsPiP: pipEnabled)
+            PlayerVC(player: box.player, allowsPiP: pipEnabled,
+                     onSystemExit: { dismiss() })
                 .ignoresSafeArea()
 
             if box.loading && box.error == nil {
@@ -105,23 +96,40 @@ struct PlayerSheet: View {
                 .background(.ultraThinMaterial)
             }
 
-            // 关闭：左上角（跟"左上角是退出"的直觉一致）
-            iconButton("xmark") { dismiss() }
+            // ── 关闭：视觉上交给系统左上角那个 ✕（用户要求撤掉我们自己的）──
+            // 但这里留了一个**完全看不见的点击热区**，点它就关掉播放器。
+            // 为什么必须留：系统那个 ✕ 很可能是「退出全屏」而不是「关闭播放器」，
+            // 真那样的话撤掉我们的按钮就出不去了。热区跟它对齐（左上、安全区内侧），
+            // 你点那个 ✕ 实际打到的是我们这块 —— 所以它一定关得掉。
+            Color.clear
+                .frame(width: 64, height: 64)
+                .contentShape(Rectangle())
+                .onTapGesture { dismiss() }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.leading, 16)
-                .padding(.top, 10)
+                .padding(.leading, 4)
+                .padding(.top, 2)
 
-            // 横屏 / 竖屏：右下角（用户指定）。图标是"展开/收回"那一对，一眼看得懂。
-            // 注意：系统的播放控制条里，右下角也有它自己的全屏按钮（只在控制条
-            // 出现时才显示），两个会叠在一起 —— 用户已知，先按他说的放这儿。
-            iconButton(box.forcedLandscape
-                       ? "arrow.down.right.and.arrow.up.left"
-                       : "arrow.up.left.and.arrow.down.right") {
+            // ── 横屏 / 竖屏：摆在系统那排「隔空播放」按钮的左边 ──
+            // 尺寸/风格跟系统图标对齐（纯白、无底座、22pt），别再做成毛玻璃圆钮 ——
+            // 系统那排就是纯白图标，加底座一眼就不一路（用户实测反馈）。
+            // 位置就是下面两个常量，装上看不对改这两个数即可。
+            Button {
                 box.toggleOrientation()
+            } label: {
+                Image(systemName: box.forcedLandscape
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.white)
+                    // 极淡的阴影：亮画面上也看得见；黑底上完全看不出来，不影响"无底座"的观感
+                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                    .frame(width: 48, height: 48)      // 触控区比图标大，好按
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            .padding(.trailing, 16)
-            .padding(.bottom, 10)
+            .padding(.trailing, Self.landscapeTrailing)
+            .padding(.bottom, Self.landscapeBottom)
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
@@ -315,9 +323,26 @@ final class PlayerBox: ObservableObject {
 private struct PlayerVC: UIViewControllerRepresentable {
     let player: AVPlayer
     let allowsPiP: Bool
+    /// 系统的 ✕ 若是「退出全屏」→ 顺手把播放器也关掉（第二道保险；
+    /// 第一道是上面那块看不见的热区，它才是真正兜住"一定关得掉"的那道）
+    let onSystemExit: () -> Void
+
+    final class Coord: NSObject, AVPlayerViewControllerDelegate {
+        var onSystemExit: () -> Void = {}
+        /// 退出全屏时不问原因，直接关播放器 —— 用户点这个 ✕ 就是想退出
+        func playerViewController(
+            _ vc: AVPlayerViewController,
+            willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
+        ) {
+            onSystemExit()
+        }
+    }
+
+    func makeCoordinator() -> Coord { Coord() }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
+        vc.delegate = context.coordinator
         vc.player = player
         vc.showsPlaybackControls = true
         vc.videoGravity = .resizeAspect
@@ -331,8 +356,10 @@ private struct PlayerVC: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+        context.coordinator.onSystemExit = onSystemExit
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
+        if vc.delegate !== context.coordinator { vc.delegate = context.coordinator }
         // 开关可能播放中途被改（用户去设置里拨），跟着变
         if vc.allowsPictureInPicturePlayback != allowsPiP {
             vc.allowsPictureInPicturePlayback = allowsPiP
