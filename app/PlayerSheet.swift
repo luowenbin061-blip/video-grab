@@ -135,10 +135,10 @@ struct PlayerSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.leading, 4)
                 .padding(.top, 2)
-                // 跟系统那个 ✕ 一起显隐（系统那个也是随控制条消失的）——
-                // 藏着的时候不能吃触摸，否则点画面会莫名其妙把播放器关掉
-                .opacity(controlsVisible ? 1 : 0)
-                .allowsHitTesting(controlsVisible)
+                // ★ 永远生效，不跟着控制条淡出。
+                //   理由：上一版系统控件整个不显示时，唯一的关闭入口没了，只能强杀 App。
+                //   这块区域贴着系统那个 ✕，位置一样；代价是"控制条藏着时点到左上角"
+                //   也会关掉播放器 —— 但比"关不掉"强得多。
 
             // ── 横屏 / 竖屏：紧挨系统那排「隔空播放」的左边、同一行 ──
             // 为什么用 GeometryReader 自己算位置：系统的控件是按"安全区"摆的，
@@ -356,6 +356,24 @@ final class PlayerBox: ObservableObject {
 
 /// AVPlayerViewController 本体。
 /// 不用 SwiftUI 的 VideoPlayer 封装 —— 那个在 sheet 里容易被反复重建，是白屏的主因。
+/// 只"看"触摸、**永不识别**的手指感应器。
+///
+/// ★ 上一版这里用的是 `UILongPressGestureRecognizer(minimumPressDuration ≈ 0.01)` —— 那是错的：
+///   它会**抢先进入"已识别"状态**，把系统播放器自己那套手势（显示控制条、点按钮）压掉，
+///   表现就是「系统控制条一个都不出来、视频关不掉，只能强杀 App」。
+///   `cancelsTouchesInView = false` 只管"触摸还发不发到视图"，**管不了"识别竞争"**。
+///   正确做法：自己永远不识别（touchesBegan 里立刻 failed），只借回调知道"有人碰了屏幕"，
+///   这样对系统的识别器零影响。
+final class TouchObserver: UIGestureRecognizer {
+    var onTouch: () -> Void = {}
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        onTouch()
+        state = .failed          // 关键：立刻退出识别竞争，绝不跟系统抢
+    }
+}
+
 private struct PlayerVC: UIViewControllerRepresentable {
     let player: AVPlayer
     let allowsPiP: Bool
@@ -365,14 +383,20 @@ private struct PlayerVC: UIViewControllerRepresentable {
     /// 播放器上有任何触摸 → 通知界面「把控件亮起来、并重置淡出计时」
     let onTouch: () -> Void
 
-    final class Coord: NSObject, AVPlayerViewControllerDelegate {
+    final class Coord: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var onSystemExit: () -> Void = {}
         var onTouch: () -> Void = {}
 
         /// 挂在播放器视图上，只为"知道有人碰了屏幕"。两件事必须保证：
         /// ① cancelsTouchesInView = false —— 绝不能把触摸从系统控件手里吃掉
         /// ② minimumPressDuration 极小 —— 手指一碰就报，不用等按满
-        @objc func touched() { onTouch() }
+        /// 兜一层：挂到我们这边的识别器一律允许和系统播放器的手势**同时识别**。
+        /// 上一版就是缺了这条（用了会抢先识别的长按识别器）才把系统控件压掉的，
+        /// 所以显式写上；现在的 TouchObserver 自己永不识别，本来也不会抢。
+        func gestureRecognizer(_ g: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
         /// 退出全屏时不问原因，直接关播放器 —— 用户点这个 ✕ 就是想退出
         func playerViewController(
             _ vc: AVPlayerViewController,
@@ -387,13 +411,13 @@ private struct PlayerVC: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
         vc.delegate = context.coordinator
-        // 只读触摸、不吃触摸：系统那套控件（暂停/进度/画中画）一切照旧
-        let touch = UILongPressGestureRecognizer(target: context.coordinator,
-                                                 action: #selector(Coord.touched))
-        touch.minimumPressDuration = 0.01
+        // 只观察、永不识别 —— 对系统控件的手势零影响（上一版就是在这里踩的雷）
+        let touch = TouchObserver(target: nil, action: nil)
+        touch.onTouch = { context.coordinator.onTouch() }
         touch.cancelsTouchesInView = false
         touch.delaysTouchesBegan = false
         touch.delaysTouchesEnded = false
+        touch.delegate = context.coordinator
         vc.view.addGestureRecognizer(touch)
         vc.player = player
         vc.showsPlaybackControls = true
