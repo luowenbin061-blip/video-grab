@@ -24,22 +24,22 @@ struct PlayerSheet: View {
     /// 参数先留着：错误页/以后要用时不至于再改一遍调用方。
     let title: String
     // ── 横屏按钮：尺寸与位置（全部是从用户截图上量像素换算出来的，不是估的）──
-    /// 图标字号。系统那排（隔空播放 / …）实测约 19~20pt；我们那个箭头是"长斜线"，
-    /// 同样的字号看上去更胖，所以再收一档 —— 视觉上才等大。嫌小/大就改这一个数。
-    private static let landscapeIconSize: CGFloat = 18
+    /// 图标字号。**按截图量的**：系统那排图标实测 26~27px（scale≈1.4 → 约 19~20pt），
+    /// 我们 22pt 时是 28px（偏大）、18pt 时 22px（偏小）→ 21pt ≈ 26px 才对得上。
+    private static let landscapeIconSize: CGFloat = 21
     /// 位置 = 图标【中心】到「安全区右边 / 下边」的距离（pt）。横竖屏各一组：
     /// 竖屏：中心距右 113、距下 53 ←→ 与系统的「隔空播放」同一行、在它左边
-    /// 横屏：中心距右 102、距下 68
+    /// 横屏：中心距右 93、距下 63 —— 按截图量出来的：要让"我们 → 显示器 → …"
+    /// 三个图标**间距相等**（系统那两个之间是 60px≈43pt），并且同一水平线。
     private static let lsTrailingTall: CGFloat = 113
     private static let lsBottomTall: CGFloat = 53
-    private static let lsTrailingWide: CGFloat = 102
-    private static let lsBottomWide: CGFloat = 68
+    private static let lsTrailingWide: CGFloat = 93
+    private static let lsBottomWide: CGFloat = 63
 
-    /// 我们自己的按钮多久后淡出（秒）。
-    /// 说明：AVKit 控制条的显隐时长**没有公开接口**（也查不到官方数值），
-    /// 所以这里是"跟随触摸 + 自己计时"的近似值 —— 任何触摸都让两者一起出现，
-    /// 静止这么久之后我们淡出。看着比系统的早/晚，改这一个数就能靠拢。
-    private static let controlsHideAfter: Double = 4
+    /// 播放中、亮着没再被点，多久后自动隐藏（秒）。
+    /// 3 秒是用户实测系统那套的间隔（原生逻辑：播放中点一下显示、再点一下隐藏、
+    /// 没再点就 3 秒后隐藏；暂停时点开则常显不隐藏）。
+    private static let controlsHideAfter: Double = 3
 
     /// 下载保活那个小窗（可以不传）。iOS 同时只允许一个小窗 ——
     /// 播放要占小窗时得让它先让位，否则两个抢同一个位子，结果不确定。
@@ -61,15 +61,41 @@ struct PlayerSheet: View {
         _box = StateObject(wrappedValue: PlayerBox(url: url))
     }
 
-    /// 有触摸：立刻显示 + 重置淡出计时
-    private func pokeControls() {
+    // MARK: - 控件显隐（对齐系统那套逻辑）
+    //
+    // 规则（用户实测 iOS 原生控制条的行为）：
+    //   · 播放中：点一下屏幕 → 立刻显示；再点一下 → 立刻隐藏
+    //   · 显示后没再点 → 3 秒后自动隐藏
+    //   · 暂停时点开 → 常显，不自动隐藏（视频没在播就不该自己溜走）
+
+    /// 点了一下画面：亮着就收起，藏着就亮出来
+    private func toggleControls() {
+        if controlsVisible { hideControls() } else { showControls() }
+    }
+
+    /// 亮出来。播放中才安排 3 秒后自动隐藏；暂停时保持常显。
+    private func showControls() {
         withAnimation(.easeOut(duration: 0.2)) { controlsVisible = true }
         hideTask?.cancel()
+        hideTask = nil
+        guard box.isPlaying else { return }       // 没在播 → 不自动隐藏
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.controlsHideAfter * 1_000_000_000))
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.35)) { controlsVisible = false }
         }
+    }
+
+    private func hideControls() {
+        hideTask?.cancel()
+        hideTask = nil
+        withAnimation(.easeOut(duration: 0.25)) { controlsVisible = false }
+    }
+
+    /// 手指碰了屏幕（不管是不是点击）：正亮着而且在播，就把自动隐藏再往后推 3 秒
+    /// —— 拖进度条那类操作不该把控件拖没了
+    private func noteTouch() {
+        if controlsVisible, box.isPlaying { showControls() }
     }
 
     var body: some View {
@@ -78,7 +104,8 @@ struct PlayerSheet: View {
 
             PlayerVC(player: box.player, allowsPiP: pipEnabled,
                      onSystemExit: { dismiss() },
-                     onTouch: { pokeControls() })
+                     onTouch: { noteTouch() },
+                     onTap: { toggleControls() })
                 .ignoresSafeArea()
 
             if box.loading && box.error == nil {
@@ -173,12 +200,22 @@ struct PlayerSheet: View {
             // 表现为「同一条视频导出去有声音、在 App 里没声音」。
             AppAudio.acquire()
             box.start()
-            pokeControls()          // 一进来先亮一会儿，再跟系统一起淡出
+            showControls()          // 一进来先亮着（此刻还没播，所以不会自动隐藏）
             // 播放优先：iOS 同时只允许一个小窗，下载保活窗先让位。
             // 让位后下载照旧在跑（App 在前台不会被挂起），只是不显示那个小窗。
             if let pip, pip.isRunning {
                 pipHandedOver = true
                 pip.stop()
+            }
+        }
+        // 播放状态一变就跟着调整：开始播了 → 亮着的控件 3 秒后自己收；
+        // 暂停了 → 撤掉自动隐藏，让它常显
+        .onChange(of: box.isPlaying) { playing in
+            if playing {
+                if controlsVisible { showControls() }
+            } else {
+                hideTask?.cancel()
+                hideTask = nil
             }
         }
         .onDisappear {
@@ -207,6 +244,9 @@ final class PlayerBox: ObservableObject {
     @Published var forcedLandscape = false
     /// 只自动转一次，之后听用户的
     private var autoOriented = false
+    /// 当前在不在播 —— 界面靠它决定"要不要自动隐藏控件"（暂停时不隐藏）
+    @Published var isPlaying = false
+    private var stateTask: Task<Void, Never>?
 
     private var failObs: NSObjectProtocol?
     private var stallObs: NSObjectProtocol?
@@ -241,17 +281,34 @@ final class PlayerBox: ObservableObject {
         if let s = stallObs { NotificationCenter.default.removeObserver(s) }
         pollTask?.cancel()
         stallTask?.cancel()
+        stateTask?.cancel()
+    }
+
+    /// 盯着"在不在播"。轮询而不是 KVO —— 理由和其他地方一样（KVO 回调不在主线程，
+    /// 要往主线程跳就得在闭包里再套并发闭包，这条线踩过坑）。250ms 一次，几乎不要钱。
+    private func startStateWatch() {
+        stateTask?.cancel()
+        let target = self               // 绑成 let：嵌套并发闭包里引用 weak var 会编译不过
+        stateTask = Task { @MainActor in
+            while !Task.isCancelled {
+                let playing = (target.player.timeControlStatus == .playing)
+                if target.isPlaying != playing { target.isPlaying = playing }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
     }
 
     func start() {
         player.play()
         startPolling()
+        startStateWatch()
     }
 
     func stop() {
         player.pause()
         pollTask?.cancel()
         stallTask?.cancel()
+        stateTask?.cancel()
     }
 
     /// 用户点「横屏 / 竖屏」
@@ -365,12 +422,47 @@ final class PlayerBox: ObservableObject {
 ///   正确做法：自己永远不识别（touchesBegan 里立刻 failed），只借回调知道"有人碰了屏幕"，
 ///   这样对系统的识别器零影响。
 final class TouchObserver: UIGestureRecognizer {
+    /// 手指碰到屏幕（任何情况）都报一次 —— 用来"重置自动隐藏计时"
     var onTouch: () -> Void = {}
+    /// 判断为"点了一下"（短、且几乎没移动）时报一次 —— 用来"切换控件显隐"
+    var onTap: () -> Void = {}
+
+    private var startPoint = CGPoint.zero
+    private var beganAt: TimeInterval = 0
+    private var moved = false
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
+        guard let t = touches.first else { return }
+        startPoint = t.location(in: view)
+        beganAt = t.timestamp
+        moved = false
         onTouch()
-        state = .failed          // 关键：立刻退出识别竞争，绝不跟系统抢
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesMoved(touches, with: event)
+        guard let t = touches.first else { return }
+        let p = t.location(in: view)
+        if hypot(p.x - startPoint.x, p.y - startPoint.y) > 12 { moved = true }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesEnded(touches, with: event)
+        finish(touches)
+    }
+
+    /// 手指被系统播放器自己的手势抢走时也走这里 —— 能判成点击就照样报
+    /// （系统那个"点击切换控制条"本来就认得出这种短按）
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesCancelled(touches, with: event)
+        finish(touches)
+    }
+
+    private func finish(_ touches: Set<UITouch>) {
+        if let t = touches.first, !moved, t.timestamp - beganAt < 0.4 { onTap() }
+        // ★ 全程不进入"已识别"状态：只在最后收尾成 failed，绝不跟系统的手势抢
+        state = .failed
     }
 }
 
@@ -380,12 +472,15 @@ private struct PlayerVC: UIViewControllerRepresentable {
     /// 系统的 ✕ 若是「退出全屏」→ 顺手把播放器也关掉（第二道保险；
     /// 第一道是上面那块看不见的热区，它才是真正兜住"一定关得掉"的那道）
     let onSystemExit: () -> Void
-    /// 播放器上有任何触摸 → 通知界面「把控件亮起来、并重置淡出计时」
+    /// 播放器上有任何触摸 → 重置自动隐藏的计时
     let onTouch: () -> Void
+    /// 播放器上"点了一下"（短按、几乎没移动）→ 切换控件显隐
+    let onTap: () -> Void
 
     final class Coord: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var onSystemExit: () -> Void = {}
         var onTouch: () -> Void = {}
+        var onTap: () -> Void = {}
 
         /// 挂在播放器视图上，只为"知道有人碰了屏幕"。两件事必须保证：
         /// ① cancelsTouchesInView = false —— 绝不能把触摸从系统控件手里吃掉
@@ -414,6 +509,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
         // 只观察、永不识别 —— 对系统控件的手势零影响（上一版就是在这里踩的雷）
         let touch = TouchObserver(target: nil, action: nil)
         touch.onTouch = { context.coordinator.onTouch() }
+        touch.onTap = { context.coordinator.onTap() }
         touch.cancelsTouchesInView = false
         touch.delaysTouchesBegan = false
         touch.delaysTouchesEnded = false
@@ -434,6 +530,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         context.coordinator.onSystemExit = onSystemExit
         context.coordinator.onTouch = onTouch
+        context.coordinator.onTap = onTap
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
         if vc.delegate !== context.coordinator { vc.delegate = context.coordinator }
