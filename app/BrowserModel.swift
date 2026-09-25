@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import UIKit
 import WebKit
 
@@ -115,6 +116,9 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var progress: Double = 0
     /// 进度条要不要显示（走满后自动收起 —— 对齐 Safari）
     @Published var progressActive = false
+    /// 「打不开这个网页」—— 非空时界面整页盖一层错误页（对齐 Safari）。
+    /// 原来只是一闪而过的一行小字，用户来不及看清原因。
+    @Published var loadError: PageError?
     @Published var canGoBack = false
     @Published var canGoForward = false
     // MARK: - 长按视频 → 弹菜单（批次 D）
@@ -147,6 +151,68 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 加载超时 / 进度条收起的定时器
     private var loadTimeoutTask: Task<Void, Never>?
     private var progressHideTask: Task<Void, Never>?
+
+    // MARK: - 网页弹窗 / 证书（v1.0.80）
+
+    /// 用户点过「仍然访问」的域名 —— 同一个站不再反复问（问一次就够了）
+    private var trustedHosts: Set<String> = []
+    /// 有系统弹窗正在显示。防止连环弹窗（网页一个接一个 alert）把 present 弄乱
+    private var dialogBusy = false
+
+    /// 又开始加载 / 加载成功了 → 错误页收掉。
+    /// 传标签就一起清它的（两个失败回调都只动当前标签，这条必须成对清）。
+    @MainActor
+    private func clearLoadError(_ t: BrowserTab? = nil) {
+        if let t { t.loadError = nil }
+        loadError = nil
+    }
+
+    /// 错误页上的「重试」
+    func retry() {
+        guard let s = loadError?.url, !s.isEmpty,
+              let u = URL(string: s), let wv = webView else { return }
+        clearLoadError(currentTab)
+        wv.load(URLRequest(url: u))
+    }
+
+    /// 证书错误页上的「仍然访问」：把这个站记进白名单，然后重新加载。
+    /// 这条是「证书挑战回调没收到」时的第二条路 —— 两条路都能通到「放行」。
+    func trustAndReload() {
+        guard let s = loadError?.url, let u = URL(string: s), let wv = webView else { return }
+        if let h = u.host { trustedHosts.insert(h) }
+        clearLoadError(currentTab)
+        wv.load(URLRequest(url: u))
+    }
+
+    // MARK: 系统弹窗的公共零件
+
+    /// 这个弹窗该不该弹、由谁弹。
+    /// 规则：**只有你正在看的那一页**才弹（后台窗口突然弹出来只会莫名其妙），
+    /// 且同一时刻只允许一个系统弹窗。
+    /// ★ 返回 nil 时调用方**必须**按"默认答案"回调 —— 绝不能让网页一直等。
+    @MainActor
+    private func dialogHost(for wv: WKWebView) -> UIViewController? {
+        guard tab(for: wv) === currentTab else { return nil }
+        guard !dialogBusy else { return nil }
+        return Self.topViewController()
+    }
+
+    /// 弹窗标题用域名 —— Safari 就是这么显示的，比一个"提示"有用得多
+    private func hostOf(_ wv: WKWebView) -> String {
+        (wv.url?.host).flatMap { $0.isEmpty ? nil : $0 } ?? "网页提示"
+    }
+
+    /// 当前能弹东西的控制器：取最前面那个窗口的 rootViewController，再往它最上层找。
+    /// （我们自己也有若干弹层，直接往 rootViewController 上 present 会失败。）
+    @MainActor
+    static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        guard let win = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first,
+              var vc = win.rootViewController else { return nil }
+        while let p = vc.presentedViewController { vc = p }
+        return vc
+    }
 
     /// 当前标签的 WebView。
     /// ★ 它仍然是 weak —— 真正持有 WebView 的是每个标签对象（BrowserTab）
@@ -335,6 +401,7 @@ final class BrowserModel: NSObject, ObservableObject {
         t.hint = hint
         t.lastUpdated = lastUpdated
         t.isLoading = isLoading
+        t.loadError = loadError
         t.canGoBack = canGoBack
         t.canGoForward = canGoForward
     }
@@ -349,6 +416,7 @@ final class BrowserModel: NSObject, ObservableObject {
         hint = t.hint
         lastUpdated = t.lastUpdated
         isLoading = t.isLoading
+        loadError = t.loadError
         canGoBack = t.canGoBack
         canGoForward = t.canGoForward
         webView = t.webView
@@ -376,10 +444,12 @@ final class BrowserModel: NSObject, ObservableObject {
         items = []; groups = []; mseSeen = false
         hint = nil; lastUpdated = nil
         address = ""; pageTitle = ""
+        loadError = nil
         canGoBack = false; canGoForward = false
         t.items = []; t.groups = []; t.mseSeen = false
         t.hint = nil; t.lastUpdated = nil
         t.address = ""; t.title = ""
+        t.loadError = nil
         t.canGoBack = false; t.canGoForward = false
         t.webView.load(URLRequest(url: URL(string: "about:blank")!))
         syncTabTitles()
@@ -420,6 +490,7 @@ final class BrowserModel: NSObject, ObservableObject {
         guard !s.isEmpty else { return }
         if !s.contains("://") { s = "https://" + s }
         guard let u = URL(string: s), let wv = webView else { return }
+        clearLoadError(currentTab)
         wv.load(URLRequest(url: u))
     }
 
@@ -502,12 +573,14 @@ final class BrowserModel: NSObject, ObservableObject {
         progress = 0
         isLoading = false
         currentTab?.isLoading = false
+        clearLoadError(currentTab)      // 用户主动停了 → 错误页也收掉
     }
 
-    func goBack() { webView?.goBack() }
-    func goForward() { webView?.goForward() }
+    func goBack() { clearLoadError(currentTab); webView?.goBack() }
+    func goForward() { clearLoadError(currentTab); webView?.goForward() }
     func reload() {
         clearItems(silent: true)      // 顺带把标签快照一起清掉，免得旧数据复活
+        clearLoadError(currentTab)
         webView?.reload()
     }
 
@@ -776,6 +849,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
             t.isLoading = true
             if t === self.currentTab { self.isLoading = true }
+            self.clearLoadError(t)      // 又开始加载了 → 上一页的错误页收掉
             self.startLoadTimeout(t)
         }
     }
@@ -789,6 +863,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 t.address = u
                 if t === self.currentTab { self.address = u }
             }
+            self.clearLoadError(t)      // 内容开始到达 → 确实打开了
             t.canGoBack = wv.canGoBack
             t.canGoForward = wv.canGoForward
             if t === self.currentTab {
@@ -821,6 +896,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
             t.isLoading = false
+            self.clearLoadError(t)
             t.title = wv.title ?? ""
             t.address = wv.url?.absoluteString ?? t.address
             t.canGoBack = wv.canGoBack
@@ -844,31 +920,223 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         }
     }
 
+    /// 两个失败回调共用：翻成人话 → 整页错误页。
+    @MainActor
+    private func handleLoadFailure(_ t: BrowserTab, error e: Error) {
+        // ★ 第一件事必须是**滤掉"取消"** —— 见 isCancelled 的说明。
+        guard !Self.isCancelled(e) else { return }
+        t.isLoading = false
+        loadTimeoutTask?.cancel()
+        // 后台窗口失败不打扰你（又没在你眼前）；状态仍记在它自己的标签里，
+        // 切过去就能看到那一页的错误原因。
+        guard t === currentTab else { return }
+        isLoading = false
+        progressActive = false
+        progress = 0
+        let info = PageError.make(fallbackURL: t.address, error: e)
+        t.loadError = info
+        loadError = info
+    }
+
+    /// 系统报的"失败"里有两种其实是**正常打断**，绝不能当错误报给用户：
+    ///   · NSURLErrorCancelled(-999)：用户点了「停止」、或页面自己发起了新导航
+    ///   · WebKitErrorDomain 102：frame load interrupted（同样是"被新导航打断"）
+    /// 不滤掉就会出现"我点了个链接，反而弹出一个错误页"这种莫名其妙的表现。
+    nonisolated static func isCancelled(_ e: Error) -> Bool {
+        let ns = e as NSError
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return true }
+        if ns.domain == "WebKitErrorDomain" && ns.code == 102 { return true }
+        return false
+    }
+
     nonisolated func webView(_ wv: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
-            t.isLoading = false
-            // 后台标签加载失败不弹提示 —— 又没在你眼前，弹了只会莫名其妙
-            self.loadTimeoutTask?.cancel()
-            if t === self.currentTab {
-                self.isLoading = false
-                self.progressActive = false
-                self.progress = 0
-                self.showToast("加载失败：\(e.localizedDescription)")
-            }
+            self.handleLoadFailure(t, error: e)
         }
     }
 
     nonisolated func webView(_ wv: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
-            t.isLoading = false
-            self.loadTimeoutTask?.cancel()
-            if t === self.currentTab {
-                self.isLoading = false
-                self.progressActive = false
-                self.progress = 0
-                self.showToast("打不开：\(e.localizedDescription)")
+            self.handleLoadFailure(t, error: e)
+        }
+    }
+
+    // MARK: 网页里的弹窗（alert / confirm / 输入框）
+    //
+    // ★ 为什么要实现：不实现时 WebKit 自己当"确定 / 取消"处理 —— 页面不会卡，
+    //   但用户**什么都看不见**。有些站靠它提示信息、或者问"要不要继续"，
+    //   在我们这儿就表现成"点了没反应"，看着像坏了。
+    //
+    // ★ 最要命的一条：completionHandler **必须且只能调用一次**。
+    //   不调 → 网页的 JS 引擎会一直等它（页面像卡死）；调两次 → 未定义行为。
+    //   所以下面每条路径都过 OnceGate 那道闸，"弹不出来"时也必须回调。
+    //
+    // ★ 写法上跟工程里既有的 UIAction 一致：回调里要动的东西一律包进
+    //   Task { @MainActor in } —— UIAlertAction 的 handler 不是主线程隔离闭包，
+    //   直接碰 @MainActor 属性在 Swift 严格检查下编不过。
+
+    nonisolated func webView(_ wv: WKWebView,
+                             runJavaScriptAlertPanelWithMessage message: String,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping () -> Void) {
+        let gate = OnceGate()
+        let done: () -> Void = { if gate.take() { completionHandler() } }
+        Task { @MainActor in
+            guard let vc = self.dialogHost(for: wv) else { done(); return }   // 弹不出 → 当"确定"
+            let a = UIAlertController(title: self.hostOf(wv), message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    done()
+                }
+            })
+            self.dialogBusy = true
+            vc.present(a, animated: true) {
+                Task { @MainActor in
+                    if vc.presentedViewController !== a {   // 没弹出来 → 也得回调
+                        self.dialogBusy = false
+                        done()
+                    }
+                }
+            }
+        }
+    }
+
+    nonisolated func webView(_ wv: WKWebView,
+                             runJavaScriptConfirmPanelWithMessage message: String,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping (Bool) -> Void) {
+        let gate = OnceGate()
+        let done: (Bool) -> Void = { v in if gate.take() { completionHandler(v) } }
+        Task { @MainActor in
+            guard let vc = self.dialogHost(for: wv) else { done(false); return }
+            let a = UIAlertController(title: self.hostOf(wv), message: message, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    done(false)
+                }
+            })
+            a.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    done(true)
+                }
+            })
+            self.dialogBusy = true
+            vc.present(a, animated: true) {
+                Task { @MainActor in
+                    if vc.presentedViewController !== a {
+                        self.dialogBusy = false
+                        done(false)
+                    }
+                }
+            }
+        }
+    }
+
+    nonisolated func webView(_ wv: WKWebView,
+                             runJavaScriptTextInputPanelWithPrompt prompt: String,
+                             defaultText: String?,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping (String?) -> Void) {
+        let gate = OnceGate()
+        let done: (String?) -> Void = { v in if gate.take() { completionHandler(v) } }
+        Task { @MainActor in
+            guard let vc = self.dialogHost(for: wv) else { done(nil); return }
+            let a = UIAlertController(title: self.hostOf(wv), message: prompt, preferredStyle: .alert)
+            a.addTextField { tf in
+                tf.text = defaultText
+                tf.autocorrectionDisabled(true)
+                tf.autocapitalizationType = .none
+            }
+            a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    done(nil)
+                }
+            })
+            a.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    done(a.textFields?.first?.text ?? defaultText)
+                }
+            })
+            self.dialogBusy = true
+            vc.present(a, animated: true) {
+                Task { @MainActor in
+                    if vc.presentedViewController !== a {
+                        self.dialogBusy = false
+                        done(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: 服务器证书有问题 → 问一句"仍要继续访问吗"（对齐 Safari）
+
+    /// 证书过期 / 自签 / 不是它自己的时候，系统会来这里问。
+    ///
+    /// ★ 原来这种站**直接打不开**，用户不知道发生了什么。
+    /// ★ 一个不确定点（老实说）：iOS 上这个回调能不能收到，资料说法不一。
+    ///   所以另外配了第二条路 —— 真收不到时，加载会失败并走到错误页
+    ///   （-1202 这类错误码会被翻成"这个网站的证书有问题"），
+    ///   用户在那一页点「仍然访问」也能进去。
+    nonisolated func webView(_ wv: WKWebView,
+                             didReceive challenge: URLAuthenticationChallenge,
+                             completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        // 只管"服务器证书"这一类；HTTP 用户名/密码那种交回系统默认处理
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // 证书本身没问题 → 直接放行（不该拦的一律别拦）
+        var evalErr: CFError?
+        if SecTrustEvaluateWithError(trust, &evalErr) {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+        let host = challenge.protectionSpace.host
+        Task { @MainActor in
+            // 用户对这个站过一次「仍然访问」→ 之后直接放行，不再反复问
+            if self.trustedHosts.contains(host) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+            let gate = OnceGate()
+            guard let vc = self.dialogHost(for: wv) else {
+                if gate.take() { completionHandler(.cancelAuthenticationChallenge, nil) }
+                return
+            }
+            let a = UIAlertController(
+                title: "这个网站的证书有问题",
+                message: "\(host) 的身份证书不被信任（可能过期，或者不是它自己的）。\n继续访问 = 不再检查这个网站的身份，请确认你信任它。",
+                preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    if gate.take() { completionHandler(.cancelAuthenticationChallenge, nil) }
+                }
+            })
+            a.addAction(UIAlertAction(title: "仍然访问", style: .default) { _ in
+                Task { @MainActor in
+                    self.dialogBusy = false
+                    self.trustedHosts.insert(host)
+                    if gate.take() { completionHandler(.useCredential, URLCredential(trust: trust)) }
+                }
+            })
+            self.dialogBusy = true
+            vc.present(a, animated: true) {
+                Task { @MainActor in
+                    if vc.presentedViewController !== a {
+                        self.dialogBusy = false
+                        if gate.take() { completionHandler(.cancelAuthenticationChallenge, nil) }
+                    }
+                }
             }
         }
     }
@@ -1012,5 +1280,21 @@ extension BrowserModel: UIGestureRecognizerDelegate {
     nonisolated func gestureRecognizer(_ g: UIGestureRecognizer,
                                        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
+    }
+}
+
+/// 让一个回调**最多只被调用一次**。
+///
+/// JS 弹窗和证书挑战的 completionHandler 都是"必须且只能调一次"：
+///   · 不调 → 网页的 JS 引擎 / WebKit 一直等它，表现就是页面卡死；
+///   · 调两次 → 未定义行为。
+/// 下面这些回调里分支很多（弹不出、present 失败、用户点了取消…），
+/// 与其每条路径都小心翼翼，不如统一过一道闸。
+final class OnceGate: @unchecked Sendable {
+    private var used = false
+    func take() -> Bool {
+        if used { return false }
+        used = true
+        return true
     }
 }

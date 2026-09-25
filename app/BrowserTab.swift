@@ -31,6 +31,9 @@ final class BrowserTab {
     var canGoBack = false
     var canGoForward = false
     var isLoading = false
+    /// 这个窗口「打不开」的原因。非空 = 界面上该显示整页错误页。
+    /// 存在标签里（而不只是全局状态）—— 后台窗口加载失败时切回去也要看得到。
+    var loadError: PageError?
 
     /// ★ KVO 观察（v1.0.79）：进度 / 地址 / 标题。
     /// 为什么必须存起来：`webView.observe(...)` 返回的 observation 一旦没人持有，

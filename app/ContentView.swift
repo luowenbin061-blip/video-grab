@@ -247,14 +247,16 @@ struct ContentView: View {
                     .id(model.currentTabIndex)
                     .ignoresSafeArea(edges: .bottom)
 
-                if model.isLoading {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .padding(10)
-                        .background(.thinMaterial, in: Circle())
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                        .padding(.top, 10)
-                        .allowsHitTesting(false)
+                // 「打不开这个网页」→ 整页盖一层（对齐 Safari：告诉你原因 + 给个重试）。
+                // 只对**主文档**加载失败显示；点停止 / 页面自己跳转那种"取消"已经在
+                // 模型里滤掉了，不会莫名其妙弹出来。
+                //
+                // 这里原来是个转圈（加载时显示）：跟地址栏下面那根进度条干同一件事，
+                // 而且正好压在页面顶部挡内容 —— 已经有进度条了，删掉。
+                if let err = model.loadError {
+                    PageErrorView(info: err,
+                                  onRetry: { model.retry() },
+                                  onTrust: err.isCertificate ? { model.trustAndReload() } : nil)
                 }
 
                 if sniffResident {
