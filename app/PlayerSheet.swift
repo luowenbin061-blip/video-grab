@@ -68,16 +68,23 @@ struct PlayerSheet: View {
     @StateObject private var box: PlayerBox
     /// 这次播放是否让下载保活窗让了位 —— 结束时要还回去
     @State private var pipHandedOver = false
-    /// 我们这两个控件要不要显示。**进来时不显示** —— 系统控制条一开始也是不显示的
-    /// （用户实测：点播放时不应该冒出来，点屏幕才显示）。
-    @State private var controlsVisible = false
+    /// ★★ **系统控制条当前的透明度（0~1 连续值）** —— 直接从系统那个视图的呈现层搬过来。
+    /// 为什么是连续值而不是"显/隐"两个状态（v1.0.78 的关键修正）：
+    /// 系统控制条的出现/消失是**渐变**的（约 0.2~0.3 秒）。之前我用阈值把它压成布尔，
+    /// 于是我们的图标是"啪"地出现、"啪"地消失 —— **时刻也许对得上，但节奏完全不同**，
+    /// 一眼就看出不是一路的（用户一直说的"慢半拍"就是它）。
+    /// 把数值原样搬过来 = 连渐变曲线都一致 → 才是真正"看起来同步"。
+    @State private var systemAlpha: CGFloat = 0
     @State private var hideTask: Task<Void, Never>?
     /// 已经能读到系统控制条的状态了 → 显隐完全交给它（兜底逻辑让位）
     @State private var mirrorSystem = false
-    @State private var sawSystemVisible = false
-    @State private var sawSystemHidden = false
+    /// 见过"基本不透明"和"基本透明"两种读数才算可信（防读到假值把图标变常亮/常灭）
+    @State private var sawSystemShown = false
+    @State private var sawSystemGone = false
     /// 正在滑动（拖进度条 / 左右滑动调进度都算）
     @State private var dragActive = false
+    /// 兜底模式（完全读不到系统控制条）下我们自己算的显隐
+    @State private var fallbackOn = false
 
     /// 转屏没成功时补一次的定时器
     @State private var orientationRetry: Task<Void, Never>?
@@ -87,6 +94,14 @@ struct PlayerSheet: View {
         self.title = title
         self.pip = pip
         _box = StateObject(wrappedValue: PlayerBox(url: url))
+    }
+
+    /// 我们这两个图标最终显示到什么程度（0 = 完全不见，1 = 完全显示）
+    private var shownAlpha: CGFloat {
+        // 滑动 / 拖进度条期间强制收起 —— 用户明确要求"调进度时按钮不许出现"
+        if dragActive { return 0 }
+        // 能读到系统控制条 → 直接用它的透明度（连渐变一起跟）
+        return mirrorSystem ? systemAlpha : (fallbackOn ? 1 : 0)
     }
 
     // MARK: - 控件显隐
@@ -111,27 +126,25 @@ struct PlayerSheet: View {
     // 净效果：从"点一下到图标变化"约 **250~350ms** 压到 **≤66ms**。
     // 全程不做淡出 —— 用户明确说"没有淡出这个概念"，一律立即显示 / 立即消失。
 
-    /// 系统控制条报了它的显隐（来自 PlayerVC 里那个只读的观察）
-    private func systemControls(_ visible: Bool) {
-        sawSystemVisible = sawSystemVisible || visible
-        sawSystemHidden = sawSystemHidden || !visible
-        // 两种状态都亲眼见过，才承认这条读数可信 —— 免得读到个"永远显示"的假值，
-        // 反而把按钮变成永远亮着（那就比现在更糟）
-        guard sawSystemVisible, sawSystemHidden else { return }
+    /// 系统控制条报了它的**透明度**（来自 PlayerVC 里那个只读的观察，每约 16ms 一次）
+    private func systemControls(_ alpha: CGFloat) {
+        if alpha > 0.9 { sawSystemShown = true }
+        if alpha < 0.1 { sawSystemGone = true }
+        // 两种读数都亲眼见过，才承认这条可信 —— 免得读到个永远不变的假值，
+        // 把图标变成常亮或常灭（那比现状更糟）
+        guard sawSystemShown, sawSystemGone else { return }
         mirrorSystem = true
-        // 滑动期间系统读数不许改我们的显隐 —— 用户明确要求：调进度时按钮不许出现。
-        guard !dragActive else { return }
-        if controlsVisible != visible { controlsVisible = visible }
+        systemAlpha = alpha          // 直接搬数值：连渐变节奏一起跟，不做任何阈值判定
     }
 
-    private func showNow() {
+    private func fallbackShow() {
         hideTask?.cancel(); hideTask = nil
-        controlsVisible = true
+        fallbackOn = true
     }
 
-    private func hideNow() {
+    private func fallbackHide() {
         hideTask?.cancel(); hideTask = nil
-        controlsVisible = false
+        fallbackOn = false
     }
 
     /// 兜底逻辑：播放中亮着 3 秒后自己收；暂停不自动收
@@ -141,7 +154,7 @@ struct PlayerSheet: View {
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.controlsHideAfter * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            controlsVisible = false                 // 立即消失
+            fallbackOn = false
         }
     }
 
@@ -157,13 +170,13 @@ struct PlayerSheet: View {
     /// 不给本地切换就等于点击彻底没反应 —— 所以那条路上保留自己切换。
     private func tapToggled() {
         guard !mirrorSystem else { return }             // 能读到系统状态 → 一律听它的
-        if controlsVisible { hideNow() } else { showNow(); startAutoHide() }
+        if fallbackOn { fallbackHide() } else { fallbackShow(); startAutoHide() }
     }
 
     /// 开始滑动：一律先收起来（拖进度条、左右滑动调进度都算）
     private func dragBegan() {
+        // 只置这个标志就够了 —— shownAlpha 会在滑动期间直接返回 0（强制收起）
         dragActive = true
-        hideNow()
     }
 
     /// 松手。**一律不主动点亮**，全部交回系统读数（用户已确认删掉"拖进度条"那个特例）：
@@ -179,7 +192,7 @@ struct PlayerSheet: View {
     private func noteTouch() {
         // 读不到系统读数时（兜底模式）触摸把自动隐藏的计时往后推；
         // 能读到时这里什么都不做 —— 显隐跟着系统走，别插嘴。
-        guard !mirrorSystem, !dragActive, controlsVisible else { return }
+        guard !mirrorSystem, !dragActive, fallbackOn else { return }
         startAutoHide()
     }
 
@@ -302,8 +315,13 @@ struct PlayerSheet: View {
                           y: wide ? Self.lsTopWide
                                   : geo.size.height - Self.lsBottomTall)
             }
-            .opacity(controlsVisible ? 1 : 0)
-            .allowsHitTesting(controlsVisible)
+            // 透明度直接跟着系统控制条走（0~1 连续值）→ 连淡入淡出的节奏都一致
+            .opacity(shownAlpha)
+            // 半透明状态不给点（避免"看得见一点但点不动"的错觉）
+            .allowsHitTesting(shownAlpha > 0.5)
+            // 兜底模式下自己补一个短渐变（节奏跟系统那套接近）；
+            // ★ 镜像模式必须传 nil —— 数值本来就是一帧帧从系统搬来的，再加动画等于慢两拍
+            .animation(mirrorSystem ? nil : .easeOut(duration: 0.25), value: shownAlpha)
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
@@ -323,7 +341,7 @@ struct PlayerSheet: View {
         // 暂停了 → 撤掉自动隐藏，让它常显
         .onChange(of: box.isPlaying) { playing in
             if playing {
-                if controlsVisible { startAutoHide() }    // 开播了：亮着的那 3 秒后收
+                if fallbackOn { startAutoHide() }         // 开播了：亮着的那 3 秒后收
             } else {
                 hideTask?.cancel()                        // 暂停：撤掉自动隐藏，让它常显
                 hideTask = nil
@@ -599,7 +617,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
     /// 松手 → 交回系统读数
     let onDragEnded: () -> Void
     /// 读到系统控制条的显隐了（只读）→ 我们跟着它
-    let onSystemControls: (Bool) -> Void
+    let onSystemControls: (CGFloat) -> Void
 
     final class Coord: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var onSystemExit: () -> Void = {}
@@ -607,15 +625,13 @@ private struct PlayerVC: UIViewControllerRepresentable {
         var onTap: () -> Void = {}
         var onDragBegan: () -> Void = {}
         var onDragEnded: () -> Void = {}
-        var onSystemControls: (Bool) -> Void = { _ in }
+        var onSystemControls: (CGFloat) -> Void = { _ in }
 
         /// 只在"刚越过拖动阈值"那一下报一次
         private var dragReported = false
         private weak var playerView: UIView?
         private weak var controlsView: UIView?
         private var watch: Task<Void, Never>?
-        /// 滤抖动用：上一次的读数（连续两次一致才认）
-        private var pendingVisible: Bool?
 
         /// 开始盯系统控制条的显隐（**只读**，绝不改它）
         func startWatchingSystemControls(_ view: UIView) {
@@ -626,9 +642,9 @@ private struct PlayerVC: UIViewControllerRepresentable {
                     // 播放器关了就把这条循环断掉（self 是弱引用，不能一直空转）
                     guard let self else { return }
                     self.pollSystemControls()
-                    // 33ms 一次（约每秒 30 次）。原来 100ms —— 那是"点空白处比系统慢
-                    // 0.2~0.3 秒"的来源之一。只读两个属性，开销可以忽略。
-                    try? await Task.sleep(nanoseconds: 33_000_000)   // 33ms
+                    // 16ms 一次（约每秒 60 次，跟屏幕刷新同步）。原来是 100ms → 33ms → 现在 16ms。
+                    // 只读两个属性，开销可以忽略；这是把"时序差"压到一帧以内。
+                    try? await Task.sleep(nanoseconds: 16_000_000)   // 16ms
                 }
             }
         }
@@ -638,24 +654,17 @@ private struct PlayerVC: UIViewControllerRepresentable {
                 controlsView = Self.findControlsView(pv, 0)
             }
             guard let v = controlsView else { return }
-            // 阈值 0.8（不是 0.5）：系统控制条自己淡入淡出时会经过 0.5，采样落在那一带
-            // 就会 true/false 反复 → 我们也跟着闪。
-            // ★ 读【呈现层】在屏幕上实际的透明度，不读 view.alpha。
-            //   这轮查清的关键事实：UIKit 动画会在动画【开始】那一刻就把 model 值设成终值，
-            //   真正在屏幕上渐变的是呈现层。读 view.alpha 拿到的是"目标"（甚至比视觉更早），
-            //   读呈现层才是"现在屏幕上什么样" —— 要跟视觉同步必须看后者。
-            //   阈值 0.05（不是 0.8）：0.8 要等系统动画快走完才认"显示"，那就是慢半拍。
-            //   0.05 意味着"系统刚一开始出现，我们立刻跟上"，也不会在过渡中间来回抖。
-            // 注意类型：CALayer.opacity 是 Float，UIView.alpha 是 CGFloat —— 直接在 ?? 里
-            // 混用会编译不过（run #76 就死在这），统一先转 CGFloat。
+            // ★★ 读【呈现层】的**真实透明度数值**，原样报上去（不做阈值判定、不去抖）。
+            //   ① 为什么读呈现层：UIKit 动画在动画【开始】那一刻就把 model 值设成终值，
+            //      真正在屏幕上渐变的是呈现层。读 view.alpha 拿的是"目标"，读呈现层才是
+            //      "现在屏幕上是什么样"。
+            //   ② 为什么不判阈值：阈值会把渐变压成开关 —— 时刻也许对得上，但**节奏不对**，
+            //      用户一眼就看出我们的图标跟系统不是一路的（v1.0.77 就是这么错的）。
+            //   ③ 为什么不去抖：数值是连续的，本来就不会"跳"；去抖只会加大延迟。
+            // 类型：CALayer.opacity 是 Float、UIView.alpha 是 CGFloat → 统一转 CGFloat
+            // （run #76 就是混用编译不过）。
             let op = CGFloat(v.layer.presentation()?.opacity ?? Float(v.alpha))
-            let shown = !v.isHidden && op > 0.05
-            // 连续两次读数一致才认（33ms 一次 → 最多晚 66ms）：滤掉单帧抖动，
-            // 又不到人能感觉出来的程度。
-            guard shown == pendingVisible else { pendingVisible = shown; return }
-            // ★ 每次都报，不做"只在变化时报"的优化 —— 否则我们滑动时主动隐藏之后，
-            //   系统读数若一直是 true（没变化），就没人来把它同步回来了，按钮会一直不亮。
-            onSystemControls(shown)
+            onSystemControls(v.isHidden ? 0 : op)
         }
 
         /// 找系统那个"控制条"视图：类名里带 Controls、且有子视图的那一层。
