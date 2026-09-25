@@ -1049,7 +1049,8 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             let a = UIAlertController(title: self.hostOf(wv), message: prompt, preferredStyle: .alert)
             a.addTextField { tf in
                 tf.text = defaultText
-                tf.autocorrectionDisabled(true)
+                // UIKit 上是这两个属性（autocorrectionDisabled 是 SwiftUI 的写法，UITextField 没有）
+                tf.autocorrectionType = .no
                 tf.autocapitalizationType = .none
             }
             a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in

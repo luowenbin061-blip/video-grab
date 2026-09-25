@@ -31,7 +31,10 @@ struct PageError: Equatable {
         var reason = "出错原因：\(error.localizedDescription)"
         var cert = false
 
-        if ns.domain == NSURLErrorDomain, let code = URLError.Code(rawValue: ns.code) {
+        // ★ URLError.Code(rawValue:) 不是可失败的初始化器（它不做校验），
+        //   所以只能先构造、再比较，不能写进 if 的条件绑定里。
+        if ns.domain == NSURLErrorDomain {
+            let code = URLError.Code(rawValue: ns.code)
             switch code {
             case .notConnectedToInternet:
                 (title, reason) = ("没有网络",
