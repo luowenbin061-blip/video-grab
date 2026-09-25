@@ -386,6 +386,49 @@
         return null;
       }
 
+      // ★ 按几何找：哪个 video 的矩形盖住了这个点（有多个时取最小 = 最贴切的那个）。
+      // 为什么必须有这条：多数播放器把「封面图 / 大播放按钮 / 控制条」做成 video 的
+      // **兄弟元素**压在它上面 —— 这时 elementFromPoint 命中的是那层 div，
+      // 顺着祖先链怎么走都走不到 video，于是被判成「不是视频」→ 长按不弹菜单。
+      // 实测症状就是「有些页能弹、大多数不弹」。
+      function videoUnder(doc, x, y) {
+        var list = null, best = null, bestArea = 0;
+        try { list = doc.querySelectorAll('video'); } catch (e) { return null; }
+        for (var i = 0; i < list.length; i++) {
+          var r = list[i].getBoundingClientRect();
+          if (r.width < 40 || r.height < 40) continue;
+          if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+          var area = r.width * r.height;
+          if (!best || area < bestArea) { best = list[i]; bestArea = area; }
+        }
+        return best;
+      }
+
+      function countVideos(doc) {
+        try { return doc.querySelectorAll('video').length; } catch (e) { return -1; }
+      }
+
+      // 日志里要能看出「手指底下到底是什么」—— 命中不到视频时必须知道是谁挡着
+      function clipOf(el) {
+        var c = '';
+        try { c = String(el.className || ''); } catch (e) { c = ''; }
+        c = c.replace(/\s+/g, ' ').replace(/^ | $/g, '').slice(0, 40);
+        return el.tagName + (c ? '.' + c : '');
+      }
+
+      function mediaInfo(v, doc, via) {
+        var r = v.getBoundingClientRect();
+        return {
+          hit: 'media',
+          via: via,
+          url: v.currentSrc || v.src || '',
+          poster: v.poster || '',
+          title: ((doc && doc.title) || document.title || '').slice(0, 140),
+          w: Math.round(r.width),
+          h: Math.round(r.height)
+        };
+      }
+
       // 递归命中测试：同源 iframe 能直接进去看；跨域的进不去（同源策略），
       // 那就老实回报「这里是 iframe」，由原生侧写进诊断日志。
       function hitIn(doc, x, y, depth) {
@@ -393,17 +436,11 @@
         var el = doc.elementFromPoint(x, y);
         if (!el) return null;
         var v = findMedia(el);
-        if (v) {
-          var r = v.getBoundingClientRect();
-          return {
-            hit: 'media',
-            url: v.currentSrc || v.src || '',
-            poster: v.poster || '',
-            title: ((doc.title || document.title) || '').slice(0, 140),
-            w: Math.round(r.width),
-            h: Math.round(r.height)
-          };
-        }
+        if (v) return mediaInfo(v, doc, 'dom');
+
+        // 点在 iframe 上 → 先钻进去看：里面的东西一定比「外面盖着它的」更贴切。
+        // （顺序很重要：先几何兜底的话，外层某个 video 会把它抢走 —— 离线回归用例③逮到过）
+        var frameInfo = null;
         if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
           var ir = el.getBoundingClientRect();
           var inner = null;
@@ -412,14 +449,21 @@
           } catch (e) { inner = null; }
           if (inner) {
             var sub = hitIn(inner, x - ir.left, y - ir.top, depth + 1);
-            if (sub) return sub;
+            if (sub && sub.hit === 'media') return sub;
           }
-          return {
+          frameInfo = {
             hit: 'iframe', cross: !inner, src: el.src || '',
             x: ir.left, y: ir.top, w: ir.width, h: ir.height
           };
+          if (!inner) return frameInfo;      // 跨域进不去，只能回报它
         }
-        return { hit: 'other', tag: el.tagName };
+
+        // ★ 按几何找（封面图/控制条是 video 的兄弟元素压在上面时，只有这条能认出来）
+        v = videoUnder(doc, x, y);
+        if (v) return mediaInfo(v, doc, 'geo');
+
+        if (frameInfo) return frameInfo;
+        return { hit: 'other', tag: el.tagName, cls: clipOf(el), vids: countVideos(doc) };
       }
 
       // 原生侧调这个。坐标是页面 CSS 像素。
@@ -442,7 +486,7 @@
       function reportLongPress(v) {
         try {
           window.webkit.messageHandlers.vgSniff.postMessage({
-            type: 'longpress', url: v.currentSrc || v.src || ''
+            type: 'longpress', url: (v && (v.currentSrc || v.src)) || ''
           });
         } catch (err) {}
       }
@@ -450,9 +494,12 @@
         if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
       }
       document.addEventListener('touchstart', function (e) {
-        var v = videoAncestor(e.target);
-        if (!v) return;
         cancelFallback();
+        var t = e.touches && e.touches[0];
+        if (!t) return;
+        // 和原生走同一套判定：先祖先链，再按几何（挡住 video 的那层兄弟元素也认得）
+        var v = videoAncestor(e.target) || videoUnder(document, t.clientX, t.clientY);
+        if (!v) return;
         fallbackTimer = setTimeout(function () {
           fallbackTimer = null;
           if (nativeMenuUp) return;

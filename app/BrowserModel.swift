@@ -748,6 +748,10 @@ extension BrowserModel {
         let cy = point.y / zoom
         lines.append(String(format: "落点 (%.0f, %.0f) → css (%.0f, %.0f)  zoom %.2f",
                             point.x, point.y, cx, cy, zoom))
+        // ★ 一开始就压住网页层那条 900ms 兜底 —— 不是等菜单弹出来才压。
+        //   原来等菜单才压，探测这一趟（要等网页层回话）慢一点，
+        //   兜底就先弹了嗅探面板把菜单盖掉 → 看着就像「长按下载失效」（真踩过）。
+        wv.evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(true);")
         let js = "window.__vgHit && window.__vgHit(\(cx), \(cy))"
         wv.evaluateJavaScript(js) { [weak self] raw, _ in
             Task { @MainActor in
@@ -773,20 +777,29 @@ extension BrowserModel {
             let h = (d["h"] as? NSNumber)?.intValue ?? 0
             extra = "跨域=\((d["cross"] as? Bool) == true)  框 \(w)×\(h)"
         case "other":
-            extra = "元素=\((d["tag"] as? String) ?? "?")"
+            let cls = (d["cls"] as? String) ?? ""
+            let n = (d["vids"] as? NSNumber)?.intValue ?? -1
+            extra = "元素=" + cls + "  页内 video=\(n)"
         case "error":
             extra = (d["msg"] as? String) ?? ""
         default:
             break
         }
+        let via = (d["via"] as? String) ?? ""
         out.append("命中: " + kind
+                   + (via.isEmpty ? "" : "(\(via))")
                    + (url.isEmpty ? "" : "  " + BrowserModel.briefURL(url))
                    + (extra.isEmpty ? "" : "  " + extra))
 
         guard kind == "media", !url.isEmpty else {
-            out.append(kind == "iframe"
-                       ? "视频在 iframe 里（跨域进不去）→ 不弹菜单"
-                       : "这点上不是视频 → 不弹菜单，页面照旧")
+            if kind == "iframe" {
+                out.append("视频在 iframe 里（跨域进不去）→ 不弹菜单")
+            } else {
+                out.append("这点上不是视频 → 不弹菜单，页面照旧")
+            }
+            // 把网页层那条兜底放开：手指底下确实有视频（网页层自己认过）而这里
+            // 没认出来时，900ms 后它会弹嗅探面板 —— 有反馈总比静悄悄强
+            wv.evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(false);")
             finishLPDebug(out)
             return
         }
