@@ -210,6 +210,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showPanel = false
+    /// 「长按诊断」开关的镜像 —— 开关一关，屏幕上的诊断条立刻消失
+    @AppStorage("lpDebug") private var lpDebugOn = false
     @State private var showDownloads = false
     @State private var showShare = false
     @State private var showPiPAsk = false
@@ -282,6 +284,8 @@ struct ContentView: View {
             bottomBar
         }
         .overlay(alignment: .top) { toastView }
+        // 诊断条：放在顶部（原来在底部，正好压着视频的画面区）。只在诊断开关打开时出现
+        .overlay(alignment: .top) { lpDebugBanner }
         // 长按视频的菜单（自绘，照截图：预览卡 + 标题行 + Download 行）
         .overlay {
             if let info = model.lpMenu {
@@ -293,7 +297,6 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.12), value: model.lpMenu)
         // 长按诊断（设置里打开才出现）：显示这一步卡在哪，12 秒自己消失
-        .overlay(alignment: .bottom) { lpDebugBanner }
         // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
         .overlay(alignment: .bottom) {
             if showMenu {
@@ -714,22 +717,24 @@ struct ContentView: View {
 
     // MARK: - Toast
 
-    /// 长按诊断条（设置里那个开关打开才出现）。诊断开着时，长按一次就能看出
-    /// 到底卡在哪一步：坐标换算 / 网页层没回话 / 命中的是什么 / 视频地址。
+    /// 长按诊断条 —— 只在「长按诊断」开关打开、且刚长按过时出现：
+    /// 8 秒自动消失，点一下立刻关。放在顶部是为了不压住视频画面。
+    /// 开关一关，这里立刻什么都不显示（@AppStorage 会触发刷新）。
     @ViewBuilder private var lpDebugBanner: some View {
-        if let t = model.lpDebug {
+        if lpDebugOn, let t = model.lpDebug {
             Text(t)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.leading)
+                .lineLimit(3)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.black.opacity(0.78),
                             in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .padding(.horizontal, 8)
-                .padding(.bottom, 8)
-                .allowsHitTesting(false)
+                .padding(.top, 116)
+                .onTapGesture { model.dismissLPDebug() }
                 .transition(.opacity)
         }
     }

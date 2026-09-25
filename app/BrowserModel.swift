@@ -121,8 +121,17 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var lpDebug: String?
     private var lpDebugStamp = UUID()
 
-    /// 设置里的「长按诊断」开关（默认关，不给平时用加噪音）
-    private var lpDebugOn: Bool { UserDefaults.standard.bool(forKey: "lpDebug") }
+    // ★ UserDefaults 的坑：bool(forKey:) 对「从没写过的 key」返回 false。
+    //   所以「长按下载」这种默认要开的开关不能直接用它 —— 新装的用户会默认关掉。
+    //   一律走 object(forKey:) as? Bool ?? 默认值。
+    /// 设置里的「长按视频弹下载菜单」（默认开）。关掉 = 长按完全不接管
+    private var lpDownloadOn: Bool {
+        (UserDefaults.standard.object(forKey: "lpLongPressDownload") as? Bool) ?? true
+    }
+    /// 设置里的「长按诊断」（默认关，不给平时用加噪音）
+    private var lpDebugOn: Bool {
+        (UserDefaults.standard.object(forKey: "lpDebug") as? Bool) ?? false
+    }
 
     /// 系统长按菜单里的「Download」被点 —— 界面接线成真正的下载动作
     var onDownloadRequest: ((String) -> Void)?
@@ -723,6 +732,8 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 extension BrowserModel {
 
     @objc func onLongPress(_ g: UILongPressGestureRecognizer) {
+        // 设置里关了「长按视频弹下载菜单」→ 什么都不做（手势还挂着，但是空的）
+        guard lpDownloadOn else { return }
         guard g.state == .began, let wv = g.view as? WKWebView else { return }
         probeLongPress(wv: wv, at: g.location(in: wv))
     }
@@ -798,14 +809,15 @@ extension BrowserModel {
                                    host: host)
     }
 
-    /// 诊断日志：只在开关打开时显示，12 秒后自己消失（免得一直糊在屏幕上）
+    /// 诊断日志：只在开关打开时显示，8 秒后自己消失（也能点一下立刻关掉）——
+    /// 别让它一直糊在屏幕上挡着页面
     private func finishLPDebug(_ lines: [String]) {
         guard lpDebugOn else { lpDebug = nil; return }
         let stamp = UUID()
         lpDebugStamp = stamp
         lpDebug = lines.joined(separator: "\n")
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
             if self.lpDebugStamp == stamp { self.lpDebug = nil }
         }
     }
@@ -814,6 +826,12 @@ extension BrowserModel {
     static func briefURL(_ s: String) -> String {
         guard let u = URL(string: s), let h = u.host else { return String(s.prefix(48)) }
         return h + (u.path.isEmpty ? "" : String(u.path.suffix(24)))
+    }
+
+    /// 手动关掉诊断条（点它一下）
+    func dismissLPDebug() {
+        lpDebug = nil
+        lpDebugStamp = UUID()      // 让那个 8 秒的定时器认不出自己，别再覆盖回来
     }
 
     /// 关掉菜单

@@ -13,7 +13,9 @@ struct SettingsView: View {
     /// 播放小窗（App 里播放视频时切出去继续播）。
     /// 跟「下载保活」是两件事，所以是两个开关。
     @AppStorage("playerPiPEnabled") private var playerPiP = true
-    /// 长按诊断：打开后每次长按在屏幕底部显示一行过程记录，用来排查「长按没反应」
+    /// 长按视频弹下载菜单（默认开）。关掉 = 完全不接管长按，页面怎么长按都跟我们无关
+    @AppStorage("lpLongPressDownload") private var lpDownload = true
+    /// 长按诊断（默认关）：只在排查「长按没反应」时打开，会在屏幕顶部显示一行过程记录
     @AppStorage("lpDebug") private var lpDebug = false
 
     var body: some View {
@@ -55,11 +57,12 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("长按诊断（排查长按没反应）", isOn: $lpDebug)
+                    Toggle("长按视频弹下载菜单", isOn: $lpDownload)
+                    Toggle("长按诊断", isOn: $lpDebug)
                 } header: {
                     Text("长按下载")
                 } footer: {
-                    Text("长按网页里的视频 → 弹出菜单（预览卡 + Download），点 Download 直接进下载列表。\n诊断：打开后每次长按会在屏幕底部显示一行过程记录（12 秒后自动消失）——「长按没反应」时打开它，把内容告诉我。平时关掉。")
+                    Text("上面那个管功能，下面那个只管排查 —— 两个互不影响。\n诊断开着时，每次长按会在屏幕顶部显示一行过程记录，8 秒自动消失，点一下立刻关掉。平时关着。")
                 }
 
                 Section {
