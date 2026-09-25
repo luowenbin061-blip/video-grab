@@ -24,25 +24,35 @@ struct PlayerSheet: View {
     /// 参数先留着：错误页/以后要用时不至于再改一遍调用方。
     let title: String
     // ── 横屏按钮：尺寸与位置（全部是从用户截图上量像素换算出来的，不是估的）──
-    /// 图标字号。**按截图量的**：系统那排图标实测 26~27px（scale≈1.4 → 约 19~20pt），
-    /// 我们 22pt 时是 28px（偏大）、18pt 时 22px（偏小）→ 21pt ≈ 26px 才对得上。
-    private static let landscapeIconSize: CGFloat = 21
+    /// 图标字号。**按截图量的**：左上那排 ✕ 是 15pt、小窗图标约 20pt；我们 21pt 时
+    /// 视觉约 19.5pt（跟小窗一样大，但它是两条张开的斜线，看着比小窗"大一圈"）。
+    /// 用户要"再小一点、跟左边那两颗更协调" → 取 **18pt**（视觉约 16.6pt），
+    /// 正好落在 ✕(15) 和小窗(20) 中间。
+    private static let landscapeIconSize: CGFloat = 18
     /// 位置 = 图标【中心】到「安全区右边 / 下边」的距离（pt）。横竖屏各一组：
     /// 竖屏：中心距右 113、距下 53 ←→ 与系统的「隔空播放」同一行、在它左边（用户说 OK）
     private static let lsTrailingTall: CGFloat = 113
     private static let lsBottomTall: CGFloat = 53
-    /// 横屏：在【左上角、系统"小窗播放"图标的右边】（用户第二次纠正 —— 上一版我把它放到
-    /// 右下角是理解错了"小窗模式的右边"）。数值全部从他截图上量像素换算（scale≈1.4，
-    /// 屏 848x396pt）：
-    ///   左上 ✕ 中心 (56,47) ／ 小窗图标中心 (107,48) → **系统两个图标中心间距 51pt**
-    ///   他画的红框中心 (165,46)
-    /// 取「跟小窗图标同一个间距」→ 中心距安全区左边 = 107 + 51 = **158pt**
-    /// （红框量到 165，差 7pt；按系统那排的间距对齐，三个看起来才匀）；
-    /// 纵向跟系统那一行平齐 → **47pt**。
-    /// ★ 用「距安全区左上角」定位而不是距屏幕角：横屏时刘海在哪一侧会让安全区整体偏移，
-    ///   GeometryReader 已经在安全区里，所以刘海在左时按钮会跟着系统图标一起让开。
+    /// 横屏：在【左上角、系统"小窗播放"图标的右边】。数值是从截图量像素换算的
+    /// （scale≈1.39；左上 ✕ 屏幕 55pt、小窗图标 107pt → 系统两颗中心间距 52pt）：
+    /// 取「跟小窗同一间距」→ 我们的中心应在**屏幕坐标 158pt**（= 107 + 51）。
+    /// 纵向跟系统那一行平齐 → 47pt。
+    /// ★★ **这两个数是"屏幕坐标"，不是"安全区坐标"** —— 血的教训（v1.0.73 实测）：
+    ///   系统的图标是按屏幕摆的，而 GeometryReader 在安全区里（横屏刘海那侧约 48pt）。
+    ///   上一版我按"距安全区左 158"定位，落到屏幕上就成了 206pt → 跟小窗的间隔
+    ///   变成 100pt（应该是 52），用户一眼看出"间隔太大"。
+    ///   → position 那里减掉 windowSafeLead()（窗口真实的安全区宽度）换算回屏幕坐标。
+    ///   （横向不需要避让刘海：横屏的顶部工具栏那一带本来就没有刘海。）
     private static let lsLeadingWide: CGFloat = 158
     private static let lsTopWide: CGFloat = 47
+
+    /// 窗口左侧的安全区宽度（横屏时就是刘海那一侧）。**直接读窗口的真实值**，
+    /// 不猜机型、也不写死数字 —— 换算"安全区坐标 ↔ 屏幕坐标"要用它。
+    private static func windowSafeLead() -> CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        return scene?.keyWindow?.safeAreaInsets.left ?? 0
+    }
 
     /// 播放中、亮着没再被点，多久后自动隐藏（秒）。
     /// 3 秒是用户实测系统那套的间隔（原生逻辑：播放中点一下显示、再点一下隐藏、
@@ -66,8 +76,15 @@ struct PlayerSheet: View {
     @State private var mirrorSystem = false
     @State private var sawSystemVisible = false
     @State private var sawSystemHidden = false
-    /// 正在拖进度条
+    /// 正在滑动（拖进度条 / 左右滑动调进度都算）
     @State private var dragActive = false
+    /// **冻结系统读数**：从手指按下去、到松手后一小段，这段时间显隐只听我们自己的。
+    /// 为什么必须有它（用户实测"右滑时一闪一闪"的根因）：手指一按下去，系统可能正
+    /// 把控制条点亮（左右滑动 seek 就是），我们不冻就会先跟着亮一下、紧接着被滑动逻辑
+    /// 收掉 —— 那一亮一灭就是他看到的闪。左滑不闪只是因为落手更快，窗口没被看见。
+    @State private var frozen = false
+    /// 解冻用的定时器
+    @State private var settleTask: Task<Void, Never>?
     /// 转屏没成功时补一次的定时器
     @State private var orientationRetry: Task<Void, Never>?
 
@@ -94,11 +111,22 @@ struct PlayerSheet: View {
         // 反而把按钮变成永远亮着（那就比现在更糟）
         guard sawSystemVisible, sawSystemHidden else { return }
         mirrorSystem = true
-        // ★ 正在滑动/拖进度条时，系统读数不许把我们点亮 ——
-        //   用户实测要求：左右滑动调进度的时候按钮也不该出现。
-        //   （他去读系统控制条时它可能还亮着，所以这里必须挡住，不能光靠"跟随系统"。）
-        guard !dragActive else { return }
+        // ★ 冻结期间（手指按着 + 刚离开那一小段）、以及滑动期间，系统读数一律
+        //   不许改我们的显隐。用户实测要求：左右滑动调进度时按钮不该出现，
+        //   而且此前会"一闪一闪" —— 根因就是开始滑的那一下我们跟着系统亮了一下。
+        guard !dragActive, !frozen else { return }
         if controlsVisible != visible { controlsVisible = visible }
+    }
+
+    /// 松手后隔一小段再解冻 —— 躲开系统在 seek 松手瞬间的状态抖动。
+    /// 解冻之后由系统读数接管（轮询 100ms 一次，最多 100ms 就同步上）。
+    private func settle(after seconds: Double = 0.25) {
+        settleTask?.cancel()
+        settleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            frozen = false
+        }
     }
 
     private func showNow() {
@@ -122,31 +150,37 @@ struct PlayerSheet: View {
         }
     }
 
-    /// 点了一下画面（兜底模式）：亮着就收、藏着就亮
+    /// 点了一下画面：**立即切换**（乐观），0.25 秒后交回系统读数。
+    /// 为什么乐观切换：等系统回话再改会显得迟钝；系统此刻本来就会把它切到新状态，
+    /// 我们只是把这一步提前做 —— 冻结窗口一过，读数会确认（或纠正）它。
     private func tapToggled() {
-        guard !mirrorSystem else { return }          // 跟随系统时，显隐交给它
         if controlsVisible { hideNow() } else { showNow(); startAutoHide() }
+        settle()
     }
 
-    /// 开始滑动/拖动：一律先收起来（拖进度条、左右滑动调进度都算）
-    private func dragBegan(fromProgressBar: Bool) {
+    /// 开始滑动：一律先收起来（拖进度条、左右滑动调进度都算）
+    private func dragBegan() {
         dragActive = true
         hideNow()
     }
 
-    /// 松手。两种滑动分开处理（用户对这两种的要求不一样）：
-    /// · 拖底部进度条 → **立刻恢复显示**（他明确要求"松手后立即恢复"）+ 进 3 秒倒计时
-    /// · 左右滑动调进度 → **不主动点亮**，交回系统读数
-    ///   （他明确要求"调整播放进度的时候按钮也不应该显示"）
-    private func dragEnded(fromProgressBar: Bool) {
+    /// 松手。**一律不主动点亮**，全部交回系统读数（用户已确认删掉"拖进度条"那个特例）：
+    /// · 拖底部进度条：系统控制条本来就是显示的 → 解冻后 ≤100ms 我们自动跟着亮，
+    ///   效果跟"立刻恢复"一样，但不用再猜"手指起点在不在进度条上"（误判就是闪的来源）
+    /// · 左右滑动调进度：系统该隐藏就隐藏，我们不再自作主张
+    private func dragEnded() {
         dragActive = false
-        guard fromProgressBar else { return }     // seek 滑动：交给系统的读数决定
-        showNow()
-        startAutoHide()
+        settle()
     }
 
-    /// 手指碰了屏幕（不是点击、也不是拖动）：把倒计时往后推
+    /// 手指碰了屏幕（不是点击、也不是拖动）
     private func noteTouch() {
+        // ★ 一碰就先冻结读数 —— 这是"右滑一闪一闪"的正解：滑动开始时系统正把
+        //   控制条点亮，不冻的话我们会先亮一下、再被滑动逻辑收掉。左滑之所以看着正常，
+        //   只是落手更快、那个窗口没被看见而已（不能只按"左滑没事"就放过）。
+        frozen = true
+        settleTask?.cancel(); settleTask = nil
+        // 读不到系统读数时（兜底模式）触摸仍然把自动隐藏的计时往后推
         guard !mirrorSystem, !dragActive, controlsVisible else { return }
         startAutoHide()
     }
@@ -175,8 +209,9 @@ struct PlayerSheet: View {
                      onSystemExit: { dismiss() },
                      onTouch: { noteTouch() },
                      onTap: { tapToggled() },
-                     onDragBegan: { dragBegan(fromProgressBar: $0) },
-                     onDragEnded: { dragEnded(fromProgressBar: $0) },
+                     onDragBegan: { dragBegan() },
+                     onDragEnded: { dragEnded() },
+                     onRelease: { settle() },
                      onSystemControls: { systemControls($0) })
                 .ignoresSafeArea()
 
@@ -263,8 +298,9 @@ struct PlayerSheet: View {
                 }
                 .buttonStyle(.plain)
                 // 横屏：左上角、小窗图标右边（跟它同间距、同一水平线）
+                //   ★ 减去窗口左侧的安全区宽度 → 换算成【屏幕坐标】（系统图标就是这个基准）
                 // 竖屏：右下角、跟系统的「隔空播放」同一行（用户说 OK，没动）
-                .position(x: wide ? Self.lsLeadingWide
+                .position(x: wide ? Self.lsLeadingWide - Self.windowSafeLead()
                                   : geo.size.width - Self.lsTrailingTall,
                           y: wide ? Self.lsTopWide
                                   : geo.size.height - Self.lsBottomTall)
@@ -298,6 +334,7 @@ struct PlayerSheet: View {
         }
         .onDisappear {
             hideTask?.cancel()
+            settleTask?.cancel()
             orientationRetry?.cancel()
             box.stop()
             ScreenOrientation.portrait()      // 退出播放器回竖屏，别把界面留在横着
@@ -501,15 +538,17 @@ final class TouchObserver: UIGestureRecognizer {
     /// 判断为"点了一下"（短、且几乎没移动）时报一次 —— 用来"切换控件显隐"
     var onTap: () -> Void = {}
     /// 刚越过拖动阈值（不是点击）→ 报"开始拖"
-    var onDragBegan: (Bool) -> Void = { _ in }
+    var onDragBegan: () -> Void = {}
     /// 松手 → 报"拖完了"
-    var onDragEnded: (Bool) -> Void = { _ in }
+    var onDragEnded: () -> Void = {}
+    /// 手指离开（算点击、算滑动、长按后松手、被系统抢走）—— 一律触发一次。
+    /// 用来"解冻"系统读数：长按不放再松手那条路既不报点击也不报滑动，
+    /// 漏了它读数会被永久冻住（自己给自己挖的坑）。
+    var onRelease: () -> Void = {}
 
     private var startPoint = CGPoint.zero
     private var beganAt: TimeInterval = 0
     private var moved = false
-    /// 手指是不是从底部那条进度条附近按下去的（用来区分"拖进度条"和"左右滑动调进度"）
-    private var startedNearBottom = false
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
@@ -517,10 +556,6 @@ final class TouchObserver: UIGestureRecognizer {
         startPoint = t.location(in: view)
         beganAt = t.timestamp
         moved = false
-        // 底部约三成高度以内按下去的 = 拖进度条；画面中部开始的 = 左右滑动调进度。
-        // 进度条大约在屏幕 76% 高度处，取 70% 当分界。
-        let h = view?.bounds.height ?? 0
-        startedNearBottom = h > 0 && startPoint.y > h * 0.70
         onTouch()
     }
 
@@ -530,7 +565,7 @@ final class TouchObserver: UIGestureRecognizer {
         let p = t.location(in: view)
         if !moved, hypot(p.x - startPoint.x, p.y - startPoint.y) > 12 {
             moved = true
-            onDragBegan(startedNearBottom)   // 刚越过阈值 —— 报一次"开始滑了"
+            onDragBegan()            // 刚越过阈值 —— 报一次"开始滑了"
         }
     }
 
@@ -548,10 +583,11 @@ final class TouchObserver: UIGestureRecognizer {
 
     private func finish(_ touches: Set<UITouch>) {
         if moved {
-            onDragEnded(startedNearBottom)   // 松手（是否"拖进度条"决定要不要立刻恢复）
+            onDragEnded()            // 松手 —— 交回系统读数
         } else if let t = touches.first, t.timestamp - beganAt < 0.4 {
             onTap()
         }
+        onRelease()                  // 统一解冻（上面两条分支没覆盖到的路径靠它）
         // ★ 全程不进入"已识别"状态：只在最后收尾成 failed，绝不跟系统的手势抢
         state = .failed
     }
@@ -568,9 +604,11 @@ private struct PlayerVC: UIViewControllerRepresentable {
     /// 播放器上"点了一下"（短按、几乎没移动）→ 切换控件显隐
     let onTap: () -> Void
     /// 开始拖东西（进度条那种）→ 先把控件收起来
-    let onDragBegan: (Bool) -> Void
-    /// 松手 → 立刻恢复显示
-    let onDragEnded: (Bool) -> Void
+    let onDragBegan: () -> Void
+    /// 松手 → 交回系统读数
+    let onDragEnded: () -> Void
+    /// 手指离开（含长按松手、被系统抢走）→ 解冻读数
+    let onRelease: () -> Void
     /// 读到系统控制条的显隐了（只读）→ 我们跟着它
     let onSystemControls: (Bool) -> Void
 
@@ -578,8 +616,9 @@ private struct PlayerVC: UIViewControllerRepresentable {
         var onSystemExit: () -> Void = {}
         var onTouch: () -> Void = {}
         var onTap: () -> Void = {}
-        var onDragBegan: (Bool) -> Void = { _ in }
-        var onDragEnded: (Bool) -> Void = { _ in }
+        var onDragBegan: () -> Void = {}
+        var onDragEnded: () -> Void = {}
+        var onRelease: () -> Void = {}
         var onSystemControls: (Bool) -> Void = { _ in }
 
         /// 只在"刚越过拖动阈值"那一下报一次
@@ -587,6 +626,8 @@ private struct PlayerVC: UIViewControllerRepresentable {
         private weak var playerView: UIView?
         private weak var controlsView: UIView?
         private var watch: Task<Void, Never>?
+        /// 去抖用：上一次的原始读数（连续两次一致才认）
+        private var pendingVisible: Bool?
 
         /// 开始盯系统控制条的显隐（**只读**，绝不改它）
         func startWatchingSystemControls(_ view: UIView) {
@@ -607,10 +648,14 @@ private struct PlayerVC: UIViewControllerRepresentable {
                 controlsView = Self.findControlsView(pv, 0)
             }
             guard let v = controlsView else { return }
-            let visible = (!v.isHidden && v.alpha > 0.5)
+            // 阈值 0.8（不是 0.5）：系统控制条自己淡入淡出时会经过 0.5，采样落在那一带
+            // 就会 true/false 反复 → 我们也跟着闪。
+            let raw = (!v.isHidden && v.alpha > 0.8)
+            // 连续两次读数一致才认（100ms 一次 → 最多晚 100ms）—— 过渡区间不再引起抖动。
+            guard raw == pendingVisible else { pendingVisible = raw; return }
             // ★ 每次都报，不做"只在变化时报"的优化 —— 否则我们滑动时主动隐藏之后，
             //   系统读数若一直是 true（没变化），就没人来把它同步回来了，按钮会一直不亮。
-            onSystemControls(visible)
+            onSystemControls(raw)
         }
 
         /// 找系统那个"控制条"视图：类名里带 Controls、且有子视图的那一层。
@@ -654,8 +699,9 @@ private struct PlayerVC: UIViewControllerRepresentable {
         let touch = TouchObserver(target: nil, action: nil)
         touch.onTouch = { context.coordinator.onTouch() }
         touch.onTap = { context.coordinator.onTap() }
-        touch.onDragBegan = { context.coordinator.onDragBegan($0) }
-        touch.onDragEnded = { context.coordinator.onDragEnded($0) }
+        touch.onDragBegan = { context.coordinator.onDragBegan() }
+        touch.onDragEnded = { context.coordinator.onDragEnded() }
+        touch.onRelease = { context.coordinator.onRelease() }
         context.coordinator.startWatchingSystemControls(vc.view)   // 只读地盯系统控制条
         touch.cancelsTouchesInView = false
         touch.delaysTouchesBegan = false
@@ -680,6 +726,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
         context.coordinator.onTap = onTap
         context.coordinator.onDragBegan = onDragBegan
         context.coordinator.onDragEnded = onDragEnded
+        context.coordinator.onRelease = onRelease
         context.coordinator.onSystemControls = onSystemControls
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
