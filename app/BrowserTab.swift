@@ -32,6 +32,11 @@ final class BrowserTab {
     var canGoForward = false
     var isLoading = false
 
+    /// ★ KVO 观察（v1.0.79）：进度 / 地址 / 标题。
+    /// 为什么必须存起来：`webView.observe(...)` 返回的 observation 一旦没人持有，
+    /// 观察立刻失效 —— 存在标签对象里，跟着标签活；关标签时要 invalidate（见 dispose）。
+    var observations: [NSKeyValueObservation] = []
+
     init(webView: WKWebView) {
         self.webView = webView
     }

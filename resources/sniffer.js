@@ -265,27 +265,26 @@
   }
 
   // 轻活合集 —— 定时器 / MutationObserver 只用这个
+  //
+  // ★ 自保（v1.0.79）：单次轻活超过 60ms，说明这个页面的 DOM 太重
+  //   （几万节点那种），后面 4 轮先跳过扫描。宁可少嗅探一点，
+  //   也绝不能把页面的 JS 主线程占住 —— 用户实测过「页面还在、但按钮点不动」，
+  //   那就是主线程被堵：滚动还能用（合成线程），点击的回调排不上队。
+  var slowSkips = 0;
   function scanLive() {
+    var t0 = nowMs();
     scanMediaEls();
     scanGlobals();
+    if (nowMs() - t0 > 60) { slowSkips = 4; }
   }
 
-  // ---------- 7. performance 资源计时回溯 ----------
-  var perfSeen = {};   // 每个 URL 只记一次 —— getEntriesByType 会返回全部历史，
-                       // 每 1.5 秒全量重报会把「出现次数」撑到上千
-  function scanPerf() {
-    try {
-      var es = performance.getEntriesByType('resource');
-      for (var i = 0; i < es.length; i++) {
-        var n = es[i] && es[i].name;
-        if (!n) continue;
-        if (perfSeen[n]) continue;
-        perfSeen[n] = 1;
-        add(n, 'perf');
-      }
-    } catch (e) {}
-  }
-
+  // ---------- 7. performance 资源回溯 ----------
+  // ★ v1.0.79：这里原来有两套在干同一件事 ——
+  //   ① 一个「每 3 秒遍历 performance.getEntriesByType('resource')」的全量轮询；
+  //   ② 一个 PerformanceObserver（事件驱动、只给新增条目）。
+  //   ① 是**随时间变慢**的：那个数组会一直涨（页面活得越久越长），每 3 秒全量走一遍
+  //   纯属浪费 —— 而 ② 本来就覆盖了它。所以**只留 ②，把 ① 整个删掉**。
+  //   这是用户报的「页面用久了就卡、按钮点不动」的元凶之一。
   try {
     new PerformanceObserver(function (list) {
       var es = list.getEntries();
@@ -344,7 +343,6 @@
   // 手动触发（原生下拉刷新 / 页面加载完成）：轻活 + 重活都跑，并立刻上报
   window.__vgScan = function () {
     scanLive();
-    scanPerf();
     scanPageHtml();
     report(true);
     return payload().length;
@@ -496,10 +494,9 @@
   // 越早做重活越拖首屏。
   function boot() {
     scanLive();
-    scanPerf();
     report(true);
     // DOMContentLoaded 之后有些播放器才把地址注进页面，稍后补一次重活
-    setTimeout(function () { scanPageHtml(); scanPerf(); report(false); }, 1200);
+    setTimeout(function () { scanPageHtml(); report(false); }, 1200);
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
@@ -509,8 +506,8 @@
 
   // 定时：1.5 秒 → 3 秒，且只做轻活（不再含整页序列化）。
   setInterval(function () {
+    if (slowSkips > 0) { slowSkips--; return; }   // 页面太重就先歇一轮（见 scanLive 的自保）
     scanLive();
-    scanPerf();
     report(false);
   }, 3000);
 
@@ -519,7 +516,35 @@
   // setAttribute('src', ...) 写地址，那条路不经过我们 hook 的 setter，只能靠这里兜。
   try {
     var moTimer = null;
-    var mo = new MutationObserver(function () {
+    // ★ v1.0.79：原来这里一有 DOM 变化（合并 400ms）就跑 scanLive()，
+    //   而 scanLive 里是**全文档** querySelectorAll —— 弹幕、计时器、广告轮播这类
+    //   每秒都在改 DOM 的页面会一直重扫，把页面自己的主线程挤住。
+    //   改成先做一次**极便宜的判断**：这次变化里有没有跟媒体相关的节点？
+    //   没有就直接 return，什么都不做。
+    var mo = new MutationObserver(function (recs) {
+      var relevant = false;
+      for (var i = 0; i < recs.length && !relevant; i++) {
+        var r = recs[i];
+        // src / data-src 变了 → 可能是播放器换了地址，值得扫
+        if (r.type === 'attributes') { relevant = true; break; }
+        var ns = r.addedNodes;
+        if (!ns || !ns.length) continue;
+        for (var j = 0; j < ns.length; j++) {
+          var nd = ns[j];
+          if (!nd || nd.nodeType !== 1) continue;
+          var tn = nd.tagName;
+          if (tn === 'VIDEO' || tn === 'AUDIO' || tn === 'SOURCE' || tn === 'IFRAME') {
+            relevant = true; break;
+          }
+          // 只在这棵**新子树**里找（不是全文档）—— 便宜得多
+          try {
+            if (nd.querySelector && nd.querySelector('video, audio, source')) {
+              relevant = true; break;
+            }
+          } catch (e) {}
+        }
+      }
+      if (!relevant) return;
       if (moTimer) return;
       moTimer = setTimeout(function () { moTimer = null; scanLive(); report(false); }, 400);
     });

@@ -226,6 +226,8 @@ struct ContentView: View {
     @State private var showToolbox = false
     @State private var showTabs = false        // 多窗口管理卡片
     @State private var input = ""
+    /// 地址栏是否正在被编辑 —— 正在打字时，页面导航不能覆盖他输入的内容
+    @FocusState private var urlFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -370,6 +372,17 @@ struct ContentView: View {
                 if !downloads.pip.isRunning { downloads.pip.stop() }
             }
         }
+        // ★ v1.0.79（用户报的「顶部网址居然是固定的」）：
+        //   地址栏绑的是本地 input，而 input 原来**只在 onAppear 同步一次** ——
+        //   打开 App 时取一次 model.address，之后页面怎么跳它都不动了。
+        //   现在 model.address 一变就跟着更新；而 model.address 由 KVO(url) +
+        //   didCommit + 前端路由共同驱动（见 BrowserModel），所以点站内链接、
+        //   换 hash、前端路由跳页，地址栏都会立刻跟上。
+        //   唯一例外：**用户正在地址栏里打字时不能覆盖他**（用焦点判断）。
+        .onChange(of: model.address) { addr in
+            guard !urlFocused, !addr.isEmpty, input != addr else { return }
+            input = addr
+        }
         .onAppear {
             input = model.address
             downloads.preparePiP()
@@ -408,6 +421,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
 
                 TextField("输入网址，或打开一个视频页", text: $input)
+                    .focused($urlFocused)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled(true)
                     .keyboardType(.URL)
@@ -438,6 +452,27 @@ struct ContentView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color(.secondarySystemBackground))
+        // 加载进度条：贴在地址栏**正下方**（对齐 Safari 的位置）
+        .overlay(alignment: .bottom) { pageProgressBar }
+    }
+
+    /// 页面加载进度条（v1.0.79）。
+    /// 数据是 WebView 自带的 estimatedProgress（KVO 实时推进，见 BrowserModel）——
+    /// 观感对齐 Safari：细线贴着地址栏下沿、从左走到右，走满后收起。
+    @ViewBuilder private var pageProgressBar: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Color.clear
+                if model.progressActive {
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: max(1, g.size.width * model.progress))
+                }
+            }
+        }
+        .frame(height: 2)
+        .animation(.easeOut(duration: 0.18), value: model.progress)
+        .allowsHitTesting(false)
     }
 
     /// 标签条（只在开了 2 个以上窗口时出现）。
@@ -511,7 +546,12 @@ struct ContentView: View {
             barButton("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
                 showDownloads = true
             }
-            barButton("arrow.clockwise", "刷新") { model.reload() }
+            // 加载中变「停止」（对齐 Safari：同一个位置，✕ 停下）
+            if model.isLoading {
+                barButton("xmark", "停止") { model.stop() }
+            } else {
+                barButton("arrow.clockwise", "刷新") { model.reload() }
+            }
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 5)

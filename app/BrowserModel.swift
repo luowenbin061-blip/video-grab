@@ -111,6 +111,10 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var address = ""
     @Published var pageTitle = ""
     @Published var isLoading = false
+    /// 页面加载进度 0~1（来自 WebView 自带的 estimatedProgress，KVO 实时更新）
+    @Published var progress: Double = 0
+    /// 进度条要不要显示（走满后自动收起 —— 对齐 Safari）
+    @Published var progressActive = false
     @Published var canGoBack = false
     @Published var canGoForward = false
     // MARK: - 长按视频 → 弹菜单（批次 D）
@@ -140,6 +144,9 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var hint: String?
     /// 列表最后一次刷新时间（面板上显示，让用户知道数据新不新）
     @Published var lastUpdated: Date?
+    /// 加载超时 / 进度条收起的定时器
+    private var loadTimeoutTask: Task<Void, Never>?
+    private var progressHideTask: Task<Void, Never>?
 
     /// 当前标签的 WebView。
     /// ★ 它仍然是 weak —— 真正持有 WebView 的是每个标签对象（BrowserTab）
@@ -260,6 +267,27 @@ final class BrowserModel: NSObject, ObservableObject {
         let tab = BrowserTab(webView: wv)
         tabs.append(tab)
         byWebView[ObjectIdentifier(wv)] = tab
+
+        // ★ v1.0.79：用 KVO 盯住 WebView 自己报的三个值 ——
+        //   estimatedProgress（进度条）、url（地址，**前端路由和 hash 变化也算**）、title。
+        //   原来这三样只在 didFinish 那**一个时刻**读一次，后果：
+        //   ① 进度条完全没有；
+        //   ② 前端路由的站（pushState/换 hash）地址永远不更新；
+        //   ③ 页面加载卡住时，状态永远停在"加载中"，界面像死了一样。
+        //   捕获方式：KVO 回调在任意线程，要跳主线程；而"嵌套并发闭包引用 weak self"
+        //   在这个工程里编译不过（见 startPolling 的注释），所以照同样办法先绑成 let。
+        let target = self
+        tab.observations = [
+            wv.observe(\.estimatedProgress, options: [.new]) { w, _ in
+                Task { @MainActor in target.progressChanged(w) }
+            },
+            wv.observe(\.url, options: [.new]) { w, _ in
+                Task { @MainActor in target.urlChanged(w) }
+            },
+            wv.observe(\.title, options: [.new]) { w, _ in
+                Task { @MainActor in target.titleChanged(w) }
+            },
+        ]
         // 预热：立刻加载一次空白页。不为显示任何东西（WebView 本来就是白的），
         // 而是让 WebKit 提前把 WebContent / 网络进程拉起来 —— 用户第一次真正
         // 导航时就不用再等这套冷启动。这次导航的回调整段忽略。
@@ -334,6 +362,9 @@ final class BrowserModel: NSObject, ObservableObject {
         t.webView.stopLoading()
         t.webView.navigationDelegate = nil
         t.webView.uiDelegate = nil
+        // 解除 KVO：不解除的话，闭包会一直拽着这个（已关掉的）标签和它的 WebView
+        t.observations.forEach { $0.invalidate() }
+        t.observations = []
         t.webView.configuration.userContentController
             .removeScriptMessageHandler(forName: "vgSniff", contentWorld: .page)
         byWebView[ObjectIdentifier(t.webView)] = nil
@@ -390,6 +421,87 @@ final class BrowserModel: NSObject, ObservableObject {
         if !s.contains("://") { s = "https://" + s }
         guard let u = URL(string: s), let wv = webView else { return }
         wv.load(URLRequest(url: u))
+    }
+
+    // MARK: - KVO 回调（进度 / 地址 / 标题）
+
+    /// 进度变了 → 推进进度条。走满后过一小会儿收起（对齐 Safari：走满、闪一下、消失）。
+    @MainActor private func progressChanged(_ wv: WKWebView) {
+        guard let t = tab(for: wv), t === currentTab else { return }
+        let p = wv.estimatedProgress
+        progress = p
+        if p >= 1 {
+            progressActive = true
+            hideProgressSoon()
+        } else if p > 0 {
+            progressActive = true
+            progressHideTask?.cancel(); progressHideTask = nil
+        }
+    }
+
+    @MainActor private func hideProgressSoon() {
+        progressHideTask?.cancel()
+        let target = self
+        progressHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            target.progressActive = false
+            target.progress = 0
+        }
+    }
+
+    /// 地址变了（KVO）—— ★ **前端路由（pushState / 换 hash）也走这里**，这就是
+    /// "顶部网址不跟着页面变"的正解：原来只在 didFinish 读一次，SPA 永远不更新。
+    @MainActor private func urlChanged(_ wv: WKWebView) {
+        guard let t = tab(for: wv) else { return }
+        guard let u = wv.url?.absoluteString, !u.isEmpty else { return }
+        // 建标签时那次预热空白页不算
+        if u == "about:blank", t.address.isEmpty { return }
+        t.address = u
+        if t === currentTab { address = u }
+    }
+
+    /// 标题变了（KVO）—— 比 didFinish 早，标签条能更早显示页面名
+    @MainActor private func titleChanged(_ wv: WKWebView) {
+        guard let t = tab(for: wv) else { return }
+        let ti = wv.title ?? ""
+        guard !ti.isEmpty, ti != t.title else { return }
+        t.title = ti
+        if t === currentTab {
+            pageTitle = ti
+            syncTabTitles()
+        }
+    }
+
+    /// 加载超时兜底（loading 开始后 25 秒还没完就认它卡了）。
+    /// 原来没有这一层：页面卡住时 isLoading 永远是 true，进度条一直转，
+    /// 用户的感觉就是"它死了，只能刷新"。
+    @MainActor private func startLoadTimeout(_ t: BrowserTab) {
+        loadTimeoutTask?.cancel()
+        let target = self
+        loadTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            guard !Task.isCancelled else { return }
+            guard t.isLoading else { return }
+            t.isLoading = false
+            if t === target.currentTab {
+                target.isLoading = false
+                target.progressActive = false
+                target.progress = 0
+                target.showToast("这一页超过 25 秒还没加载完，可能卡住了 —— 可以点刷新重试")
+            }
+        }
+    }
+
+    /// 加载中点「停止」：停下并复位（对齐 Safari 的 ✕）
+    @MainActor func stop() {
+        webView?.stopLoading()
+        loadTimeoutTask?.cancel()
+        progressHideTask?.cancel()
+        progressActive = false
+        progress = 0
+        isLoading = false
+        currentTab?.isLoading = false
     }
 
     func goBack() { webView?.goBack() }
@@ -664,6 +776,44 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
             t.isLoading = true
             if t === self.currentTab { self.isLoading = true }
+            self.startLoadTimeout(t)
+        }
+    }
+
+    /// 内容开始到达（比 didFinish 早得多）—— 地址和前进后退状态**这时候就更新**，
+    /// 对齐 Safari 的做法：地址先变，页面慢慢来。
+    nonisolated func webView(_ wv: WKWebView, didCommit n: WKNavigation!) {
+        Task { @MainActor in
+            guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            if let u = wv.url?.absoluteString, !u.isEmpty {
+                t.address = u
+                if t === self.currentTab { self.address = u }
+            }
+            t.canGoBack = wv.canGoBack
+            t.canGoForward = wv.canGoForward
+            if t === self.currentTab {
+                self.canGoBack = t.canGoBack
+                self.canGoForward = t.canGoForward
+            }
+        }
+    }
+
+    /// ★ v1.0.79：网页的渲染进程被系统回收 / 崩掉 —— **必须自己兜**。
+    /// 不实现这个回调时：页面白屏或冻住、点什么都没反应，用户只能手动刷新。
+    /// Safari 会自己重载，用户几乎察觉不到。
+    nonisolated func webViewWebContentProcessDidTerminate(_ wv: WKWebView) {
+        Task { @MainActor in
+            guard let t = self.tab(for: wv) else { return }
+            t.isLoading = false
+            if t === self.currentTab {
+                self.isLoading = false
+                self.progressActive = false
+                self.progress = 0
+                self.showToast("页面被系统回收了，正在自动恢复…")
+            }
+            if !t.address.isEmpty, t.address != "about:blank" {
+                wv.reload()
+            }
         }
     }
 
@@ -676,10 +826,13 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             t.canGoBack = wv.canGoBack
             t.canGoForward = wv.canGoForward
 
+            self.loadTimeoutTask?.cancel()
             if t === self.currentTab {
                 self.isLoading = false
                 self.pageTitle = t.title
                 self.address = t.address
+                // 加载完成：进度条走满后收起
+                if self.progressActive { self.progress = 1; self.hideProgressSoon() }
                 self.canGoBack = t.canGoBack
                 self.canGoForward = t.canGoForward
                 self.syncTabTitles()
@@ -696,8 +849,11 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
             t.isLoading = false
             // 后台标签加载失败不弹提示 —— 又没在你眼前，弹了只会莫名其妙
+            self.loadTimeoutTask?.cancel()
             if t === self.currentTab {
                 self.isLoading = false
+                self.progressActive = false
+                self.progress = 0
                 self.showToast("加载失败：\(e.localizedDescription)")
             }
         }
@@ -707,8 +863,11 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
             t.isLoading = false
+            self.loadTimeoutTask?.cancel()
             if t === self.currentTab {
                 self.isLoading = false
+                self.progressActive = false
+                self.progress = 0
                 self.showToast("打不开：\(e.localizedDescription)")
             }
         }
