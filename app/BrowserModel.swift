@@ -151,6 +151,8 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 加载超时 / 进度条收起的定时器
     private var loadTimeoutTask: Task<Void, Never>?
     private var progressHideTask: Task<Void, Never>?
+    /// 加载完成后延迟截缩略图的定时器
+    private var thumbTask: Task<Void, Never>?
 
     // MARK: - 网页弹窗 / 证书（v1.0.80）
 
@@ -222,9 +224,9 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 标签（多窗口）
 
-    /// 最多同时开几个窗口。一个 WebView 光它的渲染进程就要几十 MB，
-    /// 小屏手机上 5 个是「够用、又不至于被系统连累着杀」的量。
-    static let maxTabs = 5
+    /// 标签总数上限。★ 真正的定义在 TabLimits（见 BrowserTab.swift）——
+    /// 这里保留一个别名只为兼容旧引用；别再往这里加第二个数。
+    static let maxTabs = TabLimits.maxTabs
 
     /// 所有标签（数组保序 —— 标签条按这个顺序显示）
     private var tabs: [BrowserTab] = []
@@ -239,8 +241,10 @@ final class BrowserModel: NSObject, ObservableObject {
     /// BrowserView，从而把新标签的 WebView 挂上去。
     @Published private(set) var currentTabIndex = 0
 
-    /// 标签条显示用（不把 WKWebView 暴露给界面）
-    @Published private(set) var tabTitles: [String] = []
+    /// 网格界面用的标签快照（标题 / 缩略图 / 谁是当前）—— 值类型，变化时整体换一份。
+    /// ★ 为什么不把 BrowserTab 直接给界面：它是 class、属性不是 @Published，
+    ///   标题和缩略图变了 SwiftUI 不会刷新。
+    @Published private(set) var tabSnapshot: [TabSnapshot] = []
 
     var tabCount: Int { tabs.count }
 
@@ -320,30 +324,52 @@ final class BrowserModel: NSObject, ObservableObject {
     /// （WebView 必须由界面这一步创建 —— 它进了视图层级才会渲染）。
     func currentWebView() -> WKWebView {
         if tabs.isEmpty { newTab() }
-        return tabs[min(currentTabIndex, tabs.count - 1)].webView
+        return activate(currentTabOrFirst())
     }
 
-    // MARK: - 标签操作
+    /// 当前标签；越界或空时兜到第一个（并保证至少有一个）
+    private func currentTabOrFirst() -> BrowserTab {
+        if let t = currentTab { return t }
+        if tabs.isEmpty { newTab() }
+        return tabs[0]
+    }
 
-    /// 新建一个窗口（顺带切过去）
+    // MARK: - 唤醒 / 休眠（「能开几十个标签」靠的就是这一对）
+
+    /// 唤醒一个档案：没有 WebView 就现建一个，返回它的 WebView。
+    ///
+    /// ★ 这是本批改造的核心。以前一个标签 = 一个 WebView，开 5 个就到顶了；
+    ///   现在只有 `TabLimits.maxLive` 个档案同时持有 WebView，其余是「睡着的」，
+    ///   点回去时走这里现建 + 加载它的地址。代价是点回旧标签要重新加载一次页面
+    ///   —— Safari 的「标签页卸载」也是这个行为。
     @discardableResult
-    func newTab(load url: String? = nil) -> BrowserTab {
-        if tabs.count >= Self.maxTabs { reclaimOne() }
-        let wv = makeRawWebView()
-        let tab = BrowserTab(webView: wv)
-        tabs.append(tab)
-        byWebView[ObjectIdentifier(wv)] = tab
+    func activate(_ t: BrowserTab) -> WKWebView {
+        if let wv = t.webView { return wv }          // 醒着 → 直接用，切回去是瞬间的
 
-        // ★ v1.0.79：用 KVO 盯住 WebView 自己报的三个值 ——
-        //   estimatedProgress（进度条）、url（地址，**前端路由和 hash 变化也算**）、title。
-        //   原来这三样只在 didFinish 那**一个时刻**读一次，后果：
-        //   ① 进度条完全没有；
-        //   ② 前端路由的站（pushState/换 hash）地址永远不更新；
-        //   ③ 页面加载卡住时，状态永远停在"加载中"，界面像死了一样。
-        //   捕获方式：KVO 回调在任意线程，要跳主线程；而"嵌套并发闭包引用 weak self"
-        //   在这个工程里编译不过（见 startPolling 的注释），所以照同样办法先绑成 let。
+        let wv = makeRawWebView()
+        t.webView = wv
+        t.warmupNav = nil                            // 这次是真导航，回调要认领
+        byWebView[ObjectIdentifier(wv)] = t
+        t.lastActiveAt = Date()
+        t.observations = makeObservations(for: wv)
+
+        if t.address.isEmpty {
+            // 新标签：加载一次空白页，只为让 WebKit 提前把进程拉起来（冷启动很贵）
+            t.warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
+        } else if let u = URL(string: t.address) {
+            wv.load(URLRequest(url: u))              // 睡过的标签：把它的页面重新拉起来
+        }
+        return wv
+    }
+
+    /// KVO 三件套（进度 / 地址 / 标题）。
+    /// 每次唤醒都要重建 —— observation 是绑在**那个 WebView**上的，
+    /// 而休眠时那个 WebView 已经被丢掉了。
+    private func makeObservations(for wv: WKWebView) -> [NSKeyValueObservation] {
+        // KVO 回调在任意线程，要跳主线程；而"嵌套并发闭包引用 weak self"在这个工程里
+        // 编译不过（别处的注释也写了），所以照同样办法先绑成 let。
         let target = self
-        tab.observations = [
+        return [
             wv.observe(\.estimatedProgress, options: [.new]) { w, _ in
                 Task { @MainActor in target.progressChanged(w) }
             },
@@ -354,60 +380,186 @@ final class BrowserModel: NSObject, ObservableObject {
                 Task { @MainActor in target.titleChanged(w) }
             },
         ]
-        // 预热：立刻加载一次空白页。不为显示任何东西（WebView 本来就是白的），
-        // 而是让 WebKit 提前把 WebContent / 网络进程拉起来 —— 用户第一次真正
-        // 导航时就不用再等这套冷启动。这次导航的回调整段忽略。
-        tab.warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
+    }
+
+    /// 让一个档案睡下：把 WebView 彻底放掉，档案本身留着。
+    /// ★ 必须摘掉消息处理器：ucc 是**强引用 self** 的 ——
+    ///   摘掉 + 丢掉 WebView，BrowserModel → tabs → webView → ucc → BrowserModel
+    ///   这个环才断得干净（否则开着开着就爆内存）。
+    private func sleep(_ t: BrowserTab) {
+        guard let wv = t.webView else { return }
+        wv.stopLoading()
+        wv.navigationDelegate = nil
+        wv.uiDelegate = nil
+        t.observations.forEach { $0.invalidate() }
+        t.observations = []
+        wv.configuration.userContentController
+            .removeScriptMessageHandler(forName: "vgSniff", contentWorld: .page)
+        byWebView[ObjectIdentifier(wv)] = nil
+        t.webView = nil
+        t.isLoading = false
+        if t === currentTab {
+            isLoading = false
+            progressActive = false
+            progress = 0
+        }
+    }
+
+    /// 活着的太多了 → 把「最久没用过、且不是当前」的睡掉。
+    ///
+    /// ★ 为什么要跳过"刚用过 2 秒内"的：切走那一瞬我们要给旧标签截一张缩略图，
+    ///   立刻把 WebView 拆掉就会截到空白。给它留 2 秒。
+    ///   （少数情况下这一轮就少睡一个，下次切换会补上，不影响正确性。）
+    private func trimLive() {
+        let cur = currentTab
+        let now = Date()
+        while tabs.filter({ $0.isAwake }).count > TabLimits.maxLive {
+            let candidates = tabs.filter {
+                $0.isAwake && $0 !== cur && now.timeIntervalSince($0.lastActiveAt) > 2
+            }
+            guard let oldest = candidates.min(by: { $0.lastActiveAt < $1.lastActiveAt }) else { break }
+            sleep(oldest)
+        }
+    }
+
+    // MARK: - 缩略图（网格卡片上的那张图）
+
+    /// 给当前显示的标签截一张缩略图。
+    /// ★ 只在它**正显示**的时候截 —— 休眠或后台的 WebView 截出来是空白；
+    ///   所以还要它真的在窗口里（wv.window != nil）。
+    func snapshotCurrent() {
+        guard let t = currentTab, let wv = t.webView, wv.window != nil,
+              wv.bounds.width > 1, wv.bounds.height > 1 else { return }
+        let cfg = WKSnapshotConfiguration()
+        cfg.rect = CGRect(origin: .zero, size: wv.bounds.size)   // 只要看得见这一屏
+        wv.takeSnapshot(with: cfg) { img, _ in
+            guard let img else { return }
+            let small = Self.shrink(img, toWidth: 300)
+            Task { @MainActor in
+                t.thumb = small
+                t.thumbAt = Date()
+                self.trimThumbs()
+                self.refreshTabs()
+            }
+        }
+    }
+
+    /// 页面加载完成后**隔一下**再截 —— 立刻截常常截到还白着的那一瞬。
+    private func snapshotThumbSoon() {
+        thumbTask?.cancel()
+        let target = self
+        thumbTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard !Task.isCancelled else { return }
+            target.snapshotCurrent()
+        }
+    }
+
+    /// 截图 → **取页面顶部 4:3** → 缩到宽 300。
+    ///
+    /// ★ 为什么取顶部 4:3：
+    ///   ① 网格卡片是 4:3 的块，这样刚好填满、不用裁也不留白；
+    ///   ② 页面顶部（网站标题 + 首屏内容）最有辨识度 —— 拿整屏缩放的话，
+    ///      卡片里只能看到中间一条，认不出是哪一页；
+    ///   ③ 顺带省内存：一张位图 1~2 MB，裁一半再缩，留十几张也不心疼。
+    private static func shrink(_ img: UIImage, toWidth w: CGFloat) -> UIImage {
+        guard img.size.width > 0, img.size.height > 0 else { return img }
+
+        var base = img
+        if let cg = img.cgImage {
+            let cropH = min(CGFloat(cg.height), CGFloat(cg.width) * 0.75)
+            if let sub = cg.cropping(to: CGRect(x: 0, y: 0,
+                                                width: CGFloat(cg.width),
+                                                height: cropH)) {
+                base = UIImage(cgImage: sub, scale: img.scale, orientation: img.imageOrientation)
+            }
+        }
+
+        let scale = w / base.size.width
+        let size = CGSize(width: w, height: max(1, base.size.height * scale))
+        let f = UIGraphicsImageRendererFormat.default()
+        f.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: f).image { _ in
+            base.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    /// 缩略图留太多也吃内存 → 只留最近的 maxThumbs 张。
+    private func trimThumbs() {
+        let withThumb = tabs.filter { $0.thumb != nil }
+        guard withThumb.count > TabLimits.maxThumbs else { return }
+        let sorted = withThumb.sorted { ($0.thumbAt ?? .distantPast) > ($1.thumbAt ?? .distantPast) }
+        for t in sorted.dropFirst(TabLimits.maxThumbs) {
+            t.thumb = nil
+            t.thumbAt = nil
+        }
+    }
+
+    // MARK: - 标签操作
+
+    /// 新建一个窗口（顺带切过去）
+    @discardableResult
+    func newTab(load url: String? = nil) -> BrowserTab {
+        if tabs.count >= TabLimits.maxTabs { reclaimOne() }
+        let tab = BrowserTab()
+        tabs.append(tab)
         switchTo(tabs.count - 1)
         if let url, !url.isEmpty { load(url) }
         return tab
     }
 
-    /// 切到某个窗口。
-    /// 允许重复切（幂等）—— 建第一个标签时也走这条路径，省一个分支。
+    /// 切到某个窗口。允许重复切（幂等）。
     func switchTo(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
-        stash()                          // 界面状态 → 原来那个标签
+        // ★ 切走之前先给当前页截一张 —— 只有它正显示着的时候才截得到
+        if tabs[index] !== currentTab { snapshotCurrent() }
+
         currentTabIndex = index
-        restore(tabs[index])             // 新标签的快照 → 界面状态
-        syncTabTitles()
-        // 切过来补扫一次：这个页面的嗅探可能是在后台跑的时候完成的
+        let t = tabs[index]
+        t.lastActiveAt = Date()
+        webView = activate(t)              // 睡着的现建、醒着的直接用
+        syncFromTab(t)
+        trimLive()
+        refreshTabs()
+        // 切过来补扫一次：这个页面的嗅探可能是在别的标签跑的时候完成的
         webView?.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
+    }
+
+    func switchTo(id: UUID) {
+        guard let i = index(of: id) else { return }
+        switchTo(i)
     }
 
     /// 关掉某个窗口。只剩一个时不真关，而是把它清回空白页。
     func closeTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
         guard tabs.count > 1 else { resetOnlyTab(); return }
-        dispose(tabs[index])
+        sleep(tabs[index])                  // 先把这个 WebView 干净地放掉
         tabs.remove(at: index)
         if index < currentTabIndex {
-            currentTabIndex -= 1         // 关的是前面的 → 当前标签下标前移
+            currentTabIndex -= 1            // 关的是前面的 → 当前标签下标前移
         } else if index == currentTabIndex {
             currentTabIndex = min(index, tabs.count - 1)
-            restore(tabs[currentTabIndex])
+            let t = tabs[currentTabIndex]
+            t.lastActiveAt = Date()
+            webView = activate(t)
+            syncFromTab(t)
+            trimLive()
         }
-        syncTabTitles()
+        refreshTabs()
     }
 
-    /// 界面状态 → 当前标签的快照
-    private func stash() {
-        guard let t = currentTab else { return }
-        t.title = pageTitle
-        t.address = address
-        t.items = items
-        t.groups = groups
-        t.mseSeen = mseSeen
-        t.hint = hint
-        t.lastUpdated = lastUpdated
-        t.isLoading = isLoading
-        t.loadError = loadError
-        t.canGoBack = canGoBack
-        t.canGoForward = canGoForward
+    func closeTab(id: UUID) {
+        guard let i = index(of: id) else { return }
+        closeTab(i)
     }
 
-    /// 某个标签的快照 → 界面状态
-    private func restore(_ t: BrowserTab) {
+    /// 档案 → 界面状态（单向）。
+    ///
+    /// ★ v1.0.82 起**不再需要「把界面状态存回档案」那一步**（原来的 stash）：
+    ///   所有回调本来就是「先写档案、再同步界面」，档案始终是最新的那份。
+    ///   以前那种双向搬运才是 bug 之源（两边不一致时不知道信谁）。
+    private func syncFromTab(_ t: BrowserTab) {
         pageTitle = t.title
         address = t.address
         items = t.items
@@ -419,40 +571,20 @@ final class BrowserModel: NSObject, ObservableObject {
         loadError = t.loadError
         canGoBack = t.canGoBack
         canGoForward = t.canGoForward
-        webView = t.webView
-    }
-
-    /// 放掉一个标签。
-    /// ★ 必须摘掉消息处理器：ucc 是**强引用 self** 的，不摘就形成
-    ///   BrowserModel → tabs → webView → configuration → ucc → BrowserModel 的环，
-    ///   被关掉的窗口永远不释放（开着开着就爆内存）。
-    private func dispose(_ t: BrowserTab) {
-        t.webView.stopLoading()
-        t.webView.navigationDelegate = nil
-        t.webView.uiDelegate = nil
-        // 解除 KVO：不解除的话，闭包会一直拽着这个（已关掉的）标签和它的 WebView
-        t.observations.forEach { $0.invalidate() }
-        t.observations = []
-        t.webView.configuration.userContentController
-            .removeScriptMessageHandler(forName: "vgSniff", contentWorld: .page)
-        byWebView[ObjectIdentifier(t.webView)] = nil
     }
 
     /// 最后一个窗口的「关闭」= 清回空白页（真关掉的话界面就空了）
     private func resetOnlyTab() {
         guard let t = currentTab else { return }
-        items = []; groups = []; mseSeen = false
-        hint = nil; lastUpdated = nil
-        address = ""; pageTitle = ""
-        loadError = nil
-        canGoBack = false; canGoForward = false
         t.items = []; t.groups = []; t.mseSeen = false
         t.hint = nil; t.lastUpdated = nil
         t.address = ""; t.title = ""
         t.loadError = nil
         t.canGoBack = false; t.canGoForward = false
-        t.webView.load(URLRequest(url: URL(string: "about:blank")!))
-        syncTabTitles()
+        t.thumb = nil; t.thumbAt = nil
+        syncFromTab(t)
+        activate(t).load(URLRequest(url: URL(string: "about:blank")!))
+        refreshTabs()
         showToast("已回到空白页")
     }
 
@@ -467,15 +599,18 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
-    private func syncTabTitles() {
-        tabTitles = tabs.map { $0.displayTitle }
+    /// 界面看的标签快照（值类型）—— 界面靠它渲染网格。
+    private func refreshTabs() {
+        let cur = currentTab
+        tabSnapshot = tabs.map {
+            TabSnapshot(id: $0.id, title: $0.displayTitle, address: $0.address,
+                        thumb: $0.thumb, isCurrent: $0 === cur)
+        }
     }
 
-    /// 界面按序号取标题。
-    /// 不直接写 tabTitles[i]：列表在渲染间隙可能刚好少了一个（你点关闭那一瞬），
-    /// 越界会崩 —— 界面取值一律走这里。
-    func tabTitle(_ i: Int) -> String {
-        tabTitles.indices.contains(i) ? tabTitles[i] : "新标签页"
+    /// 按 id 找下标。★ 界面一律拿 id 说话 —— 下标会漂（关掉一个，后面的全前移）。
+    func index(of id: UUID) -> Int? {
+        tabs.firstIndex { $0.id == id }
     }
 
     /// 这条回调 / 消息来自哪个标签。不认识的 WebView（已关闭）返回 nil。
@@ -540,7 +675,7 @@ final class BrowserModel: NSObject, ObservableObject {
         t.title = ti
         if t === currentTab {
             pageTitle = ti
-            syncTabTitles()
+            refreshTabs()
         }
     }
 
@@ -732,7 +867,7 @@ final class BrowserModel: NSObject, ObservableObject {
         mseSeen = mse
         hint = t.hint
         if address.isEmpty { address = href }
-        syncTabTitles()
+        refreshTabs()
     }
 
     /// 同目录的清单变体（master / media / 线路）合并成一组，每组选一条代表：
@@ -909,9 +1044,10 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 self.address = t.address
                 // 加载完成：进度条走满后收起
                 if self.progressActive { self.progress = 1; self.hideProgressSoon() }
+                self.snapshotThumbSoon()      // 页面画出来了 → 隔一下截张缩略图（网格要用）
                 self.canGoBack = t.canGoBack
                 self.canGoForward = t.canGoForward
-                self.syncTabTitles()
+                self.refreshTabs()
                 // 历史只记「你正在看的这一页」—— 后台标签加载完成不算你访问过
                 self.onPageFinished?(t.address, t.title)
             }

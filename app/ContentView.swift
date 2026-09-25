@@ -137,71 +137,6 @@ struct PiPErrorBanner: View {
     }
 }
 
-/// 多窗口管理卡片（点功能卡片里的「多窗口」调出）。
-/// 只做三件事：看开了几个、切过去、关掉/新建。
-struct TabsView: View {
-    @ObservedObject var model: BrowserModel
-    @Binding var isPresented: Bool
-
-    var body: some View {
-        NavigationView {
-            List {
-                Section {
-                    ForEach(Array(model.tabTitles.indices), id: \.self) { i in
-                        Button {
-                            model.switchTo(i)
-                            isPresented = false
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: i == model.currentTabIndex
-                                      ? "largecircle.fill.circle" : "circle")
-                                    .font(.system(size: 17))
-                                    .foregroundStyle(i == model.currentTabIndex
-                                                     ? Color.accentColor : Color.secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(model.tabTitle(i))
-                                        .font(.system(size: 15))
-                                        .lineLimit(1)
-                                    Text(i == model.currentTabIndex ? "正在显示" : "点一下切过去")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .onDelete { idx in
-                        // ★ 倒序删：正序删的话，删掉一个之后后面的下标集体前移，
-                        //   下一刀就砍到别人身上了。
-                        for i in idx.sorted(by: >) { model.closeTab(i) }
-                    }
-                } header: {
-                    Text("已开 \(model.tabCount) / \(BrowserModel.maxTabs) 个窗口")
-                } footer: {
-                    Text("左滑可以关掉一个窗口。每个窗口的网页都真的在内存里跑着（所以切回去不用重新加载），代价是占内存 —— 开满 \(BrowserModel.maxTabs) 个之后新建会先自动回收一个。")
-                }
-
-                Section {
-                    Button {
-                        model.newTab()
-                    } label: {
-                        Label("新建窗口", systemImage: "plus.square.on.square")
-                    }
-                    .disabled(model.tabCount >= BrowserModel.maxTabs)
-                }
-            }
-            .navigationTitle("多窗口")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { isPresented = false }
-                }
-            }
-        }
-    }
-}
-
 struct ContentView: View {
 
     @StateObject private var model = BrowserModel()
@@ -232,12 +167,9 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
-            // 标签条只在开了 2 个以上窗口时出现 —— 只有一个标签时界面跟以前
-            // 一模一样，不凭空多一条横条（页面上东西越少越好）。
-            if model.tabCount > 1 {
-                Divider()
-                tabStrip
-            }
+            // ★ v1.0.82：原来这里有一条横向文字标签条（开 2 个以上才出现）。
+            //   已经换成 Safari 式的整屏缩略图网格（功能卡片 →「标签页」），
+            //   那条横条跟它重复、而且名字挤在一起认不出谁是谁 → 删掉。
             Divider()
 
             ZStack(alignment: .bottomTrailing) {
@@ -352,8 +284,9 @@ struct ContentView: View {
                             showPanel = true
                         })
         }
-        .sheet(isPresented: $showTabs) {
-            TabsView(model: model, isPresented: $showTabs)
+        // 标签页网格：Safari 那个是**全屏**盖上来，不是半屏卡片 → 用 fullScreenCover
+        .fullScreenCover(isPresented: $showTabs) {
+            TabGridView(model: model, isPresented: $showTabs)
         }
         // （这里原来挂了一条：网页层 900ms 兜底 → 自动弹嗅探面板。已删 ——
         //   长按只弹下载菜单，嗅探面板只由右下角按钮/底栏入口打开。）
@@ -477,65 +410,6 @@ struct ContentView: View {
         .allowsHitTesting(false)
     }
 
-    /// 标签条（只在开了 2 个以上窗口时出现）。
-    /// 每个小片：点一下切过去、点叉关掉；最右边「+」新建。
-    /// 每片两个独立按钮并排（不是嵌套）—— 这样点「切过去」和点「关掉」互不干扰。
-    private var tabStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                // 这里用下标而不是解构元组（`{ i, title in }` 那种写法本身是合法的，
-                // 项目里别处也在用）—— 选下标是为了能配 tabTitle(_:) 做越界保护：
-                // 列表在渲染的间隙可能刚好少了一个（你点关闭那一瞬）。
-                ForEach(Array(model.tabTitles.indices), id: \.self) { i in
-                    HStack(spacing: 6) {
-                        Button {
-                            model.switchTo(i)
-                        } label: {
-                            Text(model.tabTitle(i))
-                                .font(.system(size: 12))
-                                .lineLimit(1)
-                                .frame(maxWidth: 130, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            model.closeTab(i)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("关闭这个窗口")
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        i == model.currentTabIndex
-                            ? Color.accentColor.opacity(0.16)
-                            : Color(.tertiarySystemFill),
-                        in: Capsule())
-                    .foregroundStyle(i == model.currentTabIndex
-                                     ? Color.accentColor : Color.primary)
-                }
-
-                Button {
-                    model.newTab()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Color(.tertiarySystemFill), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("新建窗口")
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-        }
-        .background(Color(.secondarySystemBackground))
-    }
-
     // MARK: - 底部栏（‹ › ≡ ⬇ ⟳）
     // 「≡」是那张功能卡片的入口 —— 功能不常驻页面，点开才出现。
     // 底栏只放「浏览时随时要用」的几个动作。
@@ -544,7 +418,8 @@ struct ContentView: View {
         HStack(spacing: 0) {
             barButton("chevron.left", "后退", enabled: model.canGoBack) { model.goBack() }
             barButton("chevron.right", "前进", enabled: model.canGoForward) { model.goForward() }
-            barButton("line.3.horizontal", "功能", active: showMenu) { showMenu.toggle() }
+            // ★ 中间这颗是主入口 —— 图标放大到 24pt（原来 19pt，用户嫌小）
+            barButton("line.3.horizontal", "功能", size: 24, active: showMenu) { showMenu.toggle() }
             barButton("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
                 showDownloads = true
             }
@@ -562,13 +437,14 @@ struct ContentView: View {
 
     /// 底栏按钮：五等分、44pt 高（够手指点）
     private func barButton(_ icon: String, _ label: String,
+                           size: CGFloat = 19,
                            enabled: Bool = true, active: Bool = false,
                            badge: Int = 0,
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: icon)
-                    .font(.system(size: 19))
+                    .font(.system(size: size))
                 if badge > 0 {
                     Text("\(badge)")
                         .font(.system(size: 9, weight: .bold))
@@ -576,7 +452,8 @@ struct ContentView: View {
                         .padding(.horizontal, 4)
                         .padding(.vertical, 0.5)
                         .background(Color.red, in: Capsule())
-                        .offset(x: 11, y: -7)
+                        // 徽标位置跟着图标大小走 —— 图标放大了它才不会压在图标上
+                        .offset(x: size * 0.58, y: -size * 0.37)
                 }
             }
             .foregroundStyle(active ? Color.accentColor : Color.primary)
@@ -607,8 +484,10 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
                 menuCell("link", "复制URL") { copyCurrentURL() }
-                menuCell("square.on.square", "多窗口",
-                         badge: model.tabCount > 1 ? model.tabCount : 0) { showTabs = true }
+                // 徽标改成一直都显示 —— 只有一个标签时也让你知道开着一个
+                // （点开就是 Safari 式网格：缩略图 + ✕ + 底部新建/完成）
+                menuCell("square.on.square", "标签页",
+                         badge: model.tabCount) { showTabs = true }
                 // 这里原来是「刷新」——底栏已经有一个了，换成嗅探结果的入口
                 menuCell("antenna.radiowaves.left.and.right", "嗅探结果",
                          badge: model.items.count) { showPanel = true }
