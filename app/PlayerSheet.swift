@@ -28,13 +28,17 @@ struct PlayerSheet: View {
     /// 我们 22pt 时是 28px（偏大）、18pt 时 22px（偏小）→ 21pt ≈ 26px 才对得上。
     private static let landscapeIconSize: CGFloat = 21
     /// 位置 = 图标【中心】到「安全区右边 / 下边」的距离（pt）。横竖屏各一组：
-    /// 竖屏：中心距右 113、距下 53 ←→ 与系统的「隔空播放」同一行、在它左边
-    /// 横屏：中心距右 93、距下 63 —— 按截图量出来的：要让"我们 → 显示器 → …"
-    /// 三个图标**间距相等**（系统那两个之间是 60px≈43pt），并且同一水平线。
+    /// 竖屏：中心距右 113、距下 53 ←→ 与系统的「隔空播放」同一行、在它左边（用户说 OK）
     private static let lsTrailingTall: CGFloat = 113
     private static let lsBottomTall: CGFloat = 53
-    private static let lsTrailingWide: CGFloat = 93
-    private static let lsBottomWide: CGFloat = 63
+    /// 横屏：用户要求排在最右边（系统"省略号"图标右边）。
+    /// 量的结果：系统那两颗已经在离右边约 46pt 的安全区边界上了，再往右本来就没地方 ——
+    /// 所以这里是"超出安全区右边界多少 pt"。横向虽然进了刘海那条带，但刘海只占屏幕
+    /// 竖直方向的中段，而我们的按钮在屏幕下方（约 78% 高度处），不会被挡。
+    /// 取值 22pt ≈ 让我们的中心和省略号保持 32pt 间距，同时离屏幕右边还剩约 14pt。
+    private static let lsOverRightWide: CGFloat = 22
+    /// 横屏下边距：比上一版 +3pt —— 量的结果显示我们比系统那一行低了约 4px
+    private static let lsBottomWide: CGFloat = 66
 
     /// 播放中、亮着没再被点，多久后自动隐藏（秒）。
     /// 3 秒是用户实测系统那套的间隔（原生逻辑：播放中点一下显示、再点一下隐藏、
@@ -50,9 +54,18 @@ struct PlayerSheet: View {
     @StateObject private var box: PlayerBox
     /// 这次播放是否让下载保活窗让了位 —— 结束时要还回去
     @State private var pipHandedOver = false
-    /// 我们这两个控件要不要显示 —— 跟系统控制条一样：有触摸就出现，静一会儿就淡出
-    @State private var controlsVisible = true
+    /// 我们这两个控件要不要显示。**进来时不显示** —— 系统控制条一开始也是不显示的
+    /// （用户实测：点播放时不应该冒出来，点屏幕才显示）。
+    @State private var controlsVisible = false
     @State private var hideTask: Task<Void, Never>?
+    /// 已经能读到系统控制条的状态了 → 显隐完全交给它（兜底逻辑让位）
+    @State private var mirrorSystem = false
+    @State private var sawSystemVisible = false
+    @State private var sawSystemHidden = false
+    /// 正在拖进度条
+    @State private var dragActive = false
+    /// 转屏没成功时补一次的定时器
+    @State private var orientationRetry: Task<Void, Never>?
 
     init(url: URL, title: String = "", pip: PiPProgress? = nil) {
         self.url = url
@@ -61,41 +74,85 @@ struct PlayerSheet: View {
         _box = StateObject(wrappedValue: PlayerBox(url: url))
     }
 
-    // MARK: - 控件显隐（对齐系统那套逻辑）
+    // MARK: - 控件显隐
     //
-    // 规则（用户实测 iOS 原生控制条的行为）：
-    //   · 播放中：点一下屏幕 → 立刻显示；再点一下 → 立刻隐藏
-    //   · 显示后没再点 → 3 秒后自动隐藏
-    //   · 暂停时点开 → 常显，不自动隐藏（视频没在播就不该自己溜走）
+    // 目标：**完全跟系统控制条同步**（用户明确要求的那套：刚进播放器不显示、点屏幕才显示、
+    // 点播放/暂停时保持、拖进度条时收起、没触摸后自己收）。这些状态公开接口一个都给不了，
+    // 所以去读系统那个控制条视图的显隐来跟随它（只读，不碰它）。
+    // **读不到就自动退回我们自己那套**（下面那些自己算的逻辑就是兜底，不会把人卡住）。
+    // 全程不做淡出 —— 用户明确说"没有淡出这个概念"，一律立即显示 / 立即消失。
 
-    /// 点了一下画面：亮着就收起，藏着就亮出来
-    private func toggleControls() {
-        if controlsVisible { hideControls() } else { showControls() }
+    /// 系统控制条报了它的显隐（来自 PlayerVC 里那个只读的观察）
+    private func systemControls(_ visible: Bool) {
+        sawSystemVisible = sawSystemVisible || visible
+        sawSystemHidden = sawSystemHidden || !visible
+        // 两种状态都亲眼见过，才承认这条读数可信 —— 免得读到个"永远显示"的假值，
+        // 反而把按钮变成永远亮着（那就比现在更糟）
+        guard sawSystemVisible, sawSystemHidden else { return }
+        mirrorSystem = true
+        if controlsVisible != visible { controlsVisible = visible }
     }
 
-    /// 亮出来。播放中才安排 3 秒后自动隐藏；暂停时保持常显。
-    private func showControls() {
-        withAnimation(.easeOut(duration: 0.2)) { controlsVisible = true }
-        hideTask?.cancel()
-        hideTask = nil
-        guard box.isPlaying else { return }       // 没在播 → 不自动隐藏
+    private func showNow() {
+        hideTask?.cancel(); hideTask = nil
+        controlsVisible = true
+    }
+
+    private func hideNow() {
+        hideTask?.cancel(); hideTask = nil
+        controlsVisible = false
+    }
+
+    /// 兜底逻辑：播放中亮着 3 秒后自己收；暂停不自动收
+    private func startAutoHide() {
+        hideTask?.cancel(); hideTask = nil
+        guard !mirrorSystem, box.isPlaying else { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.controlsHideAfter * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.35)) { controlsVisible = false }
+            controlsVisible = false                 // 立即消失
         }
     }
 
-    private func hideControls() {
-        hideTask?.cancel()
-        hideTask = nil
-        withAnimation(.easeOut(duration: 0.25)) { controlsVisible = false }
+    /// 点了一下画面（兜底模式）：亮着就收、藏着就亮
+    private func tapToggled() {
+        guard !mirrorSystem else { return }          // 跟随系统时，显隐交给它
+        if controlsVisible { hideNow() } else { showNow(); startAutoHide() }
     }
 
-    /// 手指碰了屏幕（不管是不是点击）：正亮着而且在播，就把自动隐藏再往后推 3 秒
-    /// —— 拖进度条那类操作不该把控件拖没了
+    /// 开始拖进度条：先收起来
+    private func dragBegan() {
+        dragActive = true
+        hideNow()
+    }
+
+    /// 松手：立刻恢复，并进 3 秒倒计时
+    private func dragEnded() {
+        dragActive = false
+        showNow()
+        startAutoHide()
+    }
+
+    /// 手指碰了屏幕（不是点击、也不是拖动）：把倒计时往后推
     private func noteTouch() {
-        if controlsVisible, box.isPlaying { showControls() }
+        guard !mirrorSystem, !dragActive, controlsVisible else { return }
+        startAutoHide()
+    }
+
+    /// 转屏：按实际方向要，失败会重试（系统的转屏请求在弹层动画没结束时会被丢掉）
+    private func requestOrientation(landscape: Bool) {
+        ScreenOrientation.lock(landscape ? .landscape : .portrait)
+        orientationRetry?.cancel()
+        orientationRetry = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }.first
+            let nowLandscape = scene?.interfaceOrientation.isLandscape ?? false
+            if nowLandscape != landscape {
+                ScreenOrientation.lock(landscape ? .landscape : .portrait)
+            }
+        }
     }
 
     var body: some View {
@@ -105,7 +162,10 @@ struct PlayerSheet: View {
             PlayerVC(player: box.player, allowsPiP: pipEnabled,
                      onSystemExit: { dismiss() },
                      onTouch: { noteTouch() },
-                     onTap: { toggleControls() })
+                     onTap: { tapToggled() },
+                     onDragBegan: { dragBegan() },
+                     onDragEnded: { dragEnded() },
+                     onSystemControls: { systemControls($0) })
                 .ignoresSafeArea()
 
             if box.loading && box.error == nil {
@@ -172,11 +232,14 @@ struct PlayerSheet: View {
             // 横竖屏的安全区不一样（竖屏左右为 0、横屏刘海那侧约 46），
             // 用固定 padding 会让横屏偏掉一截。这里按实测的两组数分别定位。
             GeometryReader { geo in
+                // ★ 图标样式和点击动作都按【实际方向】判断，不按我们记的那个状态 ——
+                //   否则转屏请求被系统丢掉时（弹层动画没结束时就会），图标先变了、屏幕没转，
+                //   用户就得再点一次才进横屏（实测反馈就是这个）。
                 let wide = geo.size.width > geo.size.height
                 Button {
-                    box.toggleOrientation()
+                    requestOrientation(landscape: !wide)
                 } label: {
-                    Image(systemName: box.forcedLandscape
+                    Image(systemName: wide
                           ? "arrow.down.right.and.arrow.up.left"
                           : "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: Self.landscapeIconSize))
@@ -187,7 +250,8 @@ struct PlayerSheet: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .position(x: geo.size.width - (wide ? Self.lsTrailingWide : Self.lsTrailingTall),
+                .position(x: wide ? geo.size.width + Self.lsOverRightWide
+                                  : geo.size.width - Self.lsTrailingTall,
                           y: geo.size.height - (wide ? Self.lsBottomWide : Self.lsBottomTall))
             }
             .opacity(controlsVisible ? 1 : 0)
@@ -200,7 +264,6 @@ struct PlayerSheet: View {
             // 表现为「同一条视频导出去有声音、在 App 里没声音」。
             AppAudio.acquire()
             box.start()
-            showControls()          // 一进来先亮着（此刻还没播，所以不会自动隐藏）
             // 播放优先：iOS 同时只允许一个小窗，下载保活窗先让位。
             // 让位后下载照旧在跑（App 在前台不会被挂起），只是不显示那个小窗。
             if let pip, pip.isRunning {
@@ -212,13 +275,15 @@ struct PlayerSheet: View {
         // 暂停了 → 撤掉自动隐藏，让它常显
         .onChange(of: box.isPlaying) { playing in
             if playing {
-                if controlsVisible { showControls() }
+                if controlsVisible { startAutoHide() }    // 开播了：亮着的那 3 秒后收
             } else {
-                hideTask?.cancel()
+                hideTask?.cancel()                        // 暂停：撤掉自动隐藏，让它常显
                 hideTask = nil
             }
         }
         .onDisappear {
+            hideTask?.cancel()
+            orientationRetry?.cancel()
             box.stop()
             ScreenOrientation.portrait()      // 退出播放器回竖屏，别把界面留在横着
             AppAudio.release()
@@ -240,9 +305,8 @@ final class PlayerBox: ObservableObject {
     private let item: AVPlayerItem
     @Published var error: String?
     @Published var loading = true
-    /// 当前是不是我们强制横过来的（按钮文案据此变）
-    @Published var forcedLandscape = false
-    /// 只自动转一次，之后听用户的
+    /// 只自动转一次，之后听用户的。**故意不记"我让它横了"这个状态** ——
+    /// 图标和点击都按实际方向判断（转屏请求会被系统丢掉，记状态就会出现"点了没反应"的下一次点）
     private var autoOriented = false
     /// 当前在不在播 —— 界面靠它决定"要不要自动隐藏控件"（暂停时不隐藏）
     @Published var isPlaying = false
@@ -311,12 +375,6 @@ final class PlayerBox: ObservableObject {
         stateTask?.cancel()
     }
 
-    /// 用户点「横屏 / 竖屏」
-    func toggleOrientation() {
-        forcedLandscape.toggle()
-        if forcedLandscape { ScreenOrientation.landscape() } else { ScreenOrientation.portrait() }
-    }
-
     func retry() {
         error = nil
         loading = true
@@ -358,8 +416,9 @@ final class PlayerBox: ObservableObject {
             let sz = item.presentationSize
             if !autoOriented, sz.width > 0, sz.height > 0 {
                 autoOriented = true
-                forcedLandscape = sz.width > sz.height
-                if forcedLandscape { ScreenOrientation.landscape() }
+                // 横屏视频自动横过来（竖屏视频保持竖屏）。只自动一次，之后听用户的。
+                // 注意：这里**不记状态** —— 图标和点击都按"实际方向"判断（见 PlayerSheet）
+                if sz.width > sz.height { ScreenOrientation.landscape() }
             }
             player.play()
             return true
@@ -426,6 +485,10 @@ final class TouchObserver: UIGestureRecognizer {
     var onTouch: () -> Void = {}
     /// 判断为"点了一下"（短、且几乎没移动）时报一次 —— 用来"切换控件显隐"
     var onTap: () -> Void = {}
+    /// 刚越过拖动阈值（不是点击）→ 报"开始拖"
+    var onDragBegan: () -> Void = {}
+    /// 松手 → 报"拖完了"
+    var onDragEnded: () -> Void = {}
 
     private var startPoint = CGPoint.zero
     private var beganAt: TimeInterval = 0
@@ -444,7 +507,10 @@ final class TouchObserver: UIGestureRecognizer {
         super.touchesMoved(touches, with: event)
         guard let t = touches.first else { return }
         let p = t.location(in: view)
-        if hypot(p.x - startPoint.x, p.y - startPoint.y) > 12 { moved = true }
+        if !moved, hypot(p.x - startPoint.x, p.y - startPoint.y) > 12 {
+            moved = true
+            onDragBegan()            // 刚越过阈值 —— 报一次"开始拖了"
+        }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -460,7 +526,11 @@ final class TouchObserver: UIGestureRecognizer {
     }
 
     private func finish(_ touches: Set<UITouch>) {
-        if let t = touches.first, !moved, t.timestamp - beganAt < 0.4 { onTap() }
+        if moved {
+            onDragEnded()            // 松手 → 立刻恢复显示
+        } else if let t = touches.first, t.timestamp - beganAt < 0.4 {
+            onTap()
+        }
         // ★ 全程不进入"已识别"状态：只在最后收尾成 failed，绝不跟系统的手势抢
         state = .failed
     }
@@ -476,11 +546,66 @@ private struct PlayerVC: UIViewControllerRepresentable {
     let onTouch: () -> Void
     /// 播放器上"点了一下"（短按、几乎没移动）→ 切换控件显隐
     let onTap: () -> Void
+    /// 开始拖东西（进度条那种）→ 先把控件收起来
+    let onDragBegan: () -> Void
+    /// 松手 → 立刻恢复显示
+    let onDragEnded: () -> Void
+    /// 读到系统控制条的显隐了（只读）→ 我们跟着它
+    let onSystemControls: (Bool) -> Void
 
     final class Coord: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var onSystemExit: () -> Void = {}
         var onTouch: () -> Void = {}
         var onTap: () -> Void = {}
+        var onDragBegan: () -> Void = {}
+        var onDragEnded: () -> Void = {}
+        var onSystemControls: (Bool) -> Void = {}
+
+        /// 只在"刚越过拖动阈值"那一下报一次
+        private var dragReported = false
+        private weak var playerView: UIView?
+        private weak var controlsView: UIView?
+        private var watch: Task<Void, Never>?
+        private var lastSystemVisible: Bool?
+
+        /// 开始盯系统控制条的显隐（**只读**，绝不改它）
+        func startWatchingSystemControls(_ view: UIView) {
+            playerView = view
+            watch?.cancel()
+            watch = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    // 播放器关了就把这条循环断掉（self 是弱引用，不能一直空转）
+                    guard let self else { return }
+                    self.pollSystemControls()
+                    try? await Task.sleep(nanoseconds: 100_000_000)   // 100ms
+                }
+            }
+        }
+
+        private func pollSystemControls() {
+            if controlsView == nil, let pv = playerView {
+                controlsView = Self.findControlsView(pv, 0)
+            }
+            guard let v = controlsView else { return }
+            let visible = (!v.isHidden && v.alpha > 0.5)
+            if lastSystemVisible != visible {
+                lastSystemVisible = visible
+                onSystemControls(visible)
+            }
+        }
+
+        /// 找系统那个"控制条"视图：类名里带 Controls、且有子视图的那一层。
+        /// 找不到就返回 nil → 上层自动退回"自己算"的兜底逻辑。
+        private static func findControlsView(_ v: UIView, _ depth: Int) -> UIView? {
+            if depth > 8 { return nil }
+            if String(describing: type(of: v)).contains("Controls"), !v.subviews.isEmpty {
+                return v
+            }
+            for sub in v.subviews {
+                if let f = findControlsView(sub, depth + 1) { return f }
+            }
+            return nil
+        }
 
         /// 挂在播放器视图上，只为"知道有人碰了屏幕"。两件事必须保证：
         /// ① cancelsTouchesInView = false —— 绝不能把触摸从系统控件手里吃掉
@@ -510,6 +635,9 @@ private struct PlayerVC: UIViewControllerRepresentable {
         let touch = TouchObserver(target: nil, action: nil)
         touch.onTouch = { context.coordinator.onTouch() }
         touch.onTap = { context.coordinator.onTap() }
+        touch.onDragBegan = { context.coordinator.onDragBegan() }
+        touch.onDragEnded = { context.coordinator.onDragEnded() }
+        context.coordinator.startWatchingSystemControls(vc.view)   // 只读地盯系统控制条
         touch.cancelsTouchesInView = false
         touch.delaysTouchesBegan = false
         touch.delaysTouchesEnded = false
@@ -531,6 +659,9 @@ private struct PlayerVC: UIViewControllerRepresentable {
         context.coordinator.onSystemExit = onSystemExit
         context.coordinator.onTouch = onTouch
         context.coordinator.onTap = onTap
+        context.coordinator.onDragBegan = onDragBegan
+        context.coordinator.onDragEnded = onDragEnded
+        context.coordinator.onSystemControls = onSystemControls
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
         if vc.delegate !== context.coordinator { vc.delegate = context.coordinator }
