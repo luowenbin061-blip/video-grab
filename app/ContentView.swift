@@ -722,7 +722,6 @@ struct ContentView: View {
 
     // MARK: - Toast
 
-    @ViewBuilder
     /// 长按诊断条（设置里那个开关打开才出现）。诊断开着时，长按一次就能看出
     /// 到底卡在哪一步：坐标换算 / 网页层没回话 / 命中的是什么 / 视频地址。
     @ViewBuilder private var lpDebugBanner: some View {
@@ -743,7 +742,7 @@ struct ContentView: View {
         }
     }
 
-    private var toastView: some View {
+    @ViewBuilder private var toastView: some View {
         if let t = model.toast {
             Text(t)
                 .font(.system(size: 13.5))
