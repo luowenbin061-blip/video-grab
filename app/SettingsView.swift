@@ -3,6 +3,7 @@ import WebKit
 
 /// 设置。所有开关都收在这一页里，不往主界面加按钮。
 struct SettingsView: View {
+    @ObservedObject var model: BrowserModel
     @ObservedObject var downloads: DownloadCenter
     @ObservedObject var store: BookmarkStore
     @Binding var isPresented: Bool
@@ -56,6 +57,10 @@ struct SettingsView: View {
                     labeled("浏览历史", "\(store.history.count) 条")
                     Button("清空浏览历史", role: .destructive) { confirmClearHistory = true }
                     Button("清除网页缓存") { clearWebCache() }
+                    // 标签存档：清了之后下次启动就是干净的空白页（组也一起没）
+                    Button("清空标签存档（下次启动是空白页）", role: .destructive) {
+                        model.wipeSavedTabs()
+                    }
                 }
 
                 Section {

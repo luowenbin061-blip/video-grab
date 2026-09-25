@@ -246,10 +246,39 @@ final class BrowserModel: NSObject, ObservableObject {
     ///   标题和缩略图变了 SwiftUI 不会刷新。
     @Published private(set) var tabSnapshot: [TabSnapshot] = []
 
-    var tabCount: Int { tabs.count }
+    // MARK: - 标签页组（v1.0.83）
 
+    /// 标签页组。★ 名字不能叫 groups —— 那个已经被「嗅探结果分组」占了。
+    @Published private(set) var tabGroups: [TabGroup] = []
+    /// 当前在第几个组（下标指向 tabGroups）
+    @Published private(set) var currentGroupIndex = 0
+
+    /// 写盘节流用（详见 scheduleSave）
+    private var saveTask: Task<Void, Never>?
+
+    /// 当前组包含的标签（按组内顺序）。**网格界面看的就是这一份。**
+    ///
+    /// ★ 组只是一层过滤器：标签本身还在 `tabs` 那个扁平数组里，
+    ///   组只记「包含哪些 id、什么顺序」。所以切组是零搬迁的。
+    var visibleTabs: [BrowserTab] {
+        guard tabGroups.indices.contains(currentGroupIndex) else { return tabs }
+        let byID = Dictionary(tabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return tabGroups[currentGroupIndex].tabIDs.compactMap { byID[$0] }
+    }
+
+    /// 界面上「开了几个标签」= **当前组**的标签数（不是全部组的）
+    var tabCount: Int { visibleTabs.count }
+
+    /// 当前正在看的标签。★ currentTabIndex 是**组内下标**。
     var currentTab: BrowserTab? {
-        tabs.indices.contains(currentTabIndex) ? tabs[currentTabIndex] : nil
+        let v = visibleTabs
+        if v.indices.contains(currentTabIndex) { return v[currentTabIndex] }
+        return v.first
+    }
+
+    /// 当前组（可能没有）
+    var currentGroup: TabGroup? {
+        tabGroups.indices.contains(currentGroupIndex) ? tabGroups[currentGroupIndex] : nil
     }
 
     /// 页面真的加载完成时回调（地址、标题）。
@@ -268,6 +297,102 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 建一个「裸」的 WebView（不登记成标签）。
     /// 配置跟单窗口时代完全一致 —— 嗅探脚本、消息通道、查找开关、UA 一个都不能少。
+    // MARK: - 启动 / 重启恢复
+
+    /// ★ v1.0.83：启动时把上次的标签和组读回来。
+    override init() {
+        super.init()
+        restoreFromDisk()
+    }
+
+    /// 从存档恢复「档案」。
+    /// ★ **不建 WebView** —— 那是懒建的，只有当前那个会被真正加载（见 currentWebView）。
+    ///   所以哪怕你关了 30 个标签，启动那一刻也只会拉起一个网页，不会卡也不会爆内存。
+    private func restoreFromDisk() {
+        guard let p = TabStore.load(), !p.groups.isEmpty else {
+            tabGroups = [TabGroup(name: "标签页")]     // 第一次用 / 存档被清了
+            currentGroupIndex = 0
+            return
+        }
+        tabGroups = p.groups
+        if let cid = p.currentGroupID, let i = p.groups.firstIndex(where: { $0.id == cid }) {
+            currentGroupIndex = i
+        } else {
+            currentGroupIndex = 0
+        }
+
+        // 用存档里的 id 重建档案（id 必须一致 —— 组里存的是它、缩略图文件名也是它）
+        var made: Set<UUID> = []
+        for r in p.records {
+            let t = BrowserTab(id: r.id)
+            t.title = r.title
+            t.address = r.address
+            t.lastActiveAt = r.lastActiveAt
+            t.thumb = TabStore.loadThumb(id: r.id)
+            tabs.append(t)
+            made.insert(r.id)
+        }
+        // 存档不一致时自愈：组里引用了已经不存在的标签，去掉
+        for i in tabGroups.indices {
+            tabGroups[i].tabIDs = tabGroups[i].tabIDs.filter { made.contains($0) }
+        }
+        // 当前组是空的（比如上次把标签都关了）→ 给一个空白标签，别让人面对空界面
+        if visibleTabs.isEmpty { _ = newTab() }
+
+        // 回到这个组上次在看的那个标签
+        let v = visibleTabs
+        if let cid = tabGroups[currentGroupIndex].currentTabID,
+           let i = v.firstIndex(where: { $0.id == cid }) {
+            currentTabIndex = i
+        } else {
+            currentTabIndex = 0
+        }
+        if let t = currentTab { syncFromTab(t) }
+        refreshTabs()
+    }
+
+    // MARK: - 落盘
+
+    /// 节流写盘：变化后 1.2 秒写一次。
+    /// ★ 连续变化时**不重排**（不是每次都取消重来）—— 否则页面一直在上报嗅探的话，
+    ///   写盘会被无限推迟、永远写不进去。
+    private func scheduleSave() {
+        guard saveTask == nil else { return }
+        let target = self
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            target.saveTask = nil
+            target.saveNow()
+        }
+    }
+
+    /// 立刻写盘。App 要进后台时必须调它 —— 后台随时可能被系统杀掉，等不了节流。
+    func saveNow() {
+        guard !tabGroups.isEmpty else { return }
+        var groupOf: [UUID: UUID] = [:]
+        for g in tabGroups {
+            for id in g.tabIDs { groupOf[id] = g.id }
+        }
+        var recs: [TabRecord] = []
+        for t in tabs {
+            // 不在任何组里的标签不该存在；真出现了就跳过（别把脏数据写进存档）
+            guard groupOf[t.id] != nil else { continue }
+            recs.append(TabRecord(id: t.id, title: t.title, address: t.address,
+                                  groupID: groupOf[t.id]!, lastActiveAt: t.lastActiveAt))
+        }
+        TabStore.save(TabStorePayload(groups: tabGroups,
+                                      records: recs,
+                                      currentGroupID: currentGroup?.id))
+        // 存档里已经没有的标签，缩略图文件也一并清掉（否则越攒越多）
+        TabStore.pruneThumbs(keep: Set(tabs.map { $0.id }))
+    }
+
+    /// 设置里的「清空标签存档」：清了之后下次启动是干净的空白页。
+    func wipeSavedTabs() {
+        TabStore.wipe()
+        showToast("已清空标签存档（下次启动是空白页）")
+    }
+
     private func makeRawWebView() -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.allowsInlineMediaPlayback = true
@@ -330,7 +455,8 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 当前标签；越界或空时兜到第一个（并保证至少有一个）
     private func currentTabOrFirst() -> BrowserTab {
         if let t = currentTab { return t }
-        if tabs.isEmpty { newTab() }
+        if visibleTabs.isEmpty { newTab() }
+        if let t = currentTab { return t }
         return tabs[0]
     }
 
@@ -438,6 +564,7 @@ final class BrowserModel: NSObject, ObservableObject {
             Task { @MainActor in
                 t.thumb = small
                 t.thumbAt = Date()
+                TabStore.saveThumb(small, id: t.id)   // 顺手落盘：重启后网格里还有图
                 self.trimThumbs()
                 self.refreshTabs()
             }
@@ -497,25 +624,42 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 标签操作
 
-    /// 新建一个窗口（顺带切过去）
+    /// 新建一个标签（放进**当前组**，顺带切过去）
     @discardableResult
     func newTab(load url: String? = nil) -> BrowserTab {
-        if tabs.count >= TabLimits.maxTabs { reclaimOne() }
+        ensureCurrentGroup()
+        if tabCount >= TabLimits.maxTabs { reclaimOne() }
         let tab = BrowserTab()
         tabs.append(tab)
-        switchTo(tabs.count - 1)
+        tabGroups[currentGroupIndex].tabIDs.append(tab.id)
+        switchTo(tabCount - 1)
         if let url, !url.isEmpty { load(url) }
         return tab
     }
 
-    /// 切到某个窗口。允许重复切（幂等）。
+    /// 没有任何组时补一个（启动、存档被清、删光了组）
+    private func ensureCurrentGroup() {
+        if tabGroups.isEmpty {
+            tabGroups = [TabGroup(name: "标签页")]
+            currentGroupIndex = 0
+        }
+        if !tabGroups.indices.contains(currentGroupIndex) {
+            currentGroupIndex = 0
+        }
+    }
+
+    /// 切到当前组里的某个标签（下标是**组内**的）。允许重复切（幂等）。
     func switchTo(_ index: Int) {
-        guard tabs.indices.contains(index) else { return }
+        let v = visibleTabs
+        guard v.indices.contains(index) else { return }
+        let t = v[index]
         // ★ 切走之前先给当前页截一张 —— 只有它正显示着的时候才截得到
-        if tabs[index] !== currentTab { snapshotCurrent() }
+        if t !== currentTab { snapshotCurrent() }
 
         currentTabIndex = index
-        let t = tabs[index]
+        if tabGroups.indices.contains(currentGroupIndex) {
+            tabGroups[currentGroupIndex].currentTabID = t.id   // 记住这个组在看哪个
+        }
         t.lastActiveAt = Date()
         webView = activate(t)              // 睡着的现建、醒着的直接用
         syncFromTab(t)
@@ -530,23 +674,41 @@ final class BrowserModel: NSObject, ObservableObject {
         switchTo(i)
     }
 
-    /// 关掉某个窗口。只剩一个时不真关，而是把它清回空白页。
+    /// 关掉当前组里的某个标签。只剩一个时不真关，而是把它清回空白页。
     func closeTab(_ index: Int) {
-        guard tabs.indices.contains(index) else { return }
-        guard tabs.count > 1 else { resetOnlyTab(); return }
-        sleep(tabs[index])                  // 先把这个 WebView 干净地放掉
-        tabs.remove(at: index)
+        let v = visibleTabs
+        guard v.indices.contains(index) else { return }
+        guard v.count > 1 else { resetOnlyTab(); return }
+
+        let closing = v[index]
+        sleep(closing)                      // 先把这个 WebView 干净地放掉
+        removeFromGroups(closing.id)        // 从各个组的名单里摘掉
+        tabs.removeAll { $0.id == closing.id }
+        TabStore.removeThumb(id: closing.id)
+
         if index < currentTabIndex {
-            currentTabIndex -= 1            // 关的是前面的 → 当前标签下标前移
+            currentTabIndex -= 1            // 关的是前面的 → 当前下标前移
         } else if index == currentTabIndex {
-            currentTabIndex = min(index, tabs.count - 1)
-            let t = tabs[currentTabIndex]
-            t.lastActiveAt = Date()
-            webView = activate(t)
-            syncFromTab(t)
-            trimLive()
+            currentTabIndex = min(index, max(0, tabCount - 1))
+            if let t = currentTab {
+                t.lastActiveAt = Date()
+                webView = activate(t)
+                syncFromTab(t)
+                if tabGroups.indices.contains(currentGroupIndex) {
+                    tabGroups[currentGroupIndex].currentTabID = t.id
+                }
+                trimLive()
+            }
         }
         refreshTabs()
+    }
+
+    /// 把一个标签从所有组的名单里摘掉（编号统一走这一处，免得漏）
+    private func removeFromGroups(_ id: UUID) {
+        for i in tabGroups.indices {
+            tabGroups[i].tabIDs.removeAll { $0 == id }
+            if tabGroups[i].currentTabID == id { tabGroups[i].currentTabID = nil }
+        }
     }
 
     func closeTab(id: UUID) {
@@ -582,35 +744,149 @@ final class BrowserModel: NSObject, ObservableObject {
         t.loadError = nil
         t.canGoBack = false; t.canGoForward = false
         t.thumb = nil; t.thumbAt = nil
+        TabStore.removeThumb(id: t.id)
         syncFromTab(t)
         activate(t).load(URLRequest(url: URL(string: "about:blank")!))
         refreshTabs()
         showToast("已回到空白页")
     }
 
-    /// 到上限了：优先丢「没用过的空窗口」，否则丢最旧的（绝不动当前窗口）
+    /// 到上限了：优先丢「没用过的空标签」，否则丢最旧的（绝不动当前那个）。
+    /// 先在本组里找；本组只有一个且是当前 → 退到全局找（内存是全局的事）。
     private func reclaimOne() {
-        if let i = tabs.firstIndex(where: { $0.isPristine && $0 !== currentTab }) {
+        let v = visibleTabs
+        if let i = v.firstIndex(where: { $0.isPristine && $0 !== currentTab }) {
             closeTab(i)
             return
         }
-        if let i = tabs.firstIndex(where: { $0 !== currentTab }) {
+        if let i = v.firstIndex(where: { $0 !== currentTab }) {
             closeTab(i)
+            return
+        }
+        // 本组没得丢 → 全局丢一个最老的空标签
+        if let t = tabs.first(where: { $0.isPristine && $0 !== currentTab }) {
+            sleep(t)
+            removeFromGroups(t.id)
+            tabs.removeAll { $0.id == t.id }
+            TabStore.removeThumb(id: t.id)
+            refreshTabs()
         }
     }
 
-    /// 界面看的标签快照（值类型）—— 界面靠它渲染网格。
+    /// 界面看的标签快照（值类型）—— 界面靠它渲染网格。**只包含当前组的标签。**
+    /// 顺手排一次写盘（标签/标题/地址/缩略图的变化都会走到这里，一处就够）。
     private func refreshTabs() {
         let cur = currentTab
-        tabSnapshot = tabs.map {
+        tabSnapshot = visibleTabs.map {
             TabSnapshot(id: $0.id, title: $0.displayTitle, address: $0.address,
                         thumb: $0.thumb, isCurrent: $0 === cur)
         }
+        scheduleSave()
     }
 
-    /// 按 id 找下标。★ 界面一律拿 id 说话 —— 下标会漂（关掉一个，后面的全前移）。
+    /// 按 id 找**组内**下标。★ 界面一律拿 id 说话 —— 下标会漂（关掉一个，后面的全前移）。
     func index(of id: UUID) -> Int? {
-        tabs.firstIndex { $0.id == id }
+        visibleTabs.firstIndex { $0.id == id }
+    }
+
+    // MARK: - 标签页组操作（v1.0.83）
+
+    /// 切到某个组。★ 会回到「这个组上次在看哪个标签」。
+    func switchGroup(_ index: Int) {
+        guard tabGroups.indices.contains(index), index != currentGroupIndex else { return }
+        snapshotCurrent()                  // 走之前给当前页留张缩略图
+        currentGroupIndex = index
+        currentTabIndex = 0
+        let v = visibleTabs
+        if let cid = tabGroups[index].currentTabID,
+           let i = v.firstIndex(where: { $0.id == cid }) {
+            currentTabIndex = i
+        }
+        if let t = currentTab {
+            t.lastActiveAt = Date()
+            webView = activate(t)
+            syncFromTab(t)
+        } else {
+            webView = nil
+            _ = newTab()                   // 空组 → 给一个空白标签，别让人面对空界面
+        }
+        trimLive()
+        refreshTabs()
+    }
+
+    /// 新建一个空组并切过去。
+    @discardableResult
+    func newGroup(name: String? = nil) -> TabGroup {
+        snapshotCurrent()
+        let g = TabGroup(name: name ?? "标签页 \(tabGroups.count + 1)")
+        tabGroups.append(g)
+        currentGroupIndex = tabGroups.count - 1
+        currentTabIndex = 0
+        webView = nil
+        _ = newTab()                       // 空组先放一个空白标签
+        refreshTabs()
+        return g
+    }
+
+    /// 把当前这组标签**整组搬到**一个新组里（原来那个组留一个空白标签）。
+    /// ★ Safari 的「从 N 个标签页新建标签页组」是复制一份，但那样同一批标签会同时属于两组 ——
+    ///   我们的模型是"一个标签只属于一个组"，所以做成"搬过去"，名字也照实写"移到"。
+    @discardableResult
+    func moveCurrentTabsToNewGroup(name: String? = nil) -> TabGroup {
+        ensureCurrentGroup()
+        let moved = tabGroups[currentGroupIndex].tabIDs
+        let keep = currentTab?.id
+        let g = TabGroup(name: name ?? "标签页 \(tabGroups.count + 1)", tabIDs: moved)
+        tabGroups.append(g)
+
+        // 原组清空（currentTabID 也清掉），它下面会得到一个空白标签
+        tabGroups[currentGroupIndex].tabIDs = []
+        tabGroups[currentGroupIndex].currentTabID = nil
+
+        currentGroupIndex = tabGroups.count - 1
+        currentTabIndex = 0
+        let v = visibleTabs
+        if let keep, let i = v.firstIndex(where: { $0.id == keep }) { currentTabIndex = i }
+        if let t = currentTab {
+            t.lastActiveAt = Date()
+            webView = activate(t)
+            syncFromTab(t)
+            tabGroups[currentGroupIndex].currentTabID = t.id
+        }
+        // 原组现在是空的 → 下次切回去会自己补一个空白标签（见 switchGroup）
+        trimLive()
+        refreshTabs()
+        return g
+    }
+
+    func renameGroup(_ index: Int, to name: String) {
+        guard tabGroups.indices.contains(index) else { return }
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        tabGroups[index].name = n
+        scheduleSave()
+    }
+
+    /// 删组：**组里的标签一起关掉**（Safari 也是这个行为，会先提示）。
+    func deleteGroup(_ index: Int) {
+        guard tabGroups.indices.contains(index), tabGroups.count > 1 else { return }
+        for id in tabGroups[index].tabIDs {
+            if let t = tabs.first(where: { $0.id == id }) { sleep(t) }
+            TabStore.removeThumb(id: id)
+            tabs.removeAll { $0.id == id }
+        }
+        tabGroups.remove(at: index)
+        if currentGroupIndex >= tabGroups.count { currentGroupIndex = tabGroups.count - 1 }
+        currentTabIndex = 0
+        if let t = currentTab {
+            t.lastActiveAt = Date()
+            webView = activate(t)
+            syncFromTab(t)
+        } else {
+            webView = nil
+            _ = newTab()
+        }
+        trimLive()
+        refreshTabs()
     }
 
     /// 这条回调 / 消息来自哪个标签。不认识的 WebView（已关闭）返回 nil。

@@ -18,7 +18,11 @@ final class BrowserTab {
 
     /// 稳定标识 —— 界面靠它认标签。
     /// ★ 不能再用下标：关掉一个之后后面所有下标集体前移，异步回调里拿到的旧下标会指错人。
-    let id = UUID()
+    /// ★ 可注入（v1.0.83）：重启恢复时要用存档里那个 id，不能重新生成 ——
+    ///   组里存的、缩略图文件名用的都是它。
+    let id: UUID
+
+    init(id: UUID = UUID()) { self.id = id }
 
     /// 当前挂在这个档案上的 WebView。**nil = 休眠**（网页没在跑，档案还在）。
     var webView: WKWebView?

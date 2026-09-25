@@ -275,7 +275,8 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(downloads: downloads, store: store, isPresented: $showSettings)
+            SettingsView(model: model, downloads: downloads, store: store,
+                         isPresented: $showSettings)
         }
         .sheet(isPresented: $showToolbox) {
             ToolboxView(model: model, center: downloads, isPresented: $showToolbox,
@@ -295,7 +296,12 @@ struct ContentView: View {
         // 改成挂在「页面真的加载完成」上，见下面 onAppear 里的 model.onPageFinished。
         .onChange(of: scenePhase) { ph in
             // 进后台/被打断前把记录落盘 —— 不然被系统杀掉就丢
-            if ph != .active { downloads.save() }
+            if ph != .active {
+                downloads.save()
+                // ★ 标签存档也要立刻写：后台随时可能被系统杀掉，等不了那 1.2 秒的节流。
+                //   写了它，下次打开 App 标签和组才在。
+                model.saveNow()
+            }
             // 进后台且有任务在跑（或开着局域网共享）→ 起画中画保活
             if ph == .background {
                 // 故意不再自动起画中画：进了后台才起的话，画布层已经被后台事件
