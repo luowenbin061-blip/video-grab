@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VideoGrab v1.0.83 —— 今日总结 + 五家 AI 审查核实报告</title>
+<style>
+:root{
+  --bg:#0e1116; --panel:#161b22; --panel2:#1c2430; --line:#2a3441;
+  --fg:#e6edf3; --fg2:#9aa7b4; --fg3:#6e7b8a;
+  --red:#ff6b6b; --amber:#ffb454; --green:#3fb950; --blue:#58a6ff; --purple:#bc8cff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+.wrap{max-width:1080px;margin:0 auto;padding:40px 22px 80px}
+h1{font-size:26px;margin:0 0 6px;letter-spacing:.3px}
+h2{font-size:19px;margin:46px 0 14px;padding-bottom:9px;border-bottom:1px solid var(--line)}
+h3{font-size:16px;margin:26px 0 10px;color:var(--fg)}
+.sub{color:var(--fg2);font-size:13.5px;margin-bottom:26px}
+.lead{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--blue);
+  border-radius:8px;padding:16px 18px;margin:22px 0}
+.lead b{color:#fff}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:20px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:14px 16px}
+.card .n{font-size:25px;font-weight:700;letter-spacing:-.5px}
+.card .l{font-size:12.5px;color:var(--fg2);margin-top:3px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--fg);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+tr:nth-child(even) td{background:#131920}
+td.c{text-align:center;white-space:nowrap}
+code{background:#1f2733;padding:1.5px 5px;border-radius:4px;font-size:12.5px;
+  font-family:ui-monospace,Consolas,monospace;color:#a8d8ff}
+pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+  overflow-x:auto;font-size:12.5px;line-height:1.6;margin:10px 0;
+  font-family:ui-monospace,Consolas,monospace;color:#c9d6e2}
+.tag{display:inline-block;padding:1.5px 8px;border-radius:20px;font-size:11.5px;
+  font-weight:600;white-space:nowrap}
+.p0{background:rgba(255,107,107,.16);color:var(--red);border:1px solid rgba(255,107,107,.35)}
+.p1{background:rgba(255,180,84,.15);color:var(--amber);border:1px solid rgba(255,180,84,.32)}
+.p2{background:rgba(88,166,255,.14);color:var(--blue);border:1px solid rgba(88,166,255,.3)}
+.ok{background:rgba(63,185,80,.14);color:var(--green);border:1px solid rgba(63,185,80,.32)}
+.no{background:rgba(255,107,107,.13);color:var(--red);border:1px solid rgba(255,107,107,.3)}
+.mut{background:#232c38;color:var(--fg2);border:1px solid var(--line)}
+.ok-row td{background:rgba(63,185,80,.05)!important}
+.no-row td{background:rgba(255,107,107,.045)!important}
+.note{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:13px 16px;margin:14px 0;font-size:13.5px;color:var(--fg2)}
+.note b{color:var(--fg)}
+ul{margin:8px 0 8px 4px;padding-left:20px}
+li{margin:5px 0}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:var(--fg2)}
+hr{border:0;border-top:1px solid var(--line);margin:34px 0}
+.foot{color:var(--fg3);font-size:12.5px;margin-top:40px;line-height:1.9}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>VideoGrab v1.0.83 —— 今日总结 + 五家 AI 审查核实报告</h1>
+<div class="sub">2026-09-26 凌晨 · 真机 iOS 16.6 · 仓库 luowenbin061-blip/video-grab</div>
+
+<div class="lead">
+<b>一句话结论：</b>今天跑了 26 轮构建产出 21 个版本，四条线全部收工（长按下载 / 播放器 UI / 浏览器对标 Safari / 多窗口地基）。
+随后把程序交给五家 AI 审查，<b>共收到 30 条建议</b> —— 但我逐条对着源码核实后发现：
+<b>只有约 14 条成立，15 条是错的（AI 看漏了已有实现），另有若干属于「已知取舍」</b>。
+所有结论都附了代码行号，可直接复查。
+</div>
+
+<div class="cards">
+  <div class="card"><div class="n">21</div><div class="l">今日产出发布版本</div></div>
+  <div class="card"><div class="n">26</div><div class="l">CI 构建轮次（5 轮编译失败）</div></div>
+  <div class="card"><div class="n">4</div><div class="l">完成的功能线</div></div>
+  <div class="card"><div class="n">30</div><div class="l">AI 建议条数（3 家成功）</div></div>
+  <div class="card"><div class="n">14</div><div class="l">核实后成立</div></div>
+  <div class="card"><div class="n">15</div><div class="l">核实后推翻</div></div>
+</div>
+
+<h2>一、今天的总结</h2>
+
+<p>今天从 v1.0.58 走到 v1.0.83，<b>四条线</b>：</p>
+
+<h3>① 长按下载（v1.0.58 → v1.0.62）—— 推倒重做</h3>
+<table>
+<tr><th style="width:96px">版本</th><th>做了什么</th></tr>
+<tr><td class="c mono">v1.0.58</td><td>试「网页层盖透明链接、借 Safari 系统菜单」→ <span class="tag no">实测失败</span></td></tr>
+<tr><td class="c mono">v1.0.60</td><td><b>推倒重做</b>：改成「原生长按手势 + 自绘菜单」；加长按诊断开关</td></tr>
+<tr><td class="c mono">v1.0.61</td><td>修「大多数页面不弹」：命中测试加<b>几何兜底</b> + 修兜底竞态</td></tr>
+<tr><td class="c mono">v1.0.62</td><td>拆掉「长按自动弹嗅探面板」（用户明确不要）</td></tr>
+</table>
+<p class="mono">为什么 v1.0.58 那条不通：WebKit 在手指按下瞬间就锁死长按目标；系统菜单回调只对链接/图片触发；Safari 那套带预览卡的菜单是 WebKit 私有逻辑，只给 Safari 和它的扩展。</p>
+
+<h3>② 播放器 UI（v1.0.63 → v1.0.78）—— 今天最耗的一段（16 版）</h3>
+<table>
+<tr><th style="width:96px">版本</th><th>做了什么</th></tr>
+<tr><td class="c mono">v1.0.63</td><td>长按下载 / 长按诊断拆成两个独立开关；诊断条挪顶部、8 秒、可点关</td></tr>
+<tr><td class="c mono">v1.0.65</td><td>点播放即满屏 + 横屏按钮；嗅探按钮不再常驻；下载补 MP4 直链 + 失败诊断</td></tr>
+<tr><td class="c mono">v1.0.66–68</td><td>按钮去视频名、图标化、分到两角；位置<b>从截图量像素</b>重定；跟系统控制条淡出</td></tr>
+<tr><td class="c mono">v1.0.69</td><td><span class="tag no">急修</span> 我的手势识别器把系统控制条压掉了（只能强杀）</td></tr>
+<tr><td class="c mono">v1.0.70–77</td><td>显隐逻辑对齐系统 → 读系统状态 → 位置/大小迭代 → 拆掉四层「自伤」延迟</td></tr>
+<tr><td class="c mono">v1.0.78</td><td><b>找到真身</b>：不是「时刻差」是「节奏差」→ 改成连续透明度跟随 &nbsp;<span class="tag ok">用户确认达标</span></td></tr>
+</table>
+<div class="note">
+<b>这段的教训（已写进技能）：</b>
+<ul>
+<li>你说「偏大」我缩到 18pt —— 量完截图才知道 21pt 才对，<b>白走一轮</b>。主观描述只能定方向，数值必须量。</li>
+<li>系统控件占哪些位置（左上 ✕/画中画、右上音量、底部进度+右下水印）→ 自定义按钮<b>只能放空位</b>。</li>
+<li>「要点两三次」不是手感，是<b>两个按钮撞在一起抢点击</b>。</li>
+<li>已经决定跟随系统，就<b>别再把同一件事在本地实现一遍</b>（乐观切换 → 交替点播放/暂停时图标反复显隐）。</li>
+<li><b>「慢」的真身是节奏不是延迟</b>：系统控制条是渐变的，我们做成「啪」地切换 → 时刻对得上但一眼看出不是一路的。</li>
+</ul>
+</div>
+
+<h3>③ 浏览器对标 Safari（v1.0.79 → v1.0.81）</h3>
+<table>
+<tr><th style="width:96px">版本</th><th>做了什么</th></tr>
+<tr><td class="c mono">v1.0.79</td><td><b>修「页面用久点不动」——元凶是我们自己的嗅探脚本</b>（performance 数组无上限增长 + DOM 一变化就全文档重扫）；加载进度条；地址实时跟随；崩溃自动恢复；加载超时兜底 + 停止键</td></tr>
+<tr><td class="c mono">v1.0.81</td><td>网页弹窗三件套（alert/confirm/prompt）+ 整页错误页 + 证书「仍然访问」+ 删顶部转圈</td></tr>
+</table>
+
+<h3>④ 多窗口换地基（v1.0.82 → v1.0.83）</h3>
+<table>
+<tr><th style="width:96px">版本</th><th>做了什么</th></tr>
+<tr><td class="c mono">v1.0.82</td><td>批次 1：标签拆成「<b>档案（30 个）</b> + <b>活的网页（同时 3 个）</b>」；Safari 式缩略图网格；删掉顶部横标签条；底栏功能按钮放大到 24pt</td></tr>
+<tr><td class="c mono">v1.0.83</td><td>批次 2：标签落盘（关掉 App 再开标签还在）+ 标签页组（建/切/改名/删）</td></tr>
+</table>
+
+<h3>顺带解决的两件事</h3>
+<ul>
+<li><b>下载通道</b>：你的代理到期 → GitHub 直连不通、内置代理只有 6.4 KB/s。实测 8 个国内镜像，只有 <code>gh-proxy.com</code> 可用（128 KB/s，10MB 用 70~83 秒）。<b>每次都用 GitHub 官方 sha256 校验一致才收</b>。</li>
+<li><b>你放弃的那些</b>（我不再提）：网页翻译 · 下拉刷新 · 跨域 iframe 长按 · 播放器自带长按冲突 · 后台下载 · 裁边铺满。</li>
+</ul>
+
+<h2>二、五家 AI 审查 —— 结果概览</h2>
+
+<table>
+<tr><th style="width:110px">家</th><th style="width:88px">状态</th><th style="width:78px">条数</th><th>说明</th></tr>
+<tr class="ok-row"><td><b>DeepSeek</b></td><td class="c"><span class="tag ok">成功</span></td><td class="c">10</td><td>格式最规范、每条都指到具体文件和方法，质量最高</td></tr>
+<tr class="ok-row"><td><b>MiniMax</b></td><td class="c"><span class="tag ok">成功</span></td><td class="c">10</td><td>视角最「产品」：性能 / 体验 / 风险分布好，还附了架构建议</td></tr>
+<tr class="ok-row"><td><b>豆包</b></td><td class="c"><span class="tag ok">成功</span></td><td class="c">10</td><td>表格化输出；但把整份题目回显了一遍</td></tr>
+<tr class="no-row"><td><b>MiMo</b></td><td class="c"><span class="tag no">部分</span></td><td class="c">—</td><td>两次都被抓到<b>思考过程</b>（没输出正式答案）。但它的推理里挖到了<b>别家都没提的两条真缺口</b>，我从中提取了</td></tr>
+<tr class="no-row"><td><b>通义</b></td><td class="c"><span class="tag no">失败</span></td><td class="c">0</td><td>第一次只抓到「正在理解你的需求」占位符；重试直接 exit=9（未登录/不可用）</td></tr>
+</table>
+
+<div class="note">
+<b>关于「把 IPA 发给 AI」这件事，得说明一下：</b> IPA 是 9.8 MB 二进制，AI 读不懂它；通道也只支持传图片、不支持传文件。
+所以我改成了<b>把源码整理成一份 37 KB 的审查简报</b>（架构 + 功能清单 + 已知取舍 + 你的偏好 + 关键源码真片段）发给五家。
+这样他们才能给出有依据的判断 —— 事实证明确实如此（DeepSeek 和 MiniMax 的意见直接指到了方法名）。
+</div>
+
+<h2>三、★ 核实后成立的 14 条（按优先级）</h2>
+
+<p>下表每一条我都<b>对着真实源码核过</b>，附了文件与行号。带「多源」的是多家独立提到、可信度更高。</p>
+
+<h3>P0 / P1 —— 值得尽快修</h3>
+<table>
+<tr><th style="width:26px">#</th><th style="width:210px">问题</th><th style="width:74px">来源</th><th style="width:52px">优先级</th><th>证据 / 说明</th></tr>
+
+<tr>
+<td class="c">1</td>
+<td><b>m3u8 里的 <code>#EXT-X-MAP</code> 没处理</b> —— fMP4/CMAF 格式的 HLS 会下出<b>播不了的坏文件</b></td>
+<td class="c"><span class="tag mut">MiMo</span></td>
+<td class="c"><span class="tag p0">P0</span></td>
+<td><code>M3U8.swift</code> 只认 <code>STREAM-INF</code> / <code>KEY</code> / <code>MEDIA-SEQUENCE</code> / <code>EXTINF</code> / <code>DISCONTINUITY</code>，
+其余 <code>#</code> 标签<b>一律 <code>continue</code> 忽略</b>（源码原话）。所以 <code>#EXT-X-MAP:URI="init.mp4"</code>（初始化段）和 <code>#EXT-X-BYTERANGE</code> 都丢了。
+后果：下到的是一个没有 moov 头的碎片流 —— 看着「下载成功」，实际播不了。</td>
+</tr>
+
+<tr>
+<td class="c">2</td>
+<td><b>标签唤醒的「2 秒保护」会让同时活着的网页超过 3 个</b></td>
+<td class="c"><span class="tag mut">多源 3 家</span></td>
+<td class="c"><span class="tag p1">P1</span></td>
+<td><code>BrowserModel.swift:539</code> 的 <code>trimLive()</code>：
+<pre>while tabs.filter({ $0.isAwake }).count > TabLimits.maxLive {
+    let candidates = tabs.filter {
+        $0.isAwake &amp;&amp; $0 !== cur &amp;&amp; now.timeIntervalSince($0.lastActiveAt) &gt; 2
+    }
+    guard let oldest = candidates.min(...) else { break }   // ← 候选为空就放弃
+    sleep(oldest)
+}</pre>
+快速连点切标签时，所有「非当前」标签都在 2 秒内 → 候选为空 → <code>break</code> → 活着的一直堆。
+原注释认为「下次切换会补上」，但连续快速切换期间会真实堆到 5~8 个 WebView，每个几十 MB。</td>
+</tr>
+
+<tr>
+<td class="c">3</td>
+<td><b>嗅探结果 <code>items</code> 只去重、没有上限</b> —— 短视频无限流会一直涨</td>
+<td class="c"><span class="tag mut">多源 2 家</span></td>
+<td class="c"><span class="tag p1">P1</span></td>
+<td><code>BrowserModel.swift:1077 ingest()</code>：<code>var merged: [String: SniffItem] = [:]; for old in t.items { merged[old.url] = old }</code>
+然后 <code>t.items = sorted</code>（<code>:1131</code>）—— <b>旧条目永不过期</b>，只按 URL 去重。
+在抖音式无限流上，每滑一个视频就多一个永不消失的 URL → 越用越占内存（也拖累每次上报的排序与界面刷新）。
+<b>去重是做过的</b>（两家 AI 都说没去重，这点它们错了），缺的只是上限。</td>
+</tr>
+
+<tr>
+<td class="c">4</td>
+<td><b>音频会话没监听中断 / 路由变化</b> —— 来电后不自动续播、拔耳机可能外放</td>
+<td class="c"><span class="tag mut">MiniMax</span></td>
+<td class="c"><span class="tag p1">P1</span></td>
+<td><code>AudioSession.swift</code> 全文 58 行，只有 <code>acquire()</code> / <code>release()</code> / <code>describe()</code> ——
+<b>没有一处</b> <code>interruptionNotification</code> 或 <code>routeChangeNotification</code>。
+这是个视频 App 的核心体验项，属于「用户会立刻卸载」级别。</td>
+</tr>
+
+<tr>
+<td class="c">5</td>
+<td><b>网页进程崩溃后自动重载，没有防「无限重启」</b></td>
+<td class="c"><span class="tag mut">MiMo</span></td>
+<td class="c"><span class="tag p1">P1</span></td>
+<td><code>BrowserModel.swift:1290 webViewWebContentProcessDidTerminate</code> 里直接 <code>wv.reload()</code>，<b>没有计数</b>。
+碰上「一加载就把渲染进程搞崩」的页面 → 崩 → 重载 → 崩，无限循环，风扇起飞。</td>
+</tr>
+
+<tr>
+<td class="c">6</td>
+<td><b>画中画被用户手动关掉时，什么都不告诉用户</b></td>
+<td class="c"><span class="tag mut">MiMo</span></td>
+<td class="c"><span class="tag p1">P1</span></td>
+<td><code>PiPProgress.swift:493 pictureInPictureControllerDidStopPictureInPicture</code> 只做了
+<code>timer?.invalidate()</code> + <code>releaseAudio()</code>。
+而下载的「后台活着」正是靠这个画中画撑着 —— 用户划掉小窗 = 后台执行没了，<b>下载会停，界面上没有任何提示</b>。</td>
+</tr>
+
+<tr>
+<td class="c">7</td>
+<td><b>标签存档解码失败 = 静默全丢，且不给任何提示</b>（升级/字段变动/文件损坏都会触发）</td>
+<td class="c"><span class="tag mut">DeepSeek</span></td>
+<td class="c"><span class="tag p1">P1</span></td>
+<td><code>TabStore.swift load()</code>：<code>return try? dec.decode(TabStorePayload.self, from: d)</code> ——
+任何解码失败都返回 <code>nil</code>，上层当成「没有存档」，用户<b>标签全没</b>且不知道为什么。
+<code>TabGroup</code> / <code>TabRecord</code> 都是合成的 Codable，<b>没有 <code>decodeIfPresent</code> 兜底</b> ——
+以后<b>再加任何一个字段</b>，所有老用户的标签就会一次性全丢。</td>
+</tr>
+</table>
+
+<h3>P2 —— 值得顺手做</h3>
+<table>
+<tr><th style="width:26px">#</th><th style="width:210px">问题</th><th style="width:74px">来源</th><th style="width:52px">优先级</th><th>证据 / 说明</th></tr>
+
+<tr><td class="c">8</td>
+<td><b>没设 <code>performance.setResourceTimingBufferSize</code></b> —— 资源条目默认只留 250 条</td>
+<td class="c"><span class="tag mut">MiMo</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td><code>sniffer.js:288</code> 只用 <code>PerformanceObserver</code>，没调过 <code>setResourceTimingBufferSize</code>。
+重页面上早期条目会被挤掉（而早期那几条<b>往往正好是真视频地址</b>）。一行代码的量，收益明确。</td></tr>
+
+<tr><td class="c">9</td>
+<td><b>缩略图存成 PNG</b> —— 网页截图是连续色调，PNG 效率极差的</td>
+<td class="c"><span class="tag mut">MiniMax</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td><code>TabStore.swift saveThumb()</code>：<code>guard let d = img.pngData()</code>。
+15 张约 7.5 MB → 改 JPEG(0.7) 约 1 MB。顺手把文件名后缀从 <code>.png</code> 改 <code>.jpg</code> 并加一次性迁移。</td></tr>
+
+<tr><td class="c">10</td>
+<td><b>KVO 回调用 <code>Task { @MainActor }</code> 包装</b> —— 加载期每秒造几十个 Task</td>
+<td class="c"><span class="tag mut">MiniMax</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td><code>BrowserModel.swift:494 makeObservations</code> 三个 KVO 都包了 <code>Task { @MainActor in ... }</code>；
+<code>estimatedProgress</code> 加载期每秒能触发 30+ 次。<code>DispatchQueue.main.async</code> 更轻。</td></tr>
+
+<tr><td class="c">11</td>
+<td><b>长按诊断把「同源 iframe 还没加载完」误报成「跨域」</b></td>
+<td class="c"><span class="tag mut">MiniMax</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td><code>sniffer.js hitIn：cross: !inner</code> —— <code>contentDocument</code> 对「跨域」和「同源但没加载完」都返回 null，两者无法区分。
+不影响功能，但<b>会误导排查</b>（照着「跨域」两个字去改是白改）。</td></tr>
+
+<tr><td class="c">12</td>
+<td><b>唤醒标签时 <code>URL(string:)</code> 失败 → 白屏且无提示</b></td>
+<td class="c"><span class="tag mut">MiMo</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td><code>BrowserModel.swift:485</code>：<code>} else if let u = URL(string: t.address) { wv.load(...) }</code> —— 没有 else。
+地址栏手输含中文/空格时 <code>URL(string:)</code> 会返回 nil → 建了 WebView 但什么都没加载，看着就是白屏死掉。</td></tr>
+
+<tr><td class="c">13</td>
+<td><b>重活（整页 HTML 序列化 + 正则）没有时间保护</b></td>
+<td class="c"><span class="tag mut">MiMo</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td>60ms 自保只管「轻活」（<code>sniffer.js:269</code>）。重活虽然只在加载完成时跑一次，但超长页序列化 + 正则仍可能卡住主线程数秒。</td></tr>
+
+<tr><td class="c">14</td>
+<td><b>缩略图截图失败没有占位图</b>；私有读法缺「连续失败熔断」</td>
+<td class="c"><span class="tag mut">豆包</span></td><td class="c"><span class="tag p2">P2</span></td>
+<td>两条都归入「打磨」：① <code>snapshotCurrent()</code> 失败时网格里就是空白卡片；② 读系统控制条已有「两种读数都见过才采信」的有效性闸，但没有连续失败 N 次后停用的熔断。</td></tr>
+</table>
+
+<h2>四、核实后推翻的 15 条（AI 说错了）</h2>
+
+<p>这些<b>不用改</b> —— 我逐条查了源码，实现早就在了。列出来是为了让你知道「AI 的意见不能直接照做」。</p>
+
+<table>
+<tr><th style="width:26px">#</th><th style="width:170px">AI 的说法</th><th style="width:66px">来源</th><th>核实结论（附证据）</th></tr>
+
+<tr class="ok-row"><td class="c">1</td><td>删标签时没清 <code>TabGroup.tabIDs</code>，组里会留死 id</td><td class="c">DeepSeek</td>
+<td><span class="tag ok">已有</span> <code>BrowserModel.swift:707 removeFromGroups(_:)</code> 正是干这个的（清 tabIDs + 清 currentTabID），<code>closeTab</code> 里已调用。</td></tr>
+
+<tr class="ok-row"><td class="c">2</td><td>加/移除消息处理器的 <code>contentWorld</code> 可能不一致</td><td class="c">DeepSeek</td>
+<td><span class="tag ok">一致</span> 加的用 <code>ucc.add(self, contentWorld: world, name:)</code>，其中 <code>world = WKContentWorld.page</code>；移除用 <code>contentWorld: .page</code>。两边一致。</td></tr>
+
+<tr class="ok-row"><td class="c">3</td><td>每 16ms 遍历子视图树找 Controls，CPU 白烧</td><td class="c">DeepSeek</td>
+<td><span class="tag ok">已有缓存</span> <code>PlayerSheet.swift:654</code>：<code>if controlsView == nil, let pv = playerView { controlsView = Self.findControlsView(pv, 0) }</code> —— 只在没缓存时才遍历。</td></tr>
+
+<tr class="ok-row"><td class="c">4</td><td>HLS 分片并发没上限，可能被封 IP</td><td class="c">DeepSeek</td>
+<td><span class="tag ok">有上限</span> <code>Downloader.swift:107</code>：<code>let limit = max(1, options.concurrency)</code> + 窗口式流水线（<code>while next &lt; total &amp;&amp; inflight &lt; limit</code>，每完成一个补一个）。</td></tr>
+
+<tr class="ok-row"><td class="c">5</td><td>LocalHTTPServer 要防目录遍历，别把手机文件全暴露</td><td class="c">DeepSeek</td>
+<td><span class="tag ok">已防</span> <code>LocalHTTPServer.swift:392</code> 有完整防护：<code>standardizedFileURL</code> + <code>guard target.path == rootPath || hasPrefix(rootPath + "/")</code> → 否则 403。</td></tr>
+
+<tr class="ok-row"><td class="c">6</td><td>缩略图「最多 15 张」可能没真执行</td><td class="c">DeepSeek</td>
+<td><span class="tag ok">已实现</span> <code>BrowserModel.swift:614 trimThumbs()</code>：按 <code>thumbAt</code> 排序后 <code>dropFirst(TabLimits.maxThumbs)</code>，超出的清掉。</td></tr>
+
+<tr class="ok-row"><td class="c">7</td><td>WebDAV 的 token 若是固定默认值 = 局域网裸奔</td><td class="c">MiniMax</td>
+<td><span class="tag ok">不是固定值</span> <code>LocalHTTPServer.swift:134 makeToken()</code>：<code>UInt32.random</code> ×2 → 16 位十六进制（64 bit，走系统密码学随机源），<b>每次启动都重新生成</b>。</td></tr>
+
+<tr class="ok-row"><td class="c">8</td><td>缩略图异步回调可能在标签已休眠后返回 → 缩略图错位</td><td class="c">MiniMax</td>
+<td><span class="tag ok">不会错位</span> 闭包捕获的 <code>t</code> 就是被截图的那个标签，写回它自己的 <code>thumb</code> 本来就是对的；且调用前已 <code>guard wv.window != nil</code>（截到的一定是有效画面）。</td></tr>
+
+<tr class="ok-row"><td class="c">9</td><td>嗅探结果按 URL 没去重，同一资源刷好几屏</td><td class="c">MiniMax</td>
+<td><span class="tag ok">已去重</span> <code>sniffer.js:52 add()</code>：<code>var key = url.split('#')[0]; if (found[key]) { ...更新 last/hits...; return; }</code>。</td></tr>
+
+<tr class="ok-row"><td class="c">10</td><td><code>byWebView</code> 字典没清，休眠后残留 → 内存泄漏</td><td class="c">豆包</td>
+<td><span class="tag ok">已清</span> <code>BrowserModel.swift sleep()</code> 里就有 <code>byWebView[ObjectIdentifier(wv)] = nil</code>。</td></tr>
+
+<tr class="ok-row"><td class="c">11</td><td><code>performance.getEntriesByType('resource')</code> 跨域拿不到完整 url，会漏抓</td><td class="c">豆包</td>
+<td><span class="tag no">事实错误</span> Resource Timing 的 <code>name</code> 字段<b>就是完整 URL</b>（只是跨域时拿不到细粒度耗时）。这条是编的。</td></tr>
+
+<tr class="ok-row"><td class="c">12</td><td>DOM 变化时重复上报相同 SniffItem，原生侧重复解析</td><td class="c">豆包</td>
+<td><span class="tag ok">已处理</span> 三层都有：JS 侧按 URL 去重、上报有 500ms 节流、v1.0.79 还加了「<b>先判断有没有新增媒体元素，没有就什么都不做</b>」。</td></tr>
+
+<tr class="ok-row"><td class="c">13</td><td>给每个 TS 分片加 CRC32 校验，坏分片跳过</td><td class="c">豆包</td>
+<td><span class="tag no">不可执行</span> TS 流里没有「可用于比对的参考校验和」（CRC32 要自己算、没有基准值）。「坏分片不终止整个任务」那条思路有效，但 CRC32 这部分没法照做。</td></tr>
+
+<tr class="ok-row"><td class="c">14</td><td>导出到 iCloud 目录会卡死主线程，要改 FileCoordinator 异步</td><td class="c">豆包</td>
+<td><span class="tag no">不适用</span> <code>DocumentExporter</code> 走的是系统文件选择器（<code>UIDocumentPicker</code>），文件搬运由系统进程完成，不是我们同步写。</td></tr>
+
+<tr class="ok-row"><td class="c">15</td><td>Info.plist 可能缺隐私键 / <code>UIBackgroundModes</code> 缺 <code>picture-in-picture</code>；<br>src setter hook 可能弄丢 getter</td><td class="c">MiMo</td>
+<td><span class="tag ok">都没问题</span> 从成品 IPA 里的 Info.plist 实读：<code>NSAllowsArbitraryLoads=true</code> ✅、<code>NSPhotoLibraryAddUsageDescription</code> ✅、<code>NSLocalNetworkUsageDescription</code> ✅；导入用的是 <code>PHPicker</code>（不需要额外照片读取权限）；<br>iOS 上<b>不存在 <code>picture-in-picture</code> 这个 background mode 值</b>，画中画对应的就是 <code>audio</code> ✅；<br><code>sniffer.js:147</code> 的 hook 已经是 <code>{ get: ..., set: ... }</code> 成对写的 ✅。</td></tr>
+</table>
+
+<h2>五、我的判断与建议顺序</h2>
+
+<div class="lead">
+<b>如果要动手，我建议先修这 3 条（都在 P0/P1 里，而且互相独立、改动小）：</b>
+<ol>
+<li><b>#1 <code>#EXT-X-MAP</code></b> —— 这是唯一会「<b>产出坏文件却显示下载成功</b>」的一条，性质最恶劣，而且你迟早会碰到 fMP4 的站。</li>
+<li><b>#7 标签存档解码兜底</b> —— 现在只是「以后加字段才炸」，趁只有你一个人用的时候改掉成本最低。</li>
+<li><b>#2 trimLive 的 2 秒保护</b> —— 快速切标签时真实吃内存，改了立刻见效（缩略图那次改为「先截、截完再睡」）。</li>
+</ol>
+</div>
+
+<p><b>一条重要提醒：</b>这轮 AI 的意见里，<b>「AI 说这里有问题」和「这里真的有问题」是两件事</b> —— 30 条里 15 条是错的，比例一半。
+错的那些有个共同特征：<b>它们只看我给的那几段源码，就推断「没实现」</b>（其实实现就在没给的文件里）。
+所以以后这类外部审查，<b>逐条核实这一步不能省</b>。这条我已经写进技能。</p>
+
+<div class="note">
+<b>关于几个「AI 说对了但我早说过」的：</b> DRM 不支持、跨域 iframe 长按认不出、PiP 保活的脆弱性 —— 前两条是已列明的取舍（AI 基本守住了没提）；
+PiP 那条（MiniMax #6）确实是<b>方向性风险</b>：用画中画承载「非视频内容」属于逆向用法，iOS 大版本收紧准入就可能失效。<b>但你现在没有更好的替代</b>（后台下载已放弃），所以我只标注风险、不建议现在改 —— 建议加一条「PiP 启动失败就自动降级」的埋点。
+</div>
+
+<h3>下一批（多窗口还没做完的两批）</h3>
+<table>
+<tr><th style="width:64px">批次</th><th>内容</th><th style="width:210px">状态</th></tr>
+<tr><td class="c">1</td><td>标签档案 + 可睡可醒 + 缩略图网格 + 底栏</td><td><span class="tag ok">已交付 v1.0.82</span></td></tr>
+<tr><td class="c">2</td><td>重启恢复 + 标签页组</td><td><span class="tag ok">已交付 v1.0.83</span></td></tr>
+<tr><td class="c">3</td><td><b>无痕浏览</b>（独立一组、数据不落盘、历史/下载记录不留、一键清空）</td><td><span class="tag p2">待开工</span></td></tr>
+<tr><td class="c">4</td><td><b>阅读模式</b>（正文提取 + 字号/背景可调，入口在地址栏左边）</td><td><span class="tag p2">待开工</span></td></tr>
+</table>
+
+<hr>
+
+<div class="foot">
+<b>材料与可复查项</b><br>
+· 审查简报（发给五家的原文，37 KB）：<span class="mono">_probe_tmp/_review_brief.md</span><br>
+· 三家原始回答：<span class="mono">_probe_tmp/ask5out/{DeepSeek,MiniMax,Doubao}.txt</span>；MiMo 两次的推理流：<span class="mono">MiMo.txt</span> / <span class="mono">MiMo.retry.txt</span><br>
+· 核实脚本（可重跑）：<span class="mono">_probe_tmp/verify_ai_claims.py</span> · <span class="mono">verify2.py</span> · <span class="mono">verify3.py</span> · <span class="mono">verify4.py</span><br>
+· 交付产物固定入口：<span class="mono">E:\自用WIN10-最强没有之一\VideoGrab\VideoGrab-unsigned.ipa</span>（v1.0.83）<br>
+· 本轮<b>没有改动任何代码</b> —— 全部是只读核实 + 外部咨询。
+</div>
+
+</div>
+</body>
+</html>

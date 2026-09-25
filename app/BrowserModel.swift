@@ -171,19 +171,18 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 错误页上的「重试」
     func retry() {
-        guard let s = loadError?.url, !s.isEmpty,
-              let u = URL(string: s), let wv = webView else { return }
+        guard let s = loadError?.url, !s.isEmpty, let u = URL(string: s) else { return }
         clearLoadError(currentTab)
-        wv.load(URLRequest(url: u))
+        readyWebView().load(URLRequest(url: u))
     }
 
     /// 证书错误页上的「仍然访问」：把这个站记进白名单，然后重新加载。
     /// 这条是「证书挑战回调没收到」时的第二条路 —— 两条路都能通到「放行」。
     func trustAndReload() {
-        guard let s = loadError?.url, let u = URL(string: s), let wv = webView else { return }
+        guard let s = loadError?.url, let u = URL(string: s) else { return }
         if let h = u.host { trustedHosts.insert(h) }
         clearLoadError(currentTab)
-        wv.load(URLRequest(url: u))
+        readyWebView().load(URLRequest(url: u))
     }
 
     // MARK: 系统弹窗的公共零件
@@ -216,11 +215,23 @@ final class BrowserModel: NSObject, ObservableObject {
         return vc
     }
 
-    /// 当前标签的 WebView。
-    /// ★ 它仍然是 weak —— 真正持有 WebView 的是每个标签对象（BrowserTab）
-    ///   以及界面上的 BrowserView。多标签之后后台标签没有视图撑着，
-    ///   必须靠标签对象强引用，否则一切换就被回收。
-    weak var webView: WKWebView?
+    /// 当前标签的 WebView —— **直接问当前标签要，不再另存一份**。
+    ///
+    /// ★★ v1.0.84 修 P0（第二次启动后地址栏 / 刷新 / 后退全都没反应）：
+    ///   这里原来是 `weak var webView` —— 「当前 WebView」的**第二份副本**。
+    ///   v1.0.83 加「启动恢复」时，恢复路径只把标签建出来、**没给这份副本赋值**，
+    ///   于是第二次启动之后 `load()` 里 `guard let wv = webView else { return }` 静默返回
+    ///   —— 地址栏输入任何网址、点「前往」都毫无反应。
+    ///   （KVO / 嗅探上报 / 长按 / 下载都不走这份副本，所以 App 看着还活着，只有导航死了。）
+    ///
+    ///   为什么「卸载重装后第一次能用」：没有存档 → 标签列表为空 → 启动时走
+    ///   `newTab()` 那条路（它会经 `switchTo` 给这个字段赋值）；有存档就走另一条，漏赋值。
+    ///   为什么老版本没这问题：v1.0.82 之前没有启动恢复，标签列表启动时永远是空的。
+    ///
+    /// ★ 教训：**同一样东西存两份，早晚不一致。** 现在只有一份真相 ——
+    ///   标签自己持有，这里现问现取。副作用是好的：8 处手工赋值全删掉了，
+    ///   以后再加任何启动/切换路径都不可能"忘了同步"。
+    var webView: WKWebView? { currentTab?.webView }
 
     // MARK: - 标签（多窗口）
 
@@ -447,9 +458,23 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 界面当前该显示的那个 WebView。首次调用会把第一个标签建出来
     /// （WebView 必须由界面这一步创建 —— 它进了视图层级才会渲染）。
+    ///
+    /// ★ v1.0.84：这里**原来少了「把 self.webView 也设上」这一步**，就是 P0 的现场。
+    ///   现在 webView 是计算属性（直接问当前标签），不存在"两边不同步"这回事了。
     func currentWebView() -> WKWebView {
         if tabs.isEmpty { newTab() }
         return activate(currentTabOrFirst())
+    }
+
+    /// 「要动手了，确保有一个能用的 WebView」。
+    ///
+    /// ★ v1.0.84：这几个入口原来是 `guard let wv = webView else { return }` ——
+    ///   拿不到就**静默什么都不做**，用户看到的是「点了完全没反应」，而且没有任何提示。
+    ///   P0 就是这么炸的（恢复路径漏赋值 → 整条导航被静默吞掉）。
+    ///   现在拿不到就现建一个，绝不静默失败。
+    @discardableResult
+    private func readyWebView() -> WKWebView {
+        webView ?? currentWebView()
     }
 
     /// 当前标签；越界或空时兜到第一个（并保证至少有一个）
@@ -661,7 +686,7 @@ final class BrowserModel: NSObject, ObservableObject {
             tabGroups[currentGroupIndex].currentTabID = t.id   // 记住这个组在看哪个
         }
         t.lastActiveAt = Date()
-        webView = activate(t)              // 睡着的现建、醒着的直接用
+        _ = activate(t)              // 睡着的现建、醒着的直接用
         syncFromTab(t)
         trimLive()
         refreshTabs()
@@ -692,7 +717,7 @@ final class BrowserModel: NSObject, ObservableObject {
             currentTabIndex = min(index, max(0, tabCount - 1))
             if let t = currentTab {
                 t.lastActiveAt = Date()
-                webView = activate(t)
+                _ = activate(t)
                 syncFromTab(t)
                 if tabGroups.indices.contains(currentGroupIndex) {
                     tabGroups[currentGroupIndex].currentTabID = t.id
@@ -804,10 +829,9 @@ final class BrowserModel: NSObject, ObservableObject {
         }
         if let t = currentTab {
             t.lastActiveAt = Date()
-            webView = activate(t)
+            _ = activate(t)
             syncFromTab(t)
         } else {
-            webView = nil
             _ = newTab()                   // 空组 → 给一个空白标签，别让人面对空界面
         }
         trimLive()
@@ -822,7 +846,6 @@ final class BrowserModel: NSObject, ObservableObject {
         tabGroups.append(g)
         currentGroupIndex = tabGroups.count - 1
         currentTabIndex = 0
-        webView = nil
         _ = newTab()                       // 空组先放一个空白标签
         refreshTabs()
         return g
@@ -849,7 +872,7 @@ final class BrowserModel: NSObject, ObservableObject {
         if let keep, let i = v.firstIndex(where: { $0.id == keep }) { currentTabIndex = i }
         if let t = currentTab {
             t.lastActiveAt = Date()
-            webView = activate(t)
+            _ = activate(t)
             syncFromTab(t)
             tabGroups[currentGroupIndex].currentTabID = t.id
         }
@@ -879,10 +902,9 @@ final class BrowserModel: NSObject, ObservableObject {
         currentTabIndex = 0
         if let t = currentTab {
             t.lastActiveAt = Date()
-            webView = activate(t)
+            _ = activate(t)
             syncFromTab(t)
         } else {
-            webView = nil
             _ = newTab()
         }
         trimLive()
@@ -900,9 +922,14 @@ final class BrowserModel: NSObject, ObservableObject {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return }
         if !s.contains("://") { s = "https://" + s }
-        guard let u = URL(string: s), let wv = webView else { return }
+        guard let u = URL(string: s) else {
+            // 以前这里跟「拿不到 WebView」挤在同一个 guard 里静默 return ——
+            // 用户只看到"点了没反应"。地址不合法至少要吭一声。
+            showToast("这个地址好像不对，检查一下再试")
+            return
+        }
         clearLoadError(currentTab)
-        wv.load(URLRequest(url: u))
+        readyWebView().load(URLRequest(url: u))
     }
 
     // MARK: - KVO 回调（进度 / 地址 / 标题）
