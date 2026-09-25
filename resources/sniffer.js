@@ -367,13 +367,26 @@
       return null;
     }
 
-    // ─── 长按视频：盖一层透明 <a> 让系统弹原生链接预览菜单，原生在里面加「Download」───
-    // （Stay 的交互就是这个：长按 → 视频预览卡 + Download。
-    //   WebKit 只对「链接」弹这种菜单 —— 所以长按开始后 150ms 把视频盖成链接。
-    //   延迟 150ms 是为了不干扰快速点击：点画面播放/暂停时 overlay 还没出现。）
+    // ─── 长按视频：盖一层透明 <a>，让系统弹「原生链接预览菜单」，原生在里面加「Download」───
+    // （Stay 的交互就是这个：长按 → 视频预览卡 + Download。）
+    //
+    // ★ 前置条件（v1.0.57 就是死在这）：宿主 WKWebView 必须开着 allowsLinkPreview。
+    //   那个开关一关，WebKit 连「长按链接」都不识别 —— 盖多少层 <a> 都白搭，
+    //   而且一点反馈都没有。BrowserModel 那边已改成 true。
+    // ★ 时序：WebKit 是「长按被识别的那一刻」（约按下后 0.4~0.5 秒）才做命中测试，
+    //   不是按下瞬间 —— 所以按下 150ms 后再盖层来得及；150ms 也保证快速点击不受影响。
+    // ★ 永远留一条兜底：1.45 秒内系统菜单没来 → 自己弹确认条。宁可 UI 不完美，
+    //   也绝不能出现「长按毫无反应」。
     var pressedVideo = null;
     var overlayTimer = null;
+    var fallbackTimer = null;
     var overlayOn = false;
+    var nativeMenuShown = false;
+    var touchX = 0, touchY = 0;
+
+    function post(o) {
+      try { window.webkit.messageHandlers.vgSniff.postMessage(o); } catch (e) {}
+    }
 
     function removeOverlay() {
       var a = document.getElementById('__vg_lp');
@@ -385,22 +398,27 @@
       removeOverlay();
       var src = v.currentSrc || v.src || '';
       if (!src) return false;
+      // 系统只认 http(s)：blob:/data: 给了也不会弹菜单 → 直接走兜底
+      if (!/^https?:/i.test(src)) return false;
       var r = v.getBoundingClientRect();
       if (r.width < 40 || r.height < 40) return false;
       var a = document.createElement('a');
       a.href = src;
+      a.setAttribute('data-vg-lp', '1');
       a.addEventListener('click', function (e) { e.preventDefault(); });
       a.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:'
           + r.width + 'px;height:' + r.height + 'px;z-index:2147483647;opacity:0;';
       a.id = '__vg_lp';
       document.documentElement.appendChild(a);
       overlayOn = true;
+      // 告诉原生「这个地址就是视频」—— 免得它靠扩展名猜（很多站是没后缀的 CDN 地址）
+      post({ type: 'lpcover', url: src, on: true });
       return true;
     }
 
-    function clearPending() {
-      if (timer) { clearTimeout(timer); timer = null; }
+    function cancelPending() {
       if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+      if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
     }
 
     function fire() {
@@ -421,32 +439,51 @@
       fire();
     }
 
+    // 原生侧的两个回调：菜单要弹了 / 菜单关了
+    window.__vgNativeMenuShown = function () {
+      nativeMenuShown = true;
+      cancelPending();
+    };
+    window.__vgRemoveOverlay = function () { removeOverlay(); };
+
     document.addEventListener('touchstart', function (e) {
       var v = videoAncestor(e.target);
       if (!v) return;
+      var t = e.touches && e.touches[0];
+      if (t) { touchX = t.clientX; touchY = t.clientY; }
       pressedVideo = v;
-      clearPending();
+      nativeMenuShown = false;
+      cancelPending();
       overlayTimer = setTimeout(function () {
         overlayTimer = null;
-        // 盖成功 → 交给系统菜单（~500ms 弹出）；盖失败（没 src 等）→ 走兜底
-        if (!makeOverlay(v)) {
-          timer = setTimeout(function () { timer = null; trigger(); }, 1050);
-        }
+        makeOverlay(v);   // 盖不上（没 src / 太小 / blob）也别管，兜底兜着
+        fallbackTimer = setTimeout(function () {
+          fallbackTimer = null;
+          if (!nativeMenuShown) trigger();
+        }, 1300);
       }, 150);
     }, true);
 
     ['touchend', 'touchcancel'].forEach(function (ev) {
       document.addEventListener(ev, function () {
-        clearPending();
-        // 不能立刻删：系统菜单正靠这个 <a> 撑着，删了菜单跟着消失。
-        // 延迟 700ms —— 菜单已弹出并自持，那时删就无所谓了。
-        setTimeout(removeOverlay, 700);
+        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+        // 兜底定时器**不清**：手指抬早了也必须保证有反馈（1.45 秒后见分晓）
+        // 盖层不能立刻删：系统菜单正靠这个 <a> 撑着。
+        //   已弹菜单 → 交给原生在菜单关闭时删；还没弹 → 700ms 后自己删。
+        if (nativeMenuShown) return;
+        setTimeout(function () { if (!nativeMenuShown) removeOverlay(); }, 700);
       }, true);
     });
 
-    // 滚动 = 不是长按，立刻撤
-    document.addEventListener('touchmove', function () {
-      clearPending();
+    // 滚动 = 不是长按，全撤（10px 以内的抖动不算滚动，不然手抖一下就把长按废了）
+    document.addEventListener('touchmove', function (e) {
+      if (nativeMenuShown) return;      // 菜单已弹，别把它的 <a> 抽走
+      var t = e.touches && e.touches[0];
+      if (t) {
+        var dx = t.clientX - touchX, dy = t.clientY - touchY;
+        if (dx * dx + dy * dy < 100) return;
+      }
+      cancelPending();
       removeOverlay();
     }, true);
 

@@ -117,6 +117,17 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 长按到的视频地址（JS 在长按事件里带上）。空 = 长按的地方没有视频元素，
     /// 界面就退回「弹嗅探面板」的旧行为
     @Published private(set) var longPressURL = ""
+    /// JS 盖视频用的那个临时 <a> 的地址（lpcover 消息送来）。原生靠它认「这次长按
+    /// 落在视频上」—— 比靠扩展名猜准得多（很多站是没后缀的 CDN 地址）。
+    private var coverMediaURL = ""
+    private var coverMediaAt = Date.distantPast
+
+    /// 地址对得上、且是刚盖的（30 秒内）→ 认定这是我们自己盖的视频链接
+    func isCoverMedia(_ s: String) -> Bool {
+        !s.isEmpty && s == coverMediaURL
+            && Date().timeIntervalSince(coverMediaAt) < 30
+    }
+
     /// 系统长按菜单里的「Download」被点 —— 界面接线成真正的下载动作
     var onDownloadRequest: ((String) -> Void)?
     @Published var toast: String?
@@ -206,7 +217,12 @@ final class BrowserModel: NSObject, ObservableObject {
         wv.navigationDelegate = self
         wv.uiDelegate = self
         wv.allowsBackForwardNavigationGestures = true
-        wv.allowsLinkPreview = false
+        // ★ 长按下载（批次 D）的死结就在这一行：allowsLinkPreview = false 时
+        //   WebKit 连「长按链接」都不识别 —— JS 那边盖的透明 <a> 永远等不到菜单，
+        //   而且长按一点反馈都没有（v1.0.57 实测：长按完全无反应）。
+        //   要系统那种「预览卡 + Download」菜单，这个开关必须开。
+        //   普通链接不受影响：下面的 contextMenu 回调对非媒体地址返回 nil。
+        wv.allowsLinkPreview = true
         // 有些站会检测「是不是 App 内置浏览器」，用桌面 UA 降低被拒概率
         wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
@@ -587,6 +603,16 @@ extension BrowserModel: WKScriptMessageHandler {
         Task { @MainActor in
             guard let wv = src, let t = self.tab(for: wv) else { return }
             let isCurrent = (t === self.currentTab)
+            if let kind = body["type"] as? String, kind == "lpcover" {
+                // JS 盖层成功：「这个地址是视频」记下来，等原生菜单回调来对
+                if (body["on"] as? Bool) == true {
+                    self.coverMediaURL = (body["url"] as? String) ?? ""
+                    self.coverMediaAt = Date()
+                } else {
+                    self.coverMediaURL = ""
+                }
+                return
+            }
             if let kind = body["type"] as? String, kind == "longpress" {
                 // 长按只对「你正在看的那个页面」有效
                 if isCurrent {
@@ -614,11 +640,15 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                              completionHandler: @escaping (UIContextMenuConfiguration?) -> Void) {
         let link = elementInfo.linkURL
         Task { @MainActor in
-            guard let link, Self.looksLikeMedia(link.absoluteString) else {
+            let s = link?.absoluteString ?? ""
+            // 两种认定：① JS 刚盖的那个 <a>（最准）② 地址本身像媒体文件
+            let ours = self.isCoverMedia(s)
+            guard let link, !s.isEmpty, ours || Self.looksLikeMedia(s) else {
                 completionHandler(nil)
                 return
             }
-            let s = link.absoluteString
+            // 告诉 JS：系统菜单要弹了 → 撤掉它那条兜底，免得两个 UI 一起冒出来
+            webView.evaluateJavaScript("window.__vgNativeMenuShown && window.__vgNativeMenuShown();")
             let cfg = UIContextMenuConfiguration(identifier: nil, previewProvider: nil,
                                                  actionProvider: { _ in
                 UIMenu(children: [
@@ -629,6 +659,15 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 ])
             })
             completionHandler(cfg)
+        }
+    }
+
+    /// 菜单关了 → 撤掉 JS 那层临时 <a>（它压着视频，留着会吃掉视频的点击）
+    nonisolated func webView(_ webView: WKWebView,
+                             contextMenuDidEndForElement elementInfo: WKContextMenuElementInfo) {
+        Task { @MainActor in
+            self.coverMediaURL = ""
+            webView.evaluateJavaScript("window.__vgRemoveOverlay && window.__vgRemoveOverlay();")
         }
     }
 
