@@ -439,31 +439,6 @@ final class DownloadJob: ObservableObject, Identifiable {
         opt.cookie = cookie.isEmpty ? nil : cookie
         if opt.referer == nil, let host = src.host { opt.referer = "https://\(host)/" }
 
-        // ★ 先探一下这个地址到底是什么 —— 详见 SourceProbe 里的注释。
-        //   嗅探只按地址字符串猜类型：mp4 直链、跳转页也会被当成 m3u8，
-        //   统一塞给 m3u8 解析器的结果就是「一个分片都没解析出来」，
-        //   而用户只看到一句失败、不知道卡在哪。探完才知道该走哪条路。
-        //   探测结果同时写进过程记录 —— 以后出问题一眼看出原因。
-        phase = "探测地址…"
-        let probe = await SourceProbe.fetch(url: src,
-                                            ua: opt.userAgent,
-                                            referer: opt.referer,
-                                            cookie: opt.cookie,
-                                            timeout: opt.timeout)
-        notes.append("· 探测：\(probe.summary)")
-        guard (200...299).contains(probe.httpStatus) else {
-            throw Self.fail("地址取不到内容 —— \(probe.summary)")
-        }
-        if probe.kind == .unknown {
-            throw Self.fail("这个地址认不出是什么（不是 HLS 清单，也不像视频文件）—— \(probe.summary)")
-        }
-
-        if probe.kind == .file {
-            try await runDirectFile(src: src, probe: probe, tempDir: tempDir,
-                                    ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie)
-            return
-        }
-
         var dl = HLSDownloader(options: opt)
         dl.onProgress = { [weak self] p in
             Task { @MainActor in
@@ -479,6 +454,32 @@ final class DownloadJob: ObservableObject, Identifiable {
 
         phase = "开始…"
         do {
+
+            // ★ 先探一下这个地址到底是什么 —— 详见 SourceProbe 里的注释。
+            //   嗅探只按地址字符串猜类型：mp4 直链、跳转页也会被当成 m3u8，
+            //   统一塞给 m3u8 解析器的结果就是「一个分片都没解析出来」，
+            //   而用户只看到一句失败、不知道卡在哪。探完才知道该走哪条路。
+            //   探测结果同时写进过程记录 —— 以后出问题一眼看出原因。
+            phase = "探测地址…"
+            let probe = await SourceProbe.fetch(url: src,
+                                                ua: opt.userAgent,
+                                                referer: opt.referer,
+                                                cookie: opt.cookie,
+                                                timeout: opt.timeout)
+            notes.append("· 探测：\(probe.summary)")
+            guard (200...299).contains(probe.httpStatus) else {
+                throw Self.fail("地址取不到内容 —— \(probe.summary)")
+            }
+            if probe.kind == .unknown {
+                throw Self.fail("这个地址认不出是什么（不是 HLS 清单，也不像视频文件）—— \(probe.summary)")
+            }
+
+            if probe.kind == .file {
+                try await runDirectFile(src: src, probe: probe, tempDir: tempDir,
+                                        ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie)
+                return
+            }
+
             let result = try await dl.run(sourceURL: src)
             if Task.isCancelled { paused = true; onUpdate?(); return }
 
