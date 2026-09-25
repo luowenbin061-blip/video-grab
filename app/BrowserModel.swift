@@ -113,10 +113,6 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var isLoading = false
     @Published var canGoBack = false
     @Published var canGoForward = false
-    @Published var longPressFired = false      // 长按视频 → 弹面板
-    /// 长按到的视频地址（JS 在长按事件里带上）。空 = 长按的地方没有视频元素，
-    /// 界面就退回「弹嗅探面板」的旧行为
-    @Published private(set) var longPressURL = ""
     // MARK: - 长按视频 → 弹菜单（批次 D）
 
     /// 非空 = 长按菜单正在显示
@@ -612,15 +608,8 @@ extension BrowserModel: WKScriptMessageHandler {
         Task { @MainActor in
             guard let wv = src, let t = self.tab(for: wv) else { return }
             let isCurrent = (t === self.currentTab)
-            if let kind = body["type"] as? String, kind == "longpress" {
-                // 兜底通道（网页层按住 900ms 没等到原生菜单才走这里）：
-                // 只对「你正在看的那个页面」有效
-                if isCurrent {
-                    self.longPressURL = (body["url"] as? String) ?? ""
-                    self.longPressFired.toggle()
-                }
-                return
-            }
+            // （原来这里有一条 longpress 分支：网页层的 900ms 兜底 → 弹嗅探面板。
+            //   已删除 —— 长按不该把嗅探结果弹出来，面板只由右下角按钮/底栏入口打开。）
             let href = (body["href"] as? String) ?? ""
             let mse = (body["mse"] as? Bool) ?? false
             let raw = (body["items"] as? [[String: Any]]) ?? []
@@ -748,10 +737,6 @@ extension BrowserModel {
         let cy = point.y / zoom
         lines.append(String(format: "落点 (%.0f, %.0f) → css (%.0f, %.0f)  zoom %.2f",
                             point.x, point.y, cx, cy, zoom))
-        // ★ 一开始就压住网页层那条 900ms 兜底 —— 不是等菜单弹出来才压。
-        //   原来等菜单才压，探测这一趟（要等网页层回话）慢一点，
-        //   兜底就先弹了嗅探面板把菜单盖掉 → 看着就像「长按下载失效」（真踩过）。
-        wv.evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(true);")
         let js = "window.__vgHit && window.__vgHit(\(cx), \(cy))"
         wv.evaluateJavaScript(js) { [weak self] raw, _ in
             Task { @MainActor in
@@ -779,7 +764,9 @@ extension BrowserModel {
         case "other":
             let cls = (d["cls"] as? String) ?? ""
             let n = (d["vids"] as? NSNumber)?.intValue ?? -1
+            let near = (d["near"] as? String) ?? ""
             extra = "元素=" + cls + "  页内 video=\(n)"
+            if !near.isEmpty { extra += "  " + near }
         case "error":
             extra = (d["msg"] as? String) ?? ""
         default:
@@ -797,9 +784,6 @@ extension BrowserModel {
             } else {
                 out.append("这点上不是视频 → 不弹菜单，页面照旧")
             }
-            // 把网页层那条兜底放开：手指底下确实有视频（网页层自己认过）而这里
-            // 没认出来时，900ms 后它会弹嗅探面板 —— 有反馈总比静悄悄强
-            wv.evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(false);")
             finishLPDebug(out)
             return
         }
@@ -812,8 +796,6 @@ extension BrowserModel {
         lpMenu = LongPressMenuInfo(point: point, url: url,
                                    title: title.isEmpty ? pageTitle : title,
                                    host: host)
-        // 告诉网页层：原生菜单接管了，兜底那条别再弹
-        wv.evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(true);")
     }
 
     /// 诊断日志：只在开关打开时显示，12 秒后自己消失（免得一直糊在屏幕上）
@@ -834,11 +816,10 @@ extension BrowserModel {
         return h + (u.path.isEmpty ? "" : String(u.path.suffix(24)))
     }
 
-    /// 关掉菜单（并把网页层那条兜底放开）
+    /// 关掉菜单
     func closeLongPressMenu() {
         guard lpMenu != nil else { return }
         lpMenu = nil
-        currentWebView().evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(false);")
     }
 
     /// 菜单里点了 Download

@@ -287,10 +287,6 @@ struct ContentView: View {
             if let info = model.lpMenu {
                 LongPressMenuView(info: info,
                                   onDownload: { model.downloadFromLongPressMenu() },
-                                  onOpenList: {
-                                      model.closeLongPressMenu()
-                                      showPanel = true
-                                  },
                                   onClose: { model.closeLongPressMenu() })
                     .transition(.opacity)
             }
@@ -342,12 +338,8 @@ struct ContentView: View {
         .sheet(isPresented: $showTabs) {
             TabsView(model: model, isPresented: $showTabs)
         }
-        .onChange(of: model.longPressFired) { _ in
-            // 兜底通道：网页层自己按住 900ms 还没等到原生菜单才走这里（比如页面
-            // 自己的长按手势把我们的手势吃了）。弹嗅探面板 —— 有反馈总比没反应强。
-            // 正常路径是原生长按手势 → 自绘菜单（LongPressMenuView）。
-            showPanel = true
-        }
+        // （这里原来挂了一条：网页层 900ms 兜底 → 自动弹嗅探面板。已删 ——
+        //   长按只弹下载菜单，嗅探面板只由右下角按钮/底栏入口打开。）
         // 历史记录不再挂在「监听 address 变化」上 —— 有个新问题：
         // 切换标签也会让 address 变，那样每切一次窗口就虚增一次「访问次数」。
         // 改成挂在「页面真的加载完成」上，见下面 onAppear 里的 model.onPageFinished。

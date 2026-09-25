@@ -350,23 +350,10 @@
     return payload().length;
   };
 
-  // ---------- 10. 长按视频 → 通知原生弹面板 ----------
-  // 用捕获阶段监听，抢在播放器自己的处理器之前拿到事件；
-  // 不去 preventDefault，免得把播放器的控件、全屏按钮弄坏。
+  // ---------- 10. 长按视频：只回答原生「这一点上有没有视频」 ----------
+  // 触发是原生的长按手势（见 app/LongPressMenu.swift）。这里不再自己监听手势、
+  // 也不往界面推任何东西 —— 长按只弹下载菜单，绝不弹嗅探面板。
   (function () {
-    var timer = null;
-
-    function videoAncestor(node) {
-      var el = node;
-      var depth = 0;
-      while (el && el !== document && depth < 12) {
-        if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') return el;
-        el = el.parentNode;
-        depth++;
-      }
-      return null;
-    }
-
     // ─── 长按视频：命中测试（原生长按手势来问）+ 一条 JS 兜底 ───
     //
     // 为什么不再自己盖透明 <a>：WebKit 在 touchstart 那一瞬间就把长按目标锁死了，
@@ -402,6 +389,22 @@
           if (!best || area < bestArea) { best = list[i]; bestArea = area; }
         }
         return best;
+      }
+
+      // 没命中视频时报一下「页内最大的那个视频框在哪」——
+      // 原生探测点和网页实际位置如果有整体偏差（安全区/缩放），日志里一眼就能看出来
+      function biggestVideoBox(doc) {
+        var list = null, best = null, bestArea = 0;
+        try { list = doc.querySelectorAll('video'); } catch (e) { return null; }
+        for (var i = 0; i < list.length; i++) {
+          var r = list[i].getBoundingClientRect();
+          if (r.width < 40 || r.height < 40) continue;
+          var area = r.width * r.height;
+          if (!best || area > bestArea) { best = r; bestArea = area; }
+        }
+        if (!best) return null;
+        return '最大视频框 x ' + Math.round(best.left) + '-' + Math.round(best.right)
+             + '  y ' + Math.round(best.top) + '-' + Math.round(best.bottom);
       }
 
       function countVideos(doc) {
@@ -463,7 +466,10 @@
         if (v) return mediaInfo(v, doc, 'geo');
 
         if (frameInfo) return frameInfo;
-        return { hit: 'other', tag: el.tagName, cls: clipOf(el), vids: countVideos(doc) };
+        return {
+          hit: 'other', tag: el.tagName, cls: clipOf(el), vids: countVideos(doc),
+          near: biggestVideoBox(doc)
+        };
       }
 
       // 原生侧调这个。坐标是页面 CSS 像素。
@@ -475,48 +481,11 @@
         }
       };
 
-      // 原生菜单弹出来时置 true —— 用它压住下面那条 JS 兜底，免得两个界面一起冒
-      var nativeMenuUp = false;
-      window.__vgNativeMenuUp = function (on) { nativeMenuUp = !!on; };
-
-      // 兜底：原生长按手势万一被页面自己的长按（有些播放器长按＝2 倍速）吃掉，
-      // 这条还在 —— 手指一直按到 900ms 就报给原生，至少弹个嗅探面板。
-      // 绝不出现「长按毫无反应」。抬手/滑动都算没按住 → 撤销。
-      var fallbackTimer = null;
-      function reportLongPress(v) {
-        try {
-          window.webkit.messageHandlers.vgSniff.postMessage({
-            type: 'longpress', url: (v && (v.currentSrc || v.src)) || ''
-          });
-        } catch (err) {}
-      }
-      function cancelFallback() {
-        if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
-      }
-      document.addEventListener('touchstart', function (e) {
-        cancelFallback();
-        var t = e.touches && e.touches[0];
-        if (!t) return;
-        // 和原生走同一套判定：先祖先链，再按几何（挡住 video 的那层兄弟元素也认得）
-        var v = videoAncestor(e.target) || videoUnder(document, t.clientX, t.clientY);
-        if (!v) return;
-        fallbackTimer = setTimeout(function () {
-          fallbackTimer = null;
-          if (nativeMenuUp) return;
-          reportLongPress(v);
-        }, 900);
-      }, true);
-      ['touchend', 'touchcancel', 'touchmove'].forEach(function (ev) {
-        document.addEventListener(ev, cancelFallback, true);
-      });
-
-      // 桌面/鼠标右键兜底（桌面上没有长按手势，右键就当成一次长按）
-      document.addEventListener('contextmenu', function (e) {
-        var v = videoAncestor(e.target);
-        if (!v) return;
-        e.preventDefault();
-        reportLongPress(v);
-      }, true);
+      // ── 这里原来有一条「按住 900ms 还没等到原生菜单就报给原生、弹嗅探面板」的兜底。
+      //    已删除：用户明确说「长按不该把嗅探结果弹出来」。嗅探那套是后台自动跑的，
+      //    跟手势没有任何关系；面板只该由右下角那个按钮/底栏入口打开，不该自己冒出来。
+      //    （代价：万一哪天某个页面把原生长按手势吃掉，长按就什么都不会发生 ——
+      //      这种情况请打开「长按诊断」反馈，而不是让面板乱弹。）
     })();
   })();
 

@@ -25,8 +25,6 @@ struct LongPressMenuView: View {
     let info: LongPressMenuInfo
     /// 点 Download
     let onDownload: () -> Void
-    /// 点标题行 → 打开嗅探列表（默认播放器那套行为，能看到这个页面的所有候选地址）
-    let onOpenList: () -> Void
     /// 点别处 / 收起
     let onClose: () -> Void
 
@@ -70,11 +68,23 @@ struct LongPressMenuView: View {
 
     private var actionCard: some View {
         VStack(spacing: 0) {
-            row(icon: "video.fill",
-                text: info.title.isEmpty ? "查看本页视频地址" : info.title,
-                trailing: nil,
-                action: onOpenList)
+            // 标题行只是「这是哪个视频」的说明，不可点 ——
+            // （以前点它会弹嗅探列表，容易误触；用户明确不希望嗅探面板自己冒出来）
+            HStack(spacing: 12) {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 15))
+                    .frame(width: 22)
+                Text(info.title.isEmpty ? "视频" : info.title)
+                    .font(.system(size: 15))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 6)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 48)
+
             Divider().padding(.leading, 46)
+
             row(icon: "arrow.down.circle.fill",
                 text: "Download",
                 trailing: "square.and.arrow.up",
