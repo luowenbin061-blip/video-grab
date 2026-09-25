@@ -367,131 +367,110 @@
       return null;
     }
 
-    // ─── 长按视频：盖一层透明 <a>，让系统弹「原生链接预览菜单」，原生在里面加「Download」───
-    // （Stay 的交互就是这个：长按 → 视频预览卡 + Download。）
+    // ─── 长按视频：命中测试（原生长按手势来问）+ 一条 JS 兜底 ───
     //
-    // ★ 前置条件（v1.0.57 就是死在这）：宿主 WKWebView 必须开着 allowsLinkPreview。
-    //   那个开关一关，WebKit 连「长按链接」都不识别 —— 盖多少层 <a> 都白搭，
-    //   而且一点反馈都没有。BrowserModel 那边已改成 true。
-    // ★ 时序：WebKit 是「长按被识别的那一刻」（约按下后 0.4~0.5 秒）才做命中测试，
-    //   不是按下瞬间 —— 所以按下 150ms 后再盖层来得及；150ms 也保证快速点击不受影响。
-    // ★ 永远留一条兜底：1.45 秒内系统菜单没来 → 自己弹确认条。宁可 UI 不完美，
-    //   也绝不能出现「长按毫无反应」。
-    var pressedVideo = null;
-    var overlayTimer = null;
-    var fallbackTimer = null;
-    var overlayOn = false;
-    var nativeMenuShown = false;
-    var touchX = 0, touchY = 0;
-
-    function post(o) {
-      try { window.webkit.messageHandlers.vgSniff.postMessage(o); } catch (e) {}
-    }
-
-    function removeOverlay() {
-      var a = document.getElementById('__vg_lp');
-      if (a && a.parentNode) a.parentNode.removeChild(a);
-      overlayOn = false;
-    }
-
-    function makeOverlay(v) {
-      removeOverlay();
-      var src = v.currentSrc || v.src || '';
-      if (!src) return false;
-      // 系统只认 http(s)：blob:/data: 给了也不会弹菜单 → 直接走兜底
-      if (!/^https?:/i.test(src)) return false;
-      var r = v.getBoundingClientRect();
-      if (r.width < 40 || r.height < 40) return false;
-      var a = document.createElement('a');
-      a.href = src;
-      a.setAttribute('data-vg-lp', '1');
-      a.addEventListener('click', function (e) { e.preventDefault(); });
-      a.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:'
-          + r.width + 'px;height:' + r.height + 'px;z-index:2147483647;opacity:0;';
-      a.id = '__vg_lp';
-      document.documentElement.appendChild(a);
-      overlayOn = true;
-      // 告诉原生「这个地址就是视频」—— 免得它靠扩展名猜（很多站是没后缀的 CDN 地址）
-      post({ type: 'lpcover', url: src, on: true });
-      return true;
-    }
-
-    function cancelPending() {
-      if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
-      if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
-    }
-
-    function fire() {
-      try {
-        var u = '';
-        if (pressedVideo) {
-          u = pressedVideo.currentSrc || pressedVideo.src || '';
+    // 为什么不再自己盖透明 <a>：WebKit 在 touchstart 那一瞬间就把长按目标锁死了，
+    // 之后插进去的 <a> 永远不参与本次命中测试；而且系统那个菜单回调只对链接/图片
+    // 触发，<video> 默认不触发。那条路原理上不通（实测两版都是「长按毫无反应」）。
+    // 现在：原生长按手势负责触发，这里只回答「这个点上有没有视频、地址是什么」，
+    // 菜单本身由原生画（见 app/LongPressMenu.swift）。
+    (function () {
+      function findMedia(node) {
+        var el = node;
+        var depth = 0;
+        while (el && el !== document && depth < 12) {
+          if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') return el;
+          el = el.parentNode;
+          depth++;
         }
-        window.webkit.messageHandlers.vgSniff.postMessage({ type: 'longpress', url: u });
-      } catch (e) {}
-    }
+        return null;
+      }
 
-    function trigger() {
-      scanLive();
-      scanPerf();
-      scanPageHtml();
-      report(true);
-      fire();
-    }
+      // 递归命中测试：同源 iframe 能直接进去看；跨域的进不去（同源策略），
+      // 那就老实回报「这里是 iframe」，由原生侧写进诊断日志。
+      function hitIn(doc, x, y, depth) {
+        if (!doc || depth > 4) return null;
+        var el = doc.elementFromPoint(x, y);
+        if (!el) return null;
+        var v = findMedia(el);
+        if (v) {
+          var r = v.getBoundingClientRect();
+          return {
+            hit: 'media',
+            url: v.currentSrc || v.src || '',
+            poster: v.poster || '',
+            title: ((doc.title || document.title) || '').slice(0, 140),
+            w: Math.round(r.width),
+            h: Math.round(r.height)
+          };
+        }
+        if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+          var ir = el.getBoundingClientRect();
+          var inner = null;
+          try {
+            inner = el.contentDocument || (el.contentWindow && el.contentWindow.document);
+          } catch (e) { inner = null; }
+          if (inner) {
+            var sub = hitIn(inner, x - ir.left, y - ir.top, depth + 1);
+            if (sub) return sub;
+          }
+          return {
+            hit: 'iframe', cross: !inner, src: el.src || '',
+            x: ir.left, y: ir.top, w: ir.width, h: ir.height
+          };
+        }
+        return { hit: 'other', tag: el.tagName };
+      }
 
-    // 原生侧的两个回调：菜单要弹了 / 菜单关了
-    window.__vgNativeMenuShown = function () {
-      nativeMenuShown = true;
-      cancelPending();
-    };
-    window.__vgRemoveOverlay = function () { removeOverlay(); };
+      // 原生侧调这个。坐标是页面 CSS 像素。
+      window.__vgHit = function (x, y) {
+        try {
+          return hitIn(document, x, y, 0) || { hit: 'none' };
+        } catch (e) {
+          return { hit: 'error', msg: String((e && e.message) || e) };
+        }
+      };
 
-    document.addEventListener('touchstart', function (e) {
-      var v = videoAncestor(e.target);
-      if (!v) return;
-      var t = e.touches && e.touches[0];
-      if (t) { touchX = t.clientX; touchY = t.clientY; }
-      pressedVideo = v;
-      nativeMenuShown = false;
-      cancelPending();
-      overlayTimer = setTimeout(function () {
-        overlayTimer = null;
-        makeOverlay(v);   // 盖不上（没 src / 太小 / blob）也别管，兜底兜着
+      // 原生菜单弹出来时置 true —— 用它压住下面那条 JS 兜底，免得两个界面一起冒
+      var nativeMenuUp = false;
+      window.__vgNativeMenuUp = function (on) { nativeMenuUp = !!on; };
+
+      // 兜底：原生长按手势万一被页面自己的长按（有些播放器长按＝2 倍速）吃掉，
+      // 这条还在 —— 手指一直按到 900ms 就报给原生，至少弹个嗅探面板。
+      // 绝不出现「长按毫无反应」。抬手/滑动都算没按住 → 撤销。
+      var fallbackTimer = null;
+      function reportLongPress(v) {
+        try {
+          window.webkit.messageHandlers.vgSniff.postMessage({
+            type: 'longpress', url: v.currentSrc || v.src || ''
+          });
+        } catch (err) {}
+      }
+      function cancelFallback() {
+        if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
+      }
+      document.addEventListener('touchstart', function (e) {
+        var v = videoAncestor(e.target);
+        if (!v) return;
+        cancelFallback();
         fallbackTimer = setTimeout(function () {
           fallbackTimer = null;
-          if (!nativeMenuShown) trigger();
-        }, 1300);
-      }, 150);
-    }, true);
-
-    ['touchend', 'touchcancel'].forEach(function (ev) {
-      document.addEventListener(ev, function () {
-        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
-        // 兜底定时器**不清**：手指抬早了也必须保证有反馈（1.45 秒后见分晓）
-        // 盖层不能立刻删：系统菜单正靠这个 <a> 撑着。
-        //   已弹菜单 → 交给原生在菜单关闭时删；还没弹 → 700ms 后自己删。
-        if (nativeMenuShown) return;
-        setTimeout(function () { if (!nativeMenuShown) removeOverlay(); }, 700);
+          if (nativeMenuUp) return;
+          reportLongPress(v);
+        }, 900);
       }, true);
-    });
+      ['touchend', 'touchcancel', 'touchmove'].forEach(function (ev) {
+        document.addEventListener(ev, cancelFallback, true);
+      });
 
-    // 滚动 = 不是长按，全撤（10px 以内的抖动不算滚动，不然手抖一下就把长按废了）
-    document.addEventListener('touchmove', function (e) {
-      if (nativeMenuShown) return;      // 菜单已弹，别把它的 <a> 抽走
-      var t = e.touches && e.touches[0];
-      if (t) {
-        var dx = t.clientX - touchX, dy = t.clientY - touchY;
-        if (dx * dx + dy * dy < 100) return;
-      }
-      cancelPending();
-      removeOverlay();
-    }, true);
-
-    // 桌面/鼠标右键兜底（桌面上没有预览菜单，直接走 fire → 界面弹下载确认）
-    document.addEventListener('contextmenu', function (e) {
-      var v = videoAncestor(e.target);
-      if (v) { pressedVideo = v; e.preventDefault(); trigger(); }
-    }, true);
+      // 桌面/鼠标右键兜底（桌面上没有长按手势，右键就当成一次长按）
+      document.addEventListener('contextmenu', function (e) {
+        var v = videoAncestor(e.target);
+        if (!v) return;
+        e.preventDefault();
+        reportLongPress(v);
+      }, true);
+    })();
   })();
 
   // ---------- 11. 定时 + DOM 变化时自动扫（都只做轻活；重活见 scanPageHtml） ----------

@@ -214,7 +214,6 @@ struct ContentView: View {
     @State private var showShare = false
     @State private var showPiPAsk = false
     @State private var showMenu = false        // 底部功能卡片是否展开
-    @State private var showDownloadAsk = false // 长按视频后弹「下载这个视频？」
     // 「说明」现在挂在设置页里，外面不再单独弹 —— 所以 showHelp 这个状态去掉了
     @State private var showBookmarks = false
     @State private var showSettings = false
@@ -283,6 +282,22 @@ struct ContentView: View {
             bottomBar
         }
         .overlay(alignment: .top) { toastView }
+        // 长按视频的菜单（自绘，照截图：预览卡 + 标题行 + Download 行）
+        .overlay {
+            if let info = model.lpMenu {
+                LongPressMenuView(info: info,
+                                  onDownload: { model.downloadFromLongPressMenu() },
+                                  onOpenList: {
+                                      model.closeLongPressMenu()
+                                      showPanel = true
+                                  },
+                                  onClose: { model.closeLongPressMenu() })
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: model.lpMenu)
+        // 长按诊断（设置里打开才出现）：显示这一步卡在哪，12 秒自己消失
+        .overlay(alignment: .bottom) { lpDebugBanner }
         // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
         .overlay(alignment: .bottom) {
             if showMenu {
@@ -298,24 +313,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: showMenu)
-        .confirmationDialog("下载这个视频？", isPresented: $showDownloadAsk,
-                            titleVisibility: .visible) {
-            Button("开始下载") {
-                let url = model.longPressURL
-                // 请求上下文优先取嗅探结果里同一条的 —— 防盗链站下载分片
-                // 要带 Referer/Cookie，没有就下不动
-                let hit = model.items.first { $0.url == url }
-                downloads.add(title: model.pageTitle.isEmpty ? "长按下载" : model.pageTitle,
-                              url: url,
-                              referrer: hit?.referrer ?? "",
-                              ua: hit?.ua ?? "",
-                              cookie: hit?.cookie ?? "")
-                model.showToast("已加入下载")
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text(model.longPressURL)
-        }
+        // （旧版这里是「下载这个视频？」的确认条 —— 已由长按菜单取代，见 LongPressMenuView）
         .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
             Button("取消", role: .cancel) {}
             Button("好的") { downloads.pip.start() }
@@ -345,13 +343,10 @@ struct ContentView: View {
             TabsView(model: model, isPresented: $showTabs)
         }
         .onChange(of: model.longPressFired) { _ in
-            // 长按视频元素：拿得到地址 → 弹「下载这个视频」；
-            // 拿不到（按到的不是视频/地址是空的）→ 退回嗅探面板的旧行为
-            if model.longPressURL.isEmpty {
-                showPanel = true
-            } else {
-                showDownloadAsk = true
-            }
+            // 兜底通道：网页层自己按住 900ms 还没等到原生菜单才走这里（比如页面
+            // 自己的长按手势把我们的手势吃了）。弹嗅探面板 —— 有反馈总比没反应强。
+            // 正常路径是原生长按手势 → 自绘菜单（LongPressMenuView）。
+            showPanel = true
         }
         // 历史记录不再挂在「监听 address 变化」上 —— 有个新问题：
         // 切换标签也会让 address 变，那样每切一次窗口就虚增一次「访问次数」。
@@ -728,6 +723,26 @@ struct ContentView: View {
     // MARK: - Toast
 
     @ViewBuilder
+    /// 长按诊断条（设置里那个开关打开才出现）。诊断开着时，长按一次就能看出
+    /// 到底卡在哪一步：坐标换算 / 网页层没回话 / 命中的是什么 / 视频地址。
+    @ViewBuilder private var lpDebugBanner: some View {
+        if let t = model.lpDebug {
+            Text(t)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.black.opacity(0.78),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
+    }
+
     private var toastView: some View {
         if let t = model.toast {
             Text(t)

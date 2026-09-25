@@ -117,16 +117,16 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 长按到的视频地址（JS 在长按事件里带上）。空 = 长按的地方没有视频元素，
     /// 界面就退回「弹嗅探面板」的旧行为
     @Published private(set) var longPressURL = ""
-    /// JS 盖视频用的那个临时 <a> 的地址（lpcover 消息送来）。原生靠它认「这次长按
-    /// 落在视频上」—— 比靠扩展名猜准得多（很多站是没后缀的 CDN 地址）。
-    private var coverMediaURL = ""
-    private var coverMediaAt = Date.distantPast
+    // MARK: - 长按视频 → 弹菜单（批次 D）
 
-    /// 地址对得上、且是刚盖的（30 秒内）→ 认定这是我们自己盖的视频链接
-    func isCoverMedia(_ s: String) -> Bool {
-        !s.isEmpty && s == coverMediaURL
-            && Date().timeIntervalSince(coverMediaAt) < 30
-    }
+    /// 非空 = 长按菜单正在显示
+    @Published var lpMenu: LongPressMenuInfo?
+    /// 长按诊断：设置里那个开关打开才写。真机测一次，卡在哪一步一眼能看出来。
+    @Published var lpDebug: String?
+    private var lpDebugStamp = UUID()
+
+    /// 设置里的「长按诊断」开关（默认关，不给平时用加噪音）
+    private var lpDebugOn: Bool { UserDefaults.standard.bool(forKey: "lpDebug") }
 
     /// 系统长按菜单里的「Download」被点 —— 界面接线成真正的下载动作
     var onDownloadRequest: ((String) -> Void)?
@@ -217,12 +217,21 @@ final class BrowserModel: NSObject, ObservableObject {
         wv.navigationDelegate = self
         wv.uiDelegate = self
         wv.allowsBackForwardNavigationGestures = true
-        // ★ 长按下载（批次 D）的死结就在这一行：allowsLinkPreview = false 时
-        //   WebKit 连「长按链接」都不识别 —— JS 那边盖的透明 <a> 永远等不到菜单，
-        //   而且长按一点反馈都没有（v1.0.57 实测：长按完全无反应）。
-        //   要系统那种「预览卡 + Download」菜单，这个开关必须开。
-        //   普通链接不受影响：下面的 contextMenu 回调对非媒体地址返回 nil。
+        // 长按菜单（批次 D）走的是「自己挂长按手势 + 自己画菜单」（见 LongPressMenu.swift），
+        // 不靠系统那套 —— Safari 的长按菜单是 WebKit 私有的（只给 Safari 和它的扩展），
+        // 而且 <video> 默认根本不触发 WKUIDelegate 的菜单回调。
+        // 这个开关跟那条路无关，保持打开即可（踩过：它关掉时 WebKit 连「长按链接」
+        // 都不识别，为此白调过两轮 —— 别再关）。
         wv.allowsLinkPreview = true
+        // 长按视频 → 弹自己的菜单。
+        // cancelsTouchesInView = false 是关键：绝不能把触摸从网页手里夺走，
+        // 否则点击、滚动、页面自己的长按全坏。
+        let longPress = UILongPressGestureRecognizer(target: self,
+                                                     action: #selector(onLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        longPress.cancelsTouchesInView = false
+        longPress.delegate = self
+        wv.addGestureRecognizer(longPress)
         // 有些站会检测「是不是 App 内置浏览器」，用桌面 UA 降低被拒概率
         wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
@@ -603,18 +612,9 @@ extension BrowserModel: WKScriptMessageHandler {
         Task { @MainActor in
             guard let wv = src, let t = self.tab(for: wv) else { return }
             let isCurrent = (t === self.currentTab)
-            if let kind = body["type"] as? String, kind == "lpcover" {
-                // JS 盖层成功：「这个地址是视频」记下来，等原生菜单回调来对
-                if (body["on"] as? Bool) == true {
-                    self.coverMediaURL = (body["url"] as? String) ?? ""
-                    self.coverMediaAt = Date()
-                } else {
-                    self.coverMediaURL = ""
-                }
-                return
-            }
             if let kind = body["type"] as? String, kind == "longpress" {
-                // 长按只对「你正在看的那个页面」有效
+                // 兜底通道（网页层按住 900ms 没等到原生菜单才走这里）：
+                // 只对「你正在看的那个页面」有效
                 if isCurrent {
                     self.longPressURL = (body["url"] as? String) ?? ""
                     self.longPressFired.toggle()
@@ -641,14 +641,11 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         let link = elementInfo.linkURL
         Task { @MainActor in
             let s = link?.absoluteString ?? ""
-            // 两种认定：① JS 刚盖的那个 <a>（最准）② 地址本身像媒体文件
-            let ours = self.isCoverMedia(s)
-            guard let link, !s.isEmpty, ours || Self.looksLikeMedia(s) else {
+            // 只接管「媒体文件链接」；普通链接一律交回系统（返回 nil = 不弹菜单）
+            guard let link, !s.isEmpty, Self.looksLikeMedia(s) else {
                 completionHandler(nil)
                 return
             }
-            // 告诉 JS：系统菜单要弹了 → 撤掉它那条兜底，免得两个 UI 一起冒出来
-            webView.evaluateJavaScript("window.__vgNativeMenuShown && window.__vgNativeMenuShown();")
             let cfg = UIContextMenuConfiguration(identifier: nil, previewProvider: nil,
                                                  actionProvider: { _ in
                 UIMenu(children: [
@@ -659,15 +656,6 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 ])
             })
             completionHandler(cfg)
-        }
-    }
-
-    /// 菜单关了 → 撤掉 JS 那层临时 <a>（它压着视频，留着会吃掉视频的点击）
-    nonisolated func webView(_ webView: WKWebView,
-                             contextMenuDidEndForElement elementInfo: WKContextMenuElementInfo) {
-        Task { @MainActor in
-            self.coverMediaURL = ""
-            webView.evaluateJavaScript("window.__vgRemoveOverlay && window.__vgRemoveOverlay();")
         }
     }
 
@@ -738,5 +726,120 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             Task { @MainActor in wv.load(URLRequest(url: url)) }
         }
         return nil
+    }
+}
+
+// MARK: - 长按视频 → 弹菜单
+
+extension BrowserModel {
+
+    @objc func onLongPress(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began, let wv = g.view as? WKWebView else { return }
+        probeLongPress(wv: wv, at: g.location(in: wv))
+    }
+
+    /// 长按落点 → 问网页层「这点上有视频吗」→ 有就弹菜单。
+    /// 全程回调式（不用 async/await）：这个类在 @MainActor 上，回调里再跳回主线程最稳。
+    private func probeLongPress(wv: WKWebView, at point: CGPoint) {
+        var lines: [String] = []
+        // 坐标换算：网页视图的点 → 页面 CSS 像素（页面被「大小」缩放时要除 zoomScale）
+        let zoom = max(wv.scrollView.zoomScale, 0.01)
+        let cx = point.x / zoom
+        let cy = point.y / zoom
+        lines.append(String(format: "落点 (%.0f, %.0f) → css (%.0f, %.0f)  zoom %.2f",
+                            point.x, point.y, cx, cy, zoom))
+        let js = "window.__vgHit && window.__vgHit(\(cx), \(cy))"
+        wv.evaluateJavaScript(js) { [weak self] raw, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.afterHit(wv: wv, point: point, raw: raw, lines: lines)
+            }
+        }
+    }
+
+    private func afterHit(wv: WKWebView, point: CGPoint, raw: Any?, lines: [String]) {
+        var out = lines
+        guard let d = raw as? [String: Any] else {
+            out.append("网页层没回话（__vgHit 没定义？）")
+            finishLPDebug(out)
+            return
+        }
+        let kind = (d["hit"] as? String) ?? "none"
+        let url = (d["url"] as? String) ?? ""
+        var extra = ""
+        switch kind {
+        case "iframe":
+            let w = (d["w"] as? NSNumber)?.intValue ?? 0
+            let h = (d["h"] as? NSNumber)?.intValue ?? 0
+            extra = "跨域=\((d["cross"] as? Bool) == true)  框 \(w)×\(h)"
+        case "other":
+            extra = "元素=\((d["tag"] as? String) ?? "?")"
+        case "error":
+            extra = (d["msg"] as? String) ?? ""
+        default:
+            break
+        }
+        out.append("命中: " + kind
+                   + (url.isEmpty ? "" : "  " + BrowserModel.briefURL(url))
+                   + (extra.isEmpty ? "" : "  " + extra))
+
+        guard kind == "media", !url.isEmpty else {
+            out.append(kind == "iframe"
+                       ? "视频在 iframe 里（跨域进不去）→ 不弹菜单"
+                       : "这点上不是视频 → 不弹菜单，页面照旧")
+            finishLPDebug(out)
+            return
+        }
+
+        let host = wv.url?.host ?? ""
+        let title = (d["title"] as? String) ?? ""
+        out.append("弹菜单  域名=\(host)  标题=\(title.prefix(24))")
+        finishLPDebug(out)
+
+        lpMenu = LongPressMenuInfo(point: point, url: url,
+                                   title: title.isEmpty ? pageTitle : title,
+                                   host: host)
+        // 告诉网页层：原生菜单接管了，兜底那条别再弹
+        wv.evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(true);")
+    }
+
+    /// 诊断日志：只在开关打开时显示，12 秒后自己消失（免得一直糊在屏幕上）
+    private func finishLPDebug(_ lines: [String]) {
+        guard lpDebugOn else { lpDebug = nil; return }
+        let stamp = UUID()
+        lpDebugStamp = stamp
+        lpDebug = lines.joined(separator: "\n")
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            if self.lpDebugStamp == stamp { self.lpDebug = nil }
+        }
+    }
+
+    /// 地址太长，日志里只留域名 + 尾巴
+    static func briefURL(_ s: String) -> String {
+        guard let u = URL(string: s), let h = u.host else { return String(s.prefix(48)) }
+        return h + (u.path.isEmpty ? "" : String(u.path.suffix(24)))
+    }
+
+    /// 关掉菜单（并把网页层那条兜底放开）
+    func closeLongPressMenu() {
+        guard lpMenu != nil else { return }
+        lpMenu = nil
+        currentWebView().evaluateJavaScript("window.__vgNativeMenuUp && window.__vgNativeMenuUp(false);")
+    }
+
+    /// 菜单里点了 Download
+    func downloadFromLongPressMenu() {
+        guard let m = lpMenu else { return }
+        closeLongPressMenu()
+        onDownloadRequest?(m.url)
+    }
+}
+
+extension BrowserModel: UIGestureRecognizerDelegate {
+    /// 和网页自己的手势共存：不抢、也不让页面失灵
+    nonisolated func gestureRecognizer(_ g: UIGestureRecognizer,
+                                       shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 }

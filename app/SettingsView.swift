@@ -13,6 +13,8 @@ struct SettingsView: View {
     /// 播放小窗（App 里播放视频时切出去继续播）。
     /// 跟「下载保活」是两件事，所以是两个开关。
     @AppStorage("playerPiPEnabled") private var playerPiP = true
+    /// 长按诊断：打开后每次长按在屏幕底部显示一行过程记录，用来排查「长按没反应」
+    @AppStorage("lpDebug") private var lpDebug = false
 
     var body: some View {
         NavigationView {
@@ -50,6 +52,14 @@ struct SettingsView: View {
                     labeled("浏览历史", "\(store.history.count) 条")
                     Button("清空浏览历史", role: .destructive) { confirmClearHistory = true }
                     Button("清除网页缓存") { clearWebCache() }
+                }
+
+                Section {
+                    Toggle("长按诊断（排查长按没反应）", isOn: $lpDebug)
+                } header: {
+                    Text("长按下载")
+                } footer: {
+                    Text("长按网页里的视频 → 弹出菜单（预览卡 + Download），点 Download 直接进下载列表。\n诊断：打开后每次长按会在屏幕底部显示一行过程记录（12 秒后自动消失）——「长按没反应」时打开它，把内容告诉我。平时关掉。")
                 }
 
                 Section {
