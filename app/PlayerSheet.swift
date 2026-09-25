@@ -23,11 +23,23 @@ struct PlayerSheet: View {
     /// 视频名 —— **故意不显示**（用户要求：播放器上不要出现视频名）。
     /// 参数先留着：错误页/以后要用时不至于再改一遍调用方。
     let title: String
-    /// 横屏按钮的位置：距右边 / 距底部（pt）。
-    /// 初值是按截图量的 —— 目标是跟系统那排「隔空播放 / …」同一行、并在它左边留出间距。
-    /// 真机上看着还不对，改这两个数就行。
-    private static let landscapeTrailing: CGFloat = 96
-    private static let landscapeBottom: CGFloat = 74
+    // ── 横屏按钮：尺寸与位置（全部是从用户截图上量像素换算出来的，不是估的）──
+    /// 图标字号。系统那排（隔空播放 / …）实测约 19~20pt；我们那个箭头是"长斜线"，
+    /// 同样的字号看上去更胖，所以再收一档 —— 视觉上才等大。嫌小/大就改这一个数。
+    private static let landscapeIconSize: CGFloat = 18
+    /// 位置 = 图标【中心】到「安全区右边 / 下边」的距离（pt）。横竖屏各一组：
+    /// 竖屏：中心距右 113、距下 53 ←→ 与系统的「隔空播放」同一行、在它左边
+    /// 横屏：中心距右 102、距下 68
+    private static let lsTrailingTall: CGFloat = 113
+    private static let lsBottomTall: CGFloat = 53
+    private static let lsTrailingWide: CGFloat = 102
+    private static let lsBottomWide: CGFloat = 68
+
+    /// 我们自己的按钮多久后淡出（秒）。
+    /// 说明：AVKit 控制条的显隐时长**没有公开接口**（也查不到官方数值），
+    /// 所以这里是"跟随触摸 + 自己计时"的近似值 —— 任何触摸都让两者一起出现，
+    /// 静止这么久之后我们淡出。看着比系统的早/晚，改这一个数就能靠拢。
+    private static let controlsHideAfter: Double = 4
 
     /// 下载保活那个小窗（可以不传）。iOS 同时只允许一个小窗 ——
     /// 播放要占小窗时得让它先让位，否则两个抢同一个位子，结果不确定。
@@ -38,6 +50,9 @@ struct PlayerSheet: View {
     @StateObject private var box: PlayerBox
     /// 这次播放是否让下载保活窗让了位 —— 结束时要还回去
     @State private var pipHandedOver = false
+    /// 我们这两个控件要不要显示 —— 跟系统控制条一样：有触摸就出现，静一会儿就淡出
+    @State private var controlsVisible = true
+    @State private var hideTask: Task<Void, Never>?
 
     init(url: URL, title: String = "", pip: PiPProgress? = nil) {
         self.url = url
@@ -46,12 +61,24 @@ struct PlayerSheet: View {
         _box = StateObject(wrappedValue: PlayerBox(url: url))
     }
 
+    /// 有触摸：立刻显示 + 重置淡出计时
+    private func pokeControls() {
+        withAnimation(.easeOut(duration: 0.2)) { controlsVisible = true }
+        hideTask?.cancel()
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.controlsHideAfter * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.35)) { controlsVisible = false }
+        }
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
             PlayerVC(player: box.player, allowsPiP: pipEnabled,
-                     onSystemExit: { dismiss() })
+                     onSystemExit: { dismiss() },
+                     onTouch: { pokeControls() })
                 .ignoresSafeArea()
 
             if box.loading && box.error == nil {
@@ -108,28 +135,36 @@ struct PlayerSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.leading, 4)
                 .padding(.top, 2)
+                // 跟系统那个 ✕ 一起显隐（系统那个也是随控制条消失的）——
+                // 藏着的时候不能吃触摸，否则点画面会莫名其妙把播放器关掉
+                .opacity(controlsVisible ? 1 : 0)
+                .allowsHitTesting(controlsVisible)
 
-            // ── 横屏 / 竖屏：摆在系统那排「隔空播放」按钮的左边 ──
-            // 尺寸/风格跟系统图标对齐（纯白、无底座、22pt），别再做成毛玻璃圆钮 ——
-            // 系统那排就是纯白图标，加底座一眼就不一路（用户实测反馈）。
-            // 位置就是下面两个常量，装上看不对改这两个数即可。
-            Button {
-                box.toggleOrientation()
-            } label: {
-                Image(systemName: box.forcedLandscape
-                      ? "arrow.down.right.and.arrow.up.left"
-                      : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.white)
-                    // 极淡的阴影：亮画面上也看得见；黑底上完全看不出来，不影响"无底座"的观感
-                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
-                    .frame(width: 48, height: 48)      // 触控区比图标大，好按
-                    .contentShape(Rectangle())
+            // ── 横屏 / 竖屏：紧挨系统那排「隔空播放」的左边、同一行 ──
+            // 为什么用 GeometryReader 自己算位置：系统的控件是按"安全区"摆的，
+            // 横竖屏的安全区不一样（竖屏左右为 0、横屏刘海那侧约 46），
+            // 用固定 padding 会让横屏偏掉一截。这里按实测的两组数分别定位。
+            GeometryReader { geo in
+                let wide = geo.size.width > geo.size.height
+                Button {
+                    box.toggleOrientation()
+                } label: {
+                    Image(systemName: box.forcedLandscape
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: Self.landscapeIconSize))
+                        .foregroundStyle(.white)
+                        // 极淡阴影：亮画面上也看得见；黑底上完全看不出来，不影响"无底座"观感
+                        .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                        .frame(width: 48, height: 48)     // 触控区比图标大，好按
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .position(x: geo.size.width - (wide ? Self.lsTrailingWide : Self.lsTrailingTall),
+                          y: geo.size.height - (wide ? Self.lsBottomWide : Self.lsBottomTall))
             }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            .padding(.trailing, Self.landscapeTrailing)
-            .padding(.bottom, Self.landscapeBottom)
+            .opacity(controlsVisible ? 1 : 0)
+            .allowsHitTesting(controlsVisible)
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
@@ -138,6 +173,7 @@ struct PlayerSheet: View {
             // 表现为「同一条视频导出去有声音、在 App 里没声音」。
             AppAudio.acquire()
             box.start()
+            pokeControls()          // 一进来先亮一会儿，再跟系统一起淡出
             // 播放优先：iOS 同时只允许一个小窗，下载保活窗先让位。
             // 让位后下载照旧在跑（App 在前台不会被挂起），只是不显示那个小窗。
             if let pip, pip.isRunning {
@@ -326,9 +362,17 @@ private struct PlayerVC: UIViewControllerRepresentable {
     /// 系统的 ✕ 若是「退出全屏」→ 顺手把播放器也关掉（第二道保险；
     /// 第一道是上面那块看不见的热区，它才是真正兜住"一定关得掉"的那道）
     let onSystemExit: () -> Void
+    /// 播放器上有任何触摸 → 通知界面「把控件亮起来、并重置淡出计时」
+    let onTouch: () -> Void
 
     final class Coord: NSObject, AVPlayerViewControllerDelegate {
         var onSystemExit: () -> Void = {}
+        var onTouch: () -> Void = {}
+
+        /// 挂在播放器视图上，只为"知道有人碰了屏幕"。两件事必须保证：
+        /// ① cancelsTouchesInView = false —— 绝不能把触摸从系统控件手里吃掉
+        /// ② minimumPressDuration 极小 —— 手指一碰就报，不用等按满
+        @objc func touched() { onTouch() }
         /// 退出全屏时不问原因，直接关播放器 —— 用户点这个 ✕ 就是想退出
         func playerViewController(
             _ vc: AVPlayerViewController,
@@ -343,6 +387,14 @@ private struct PlayerVC: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
         vc.delegate = context.coordinator
+        // 只读触摸、不吃触摸：系统那套控件（暂停/进度/画中画）一切照旧
+        let touch = UILongPressGestureRecognizer(target: context.coordinator,
+                                                 action: #selector(Coord.touched))
+        touch.minimumPressDuration = 0.01
+        touch.cancelsTouchesInView = false
+        touch.delaysTouchesBegan = false
+        touch.delaysTouchesEnded = false
+        vc.view.addGestureRecognizer(touch)
         vc.player = player
         vc.showsPlaybackControls = true
         vc.videoGravity = .resizeAspect
@@ -357,6 +409,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
 
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         context.coordinator.onSystemExit = onSystemExit
+        context.coordinator.onTouch = onTouch
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
         if vc.delegate !== context.coordinator { vc.delegate = context.coordinator }
