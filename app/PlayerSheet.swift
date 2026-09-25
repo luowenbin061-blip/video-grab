@@ -559,7 +559,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
         var onTap: () -> Void = {}
         var onDragBegan: () -> Void = {}
         var onDragEnded: () -> Void = {}
-        var onSystemControls: (Bool) -> Void = {}
+        var onSystemControls: (Bool) -> Void = { _ in }
 
         /// 只在"刚越过拖动阈值"那一下报一次
         private var dragReported = false
