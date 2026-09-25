@@ -20,6 +20,8 @@ import UIKit
 ///      显示出来，不再是一块白屏。
 struct PlayerSheet: View {
     let url: URL
+    /// 视频名 —— **故意不显示**（用户要求：播放器上不要出现视频名）。
+    /// 参数先留着：错误页/以后要用时不至于再改一遍调用方。
     let title: String
     /// 下载保活那个小窗（可以不传）。iOS 同时只允许一个小窗 ——
     /// 播放要占小窗时得让它先让位，否则两个抢同一个位子，结果不确定。
@@ -38,8 +40,24 @@ struct PlayerSheet: View {
         _box = StateObject(wrappedValue: PlayerBox(url: url))
     }
 
+    /// 播放器上的小圆按钮：白色图标 + 毛玻璃底 + 一圈细描边。
+    /// 不用文字按钮 —— 系统那套控制条全是图标，混两个蓝字进去就显脏（用户反馈）。
+    /// 38pt 是够手指点的尺寸（苹果建议 44，播放器上让一点、别有压迫感）。
+    private func iconButton(_ name: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: name)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)          // 关键：不然图标会被染成系统蓝
+        .contentShape(Circle())
+    }
+
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             Color.black.ignoresSafeArea()
 
             PlayerVC(player: box.player, allowsPiP: pipEnabled)
@@ -87,23 +105,23 @@ struct PlayerSheet: View {
                 .background(.ultraThinMaterial)
             }
 
-            HStack(spacing: 8) {
-                if !title.isEmpty {
-                    Text(title)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .lineLimit(1)
-                }
-                // 横屏按钮 —— 为什么不放"播放前选"：因为播放器这层是我们自己铺的，
-                // 按钮能直接放在画面上（若交给系统全屏那层就加不进去了）。
-                Button(box.forcedLandscape ? "竖屏" : "横屏") { box.toggleOrientation() }
-                    .font(.system(size: 13))
-                Button("关闭") { dismiss() }
-                    .font(.system(size: 13))
+            // 关闭：左上角（跟"左上角是退出"的直觉一致）
+            iconButton("xmark") { dismiss() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 16)
+                .padding(.top, 10)
+
+            // 横屏 / 竖屏：右下角（用户指定）。图标是"展开/收回"那一对，一眼看得懂。
+            // 注意：系统的播放控制条里，右下角也有它自己的全屏按钮（只在控制条
+            // 出现时才显示），两个会叠在一起 —— 用户已知，先按他说的放这儿。
+            iconButton(box.forcedLandscape
+                       ? "arrow.down.right.and.arrow.up.left"
+                       : "arrow.up.left.and.arrow.down.right") {
+                box.toggleOrientation()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(.thinMaterial, in: Capsule())
-            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .padding(.trailing, 16)
+            .padding(.bottom, 10)
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
