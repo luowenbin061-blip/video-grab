@@ -29,14 +29,16 @@ struct HLSDownloader {
     enum Fail: LocalizedError {
         case badStatus(Int, String)
         case noVariant
-        case noSegment
+        case noSegment(String)
         case decryptFailed
 
         var errorDescription: String? {
             switch self {
             case .badStatus(let c, let u): return "HTTP \(c)：\(u)"
             case .noVariant: return "这是 master 列表，但里面没有可用的清晰度"
-            case .noSegment: return "m3u8 里没有解析出任何分片"
+            case .noSegment(let head):
+                return "m3u8 里没有解析出任何分片"
+                    + (head.isEmpty ? "" : " —— 取回内容开头：\(head)")
             case .decryptFailed: return "分片解密失败（AES-128）"
             }
         }
@@ -75,7 +77,10 @@ struct HLSDownloader {
                                                 withIntermediateDirectories: true)
 
         onProgress(Progress(stage: .prepare, done: 0, total: 0, bytes: 0, message: "读取 m3u8…"))
-        let first = try await loadPlaylist(url: sourceURL)
+        let firstLoad = try await loadPlaylist(url: sourceURL)
+        let first = firstLoad.playlist
+        // 取回内容的开头（诊断用）
+        var head = firstLoad.head
 
         // ★ 关键：master playlist 不含分片，必须先挑一个清晰度再取子列表。
         // 这里用 let 而不是 var —— 下面的并发闭包要捕获它，
@@ -86,12 +91,14 @@ struct HLSDownloader {
             let label = v.resolution ?? (v.bandwidth.map { "\($0 / 1000)kbps" } ?? "默认清晰度")
             onProgress(Progress(stage: .prepare, done: 0, total: 0, bytes: 0,
                                 message: "选中清晰度 \(label)，读取分片列表…"))
-            playlist = try await loadPlaylist(url: v.url)
+            let vLoad = try await loadPlaylist(url: v.url)
+            playlist = vLoad.playlist
+            head = vLoad.head
         } else {
             playlist = first
         }
 
-        guard !playlist.segmentURLs.isEmpty else { throw Fail.noSegment }
+        guard !playlist.segmentURLs.isEmpty else { throw Fail.noSegment(head) }
         let segs = playlist.segmentURLs
         let total = segs.count
 
@@ -186,8 +193,14 @@ struct HLSDownloader {
         return r
     }
 
-    /// 取 m3u8 文本。返回 (文本, 最终地址) —— 最终地址要作为相对路径的基准。
-    private func loadPlaylist(url: URL) async throws -> M3U8Playlist {
+    /// 取回来的一份清单 + 它的开头（开头留着做诊断）
+    private struct Loaded {
+        let playlist: M3U8Playlist
+        let head: String
+    }
+
+    /// 取 m3u8 文本。最终地址要作为相对路径的基准。
+    private func loadPlaylist(url: URL) async throws -> Loaded {
         let (data, resp) = try await URLSession.shared.data(for: request(for: url))
         if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
             throw Fail.badStatus(h.statusCode, url.absoluteString)
@@ -195,7 +208,13 @@ struct HLSDownloader {
         let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1) ?? ""
         let finalURL = resp.url ?? url
-        return M3U8Playlist.parse(text: text, baseURL: finalURL)
+        // 记下开头：万一一个分片都没解析出来，把这句带进错误里，
+        // 立刻能看出取回的是清单、还是一个跳转页/HTML 错误页
+        let head = String(text.prefix(160))
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return Loaded(playlist: M3U8Playlist.parse(text: text, baseURL: finalURL), head: head)
     }
 
     private func partURL(_ i: Int) -> URL {

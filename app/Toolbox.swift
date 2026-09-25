@@ -18,6 +18,8 @@ struct ToolboxView: View {
     /// 导入的视频要进下载列表 —— 这是工具箱里第一个不依赖网页的工具
     let center: DownloadCenter
     @Binding var isPresented: Bool
+    /// 打开「嗅探结果」面板 —— 面板在主页那层，所以由那边传进来
+    let onOpenSniff: () -> Void
 
     @State private var note: String?
     @State private var showImportSource = false
@@ -39,6 +41,19 @@ struct ToolboxView: View {
                     Text("当前网页")
                 } footer: {
                     Text("翻译暂缓 —— 之前那条「跳到百度翻译」是跳出去翻，不是原地翻译，不算数。要做就做「原地把页面文字翻成中文、还能一键切回原文」那种，等以后再说。")
+                }
+
+                Section {
+                    Button { onOpenSniff() } label: {
+                        item("antenna.radiowaves.left.and.right", "嗅探结果",
+                             model.items.isEmpty
+                             ? "这个页面暂时没嗅到地址（一直点着刷新时它会自己补上）"
+                             : "这个页面嗅探到 \(model.items.count) 条地址，点开看/下载")
+                    }
+                } header: {
+                    Text("嗅探")
+                } footer: {
+                    Text("嗅探一直在后台跑（看页面请求、资源加载记录、页面变量、页面里的播放器元素），跟你看不看这个列表无关。")
                 }
 
                 Section {

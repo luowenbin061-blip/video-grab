@@ -17,6 +17,8 @@ struct SettingsView: View {
     @AppStorage("lpLongPressDownload") private var lpDownload = true
     /// 长按诊断（默认关）：只在排查「长按没反应」时打开，会在屏幕顶部显示一行过程记录
     @AppStorage("lpDebug") private var lpDebug = false
+    /// 嗅探按钮要不要一直待在屏幕上（默认关：不占地方）
+    @AppStorage("sniffButtonResident") private var sniffResident = false
 
     var body: some View {
         NavigationView {
@@ -54,6 +56,14 @@ struct SettingsView: View {
                     labeled("浏览历史", "\(store.history.count) 条")
                     Button("清空浏览历史", role: .destructive) { confirmClearHistory = true }
                     Button("清除网页缓存") { clearWebCache() }
+                }
+
+                Section {
+                    Toggle("嗅探按钮常驻屏幕", isOn: $sniffResident)
+                } header: {
+                    Text("嗅探")
+                } footer: {
+                    Text("关掉（默认）那个按钮就不占屏幕了 —— 嗅探结果改从「功能」卡片或「工具箱」里打开。\n**后台嗅探一直在跑，跟这个按钮没关系**：显示这个开关只影响页面上要不要留那个圆按钮。")
                 }
 
                 Section {

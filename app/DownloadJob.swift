@@ -300,6 +300,119 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     var baseName: String { "\(Self.safeFileName(title))_\(Self.stamp(createdAt))" }
 
+    // MARK: - 小工具
+
+    static func mb(_ bytes: Int64) -> String {
+        String(format: "%.1f", Double(bytes) / 1024.0 / 1024.0)
+    }
+
+    /// 造一个能直接显示给人看的错误
+    static func fail(_ msg: String) -> NSError {
+        NSError(domain: "VideoGrab", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: msg])
+    }
+
+    /// 直链下载落盘用什么扩展名：先看地址后缀，再看 Content-Type
+    static func preferExtension(url: URL, contentType: String) -> String {
+        let ext = url.pathExtension.lowercased()
+        if !ext.isEmpty, ext.count <= 5 { return ext }
+        switch contentType {
+        case "video/mp4": return "mp4"
+        case "video/quicktime": return "mov"
+        case "video/webm": return "webm"
+        case "video/x-matroska": return "mkv"
+        case "video/mp2t": return "ts"
+        case "audio/mpeg": return "mp3"
+        case "audio/mp4": return "m4a"
+        default: return "mp4"
+        }
+    }
+
+    /// 直链单文件（mp4 这类）：拉下来 → 能直接播就用它；不能播就试着转成 MP4。
+    private func runDirectFile(src: URL, probe: SourceProbe, tempDir: URL,
+                               ua: String, referer: String?, cookie: String?) async throws {
+        let ext = Self.preferExtension(url: src, contentType: probe.contentType)
+        let outURL = JobStore.file(named: baseName + "." + ext)
+
+        var fopt = FileDownloader.Options(
+            userAgent: ua,
+            referer: referer,
+            cookie: cookie,
+            outputURL: outURL,
+            partURL: tempDir.appendingPathComponent("direct.part"),
+            expectedLength: probe.contentLength,
+            acceptsRange: probe.acceptsRange)
+        fopt.timeout = 30
+
+        var fd = FileDownloader(options: fopt)
+        fd.onProgress = { [weak self] got, tot in
+            Task { @MainActor in
+                guard let self else { return }
+                self.stage = .download
+                self.bytesDone = got
+                self.done = Int(got / 262144)
+                self.total = tot > 0 ? Int(tot / 262144) : 0
+                var msg = "下载文件 \(Self.mb(got))MB"
+                if tot > 0 { msg += " / \(Self.mb(tot))MB" }
+                self.phase = msg
+                self.markSpeedSample()
+            }
+        }
+
+        let got = try await fd.run(url: src)
+        if Task.isCancelled { paused = true; onUpdate?(); return }
+
+        fileSize = got
+        notes.append("✓ 直链下载完成 \(Self.mb(got))MB（.\(ext)）")
+
+        if ["mp4", "m4v", "mov"].contains(ext) {
+            mp4Ready = true
+            outputName = outURL.lastPathComponent
+            phase = "完成"
+            finished = true
+            onUpdate?()
+            await makeThumbnail(from: outURL)
+            return
+        }
+
+        // 不是 iOS 能直接播的格式（webm/mkv…）→ 试着转成 MP4
+        phase = "正在转成 MP4…"
+        let mp4URL = JobStore.file(named: baseName + ".mp4")
+        let (convOK, log) = await Exporter.toMP4(
+            ts: outURL, hls: nil, remote: src, mp4: mp4URL,
+            onProgress: { [weak self] p, msg in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.stage = .convert
+                    self.convertProgress = p
+                    self.phase = msg.isEmpty ? "正在转成 MP4…" : msg
+                }
+            })
+        if Task.isCancelled { paused = true; onUpdate?(); return }
+        notes.append(contentsOf: log.map(\.line))
+
+        if convOK {
+            mp4Ready = true
+            outputName = mp4URL.lastPathComponent
+            let detail = log.first(where: { $0.ok })?.detail ?? ""
+            resolution = detail.components(separatedBy: " · ").first ?? detail
+            fileSize = JobStore.size(of: mp4URL.lastPathComponent)
+            JobStore.remove([outURL.lastPathComponent])
+            phase = "完成 · MP4 已就绪"
+            notes.append("✓ 已转成 MP4（程序内保存）")
+            finished = true
+            onUpdate?()
+            await makeThumbnail(from: mp4URL)
+        } else {
+            remuxError = log.last?.detail ?? "没成功"
+            outputName = outURL.lastPathComponent
+            phase = "下载完成；MP4 没转出来（原因见过程记录）"
+            notes.append("· 没转成 MP4，原文件留着（.\(ext)）—— 可以「存文件夹」后在电脑上处理")
+            finished = true
+            onUpdate?()
+        }
+    }
+
     // MARK: - 主流程
 
     private func run() async {
@@ -325,6 +438,31 @@ final class DownloadJob: ObservableObject, Identifiable {
             outputURL: tsURL)
         opt.cookie = cookie.isEmpty ? nil : cookie
         if opt.referer == nil, let host = src.host { opt.referer = "https://\(host)/" }
+
+        // ★ 先探一下这个地址到底是什么 —— 详见 SourceProbe 里的注释。
+        //   嗅探只按地址字符串猜类型：mp4 直链、跳转页也会被当成 m3u8，
+        //   统一塞给 m3u8 解析器的结果就是「一个分片都没解析出来」，
+        //   而用户只看到一句失败、不知道卡在哪。探完才知道该走哪条路。
+        //   探测结果同时写进过程记录 —— 以后出问题一眼看出原因。
+        phase = "探测地址…"
+        let probe = await SourceProbe.fetch(url: src,
+                                            ua: opt.userAgent,
+                                            referer: opt.referer,
+                                            cookie: opt.cookie,
+                                            timeout: opt.timeout)
+        notes.append("· 探测：\(probe.summary)")
+        guard (200...299).contains(probe.httpStatus) else {
+            throw Self.fail("地址取不到内容 —— \(probe.summary)")
+        }
+        if probe.kind == .unknown {
+            throw Self.fail("这个地址认不出是什么（不是 HLS 清单，也不像视频文件）—— \(probe.summary)")
+        }
+
+        if probe.kind == .file {
+            try await runDirectFile(src: src, probe: probe, tempDir: tempDir,
+                                    ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie)
+            return
+        }
 
         var dl = HLSDownloader(options: opt)
         dl.onProgress = { [weak self] p in

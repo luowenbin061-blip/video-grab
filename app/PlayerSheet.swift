@@ -93,6 +93,10 @@ struct PlayerSheet: View {
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(1)
                 }
+                // 横屏按钮 —— 为什么不放"播放前选"：因为播放器这层是我们自己铺的，
+                // 按钮能直接放在画面上（若交给系统全屏那层就加不进去了）。
+                Button(box.forcedLandscape ? "竖屏" : "横屏") { box.toggleOrientation() }
+                    .font(.system(size: 13))
                 Button("关闭") { dismiss() }
                     .font(.system(size: 13))
             }
@@ -101,6 +105,8 @@ struct PlayerSheet: View {
             .background(.thinMaterial, in: Capsule())
             .padding(14)
         }
+        // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
+        .statusBar(hidden: true)
         .onAppear {
             // 关键：不配音频会话的话，默认类别会被侧面静音拨片静掉 ——
             // 表现为「同一条视频导出去有声音、在 App 里没声音」。
@@ -115,6 +121,7 @@ struct PlayerSheet: View {
         }
         .onDisappear {
             box.stop()
+            ScreenOrientation.portrait()      // 退出播放器回竖屏，别把界面留在横着
             AppAudio.release()
             // 把刚才让位的下载保活窗还回去。
             // 此刻用户刚关掉播放器、App 一定在前台 —— 起画中画的前置条件正好满足。
@@ -134,6 +141,10 @@ final class PlayerBox: ObservableObject {
     private let item: AVPlayerItem
     @Published var error: String?
     @Published var loading = true
+    /// 当前是不是我们强制横过来的（按钮文案据此变）
+    @Published var forcedLandscape = false
+    /// 只自动转一次，之后听用户的
+    private var autoOriented = false
 
     private var failObs: NSObjectProtocol?
     private var stallObs: NSObjectProtocol?
@@ -181,6 +192,12 @@ final class PlayerBox: ObservableObject {
         stallTask?.cancel()
     }
 
+    /// 用户点「横屏 / 竖屏」
+    func toggleOrientation() {
+        forcedLandscape.toggle()
+        if forcedLandscape { ScreenOrientation.landscape() } else { ScreenOrientation.portrait() }
+    }
+
     func retry() {
         error = nil
         loading = true
@@ -217,6 +234,14 @@ final class PlayerBox: ObservableObject {
         case .readyToPlay:
             loading = false
             error = nil
+            // 视频是横的（宽 > 高）→ 自动横过来；竖屏视频保持竖屏。
+            // 只自动来一次，用户手动切过之后不再自作主张。
+            let sz = item.presentationSize
+            if !autoOriented, sz.width > 0, sz.height > 0 {
+                autoOriented = true
+                forcedLandscape = sz.width > sz.height
+                if forcedLandscape { ScreenOrientation.landscape() }
+            }
             player.play()
             return true
         case .failed:

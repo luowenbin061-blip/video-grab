@@ -212,6 +212,10 @@ struct ContentView: View {
     @State private var showPanel = false
     /// 「长按诊断」开关的镜像 —— 开关一关，屏幕上的诊断条立刻消失
     @AppStorage("lpDebug") private var lpDebugOn = false
+    /// 「嗅探按钮常驻屏幕」开关（默认关）。关着时右下角那个圆按钮不显示 ——
+    /// 它原来一直压在页面右下角（视频站常把倍速/设置放那儿）。
+    /// **后台嗅探跟这个按钮没有关系**，收起来照旧嗅探。
+    @AppStorage("sniffButtonResident") private var sniffResident = false
     @State private var showDownloads = false
     @State private var showShare = false
     @State private var showPiPAsk = false
@@ -251,6 +255,7 @@ struct ContentView: View {
                         .allowsHitTesting(false)
                 }
 
+                if sniffResident {
                 Button {
                     showPanel = true
                     model.forceScan()
@@ -275,6 +280,7 @@ struct ContentView: View {
                 }
                 .padding(.trailing, 16)
                 .padding(.bottom, 20)
+                }   // sniffResident（关掉就不占屏幕；入口在「功能」卡片和「工具箱」里）
             }
 
             Divider()
@@ -336,7 +342,11 @@ struct ContentView: View {
             SettingsView(downloads: downloads, store: store, isPresented: $showSettings)
         }
         .sheet(isPresented: $showToolbox) {
-            ToolboxView(model: model, center: downloads, isPresented: $showToolbox)
+            ToolboxView(model: model, center: downloads, isPresented: $showToolbox,
+                        onOpenSniff: {
+                            showToolbox = false
+                            showPanel = true
+                        })
         }
         .sheet(isPresented: $showTabs) {
             TabsView(model: model, isPresented: $showTabs)
@@ -557,7 +567,9 @@ struct ContentView: View {
                 menuCell("link", "复制URL") { copyCurrentURL() }
                 menuCell("square.on.square", "多窗口",
                          badge: model.tabCount > 1 ? model.tabCount : 0) { showTabs = true }
-                menuCell("arrow.clockwise", "刷新") { model.reload() }
+                // 这里原来是「刷新」——底栏已经有一个了，换成嗅探结果的入口
+                menuCell("antenna.radiowaves.left.and.right", "嗅探结果",
+                         badge: model.items.count) { showPanel = true }
             }
 
             Divider().padding(.horizontal, 10)
@@ -1334,7 +1346,9 @@ struct JobRow: View {
         // 还没写进去 → 内容为空 → **纯白一整屏**（正是用户看到的样子）。
         // 改成 .sheet(item:)：URL 本身就是触发源，有值才有 sheet，
         // "弹出了但内容是空的"这种情况从结构上不可能发生。
-        .sheet(item: $playSheet) { s in
+        // 播放器用 fullScreenCover（不是 sheet）：sheet 顶部会露出后面一截、
+        // 四角是圆的，看着就不是"全屏"。fullScreenCover 是铺满整块屏。
+        .fullScreenCover(item: $playSheet) { s in
             PlayerSheet(url: s.url, title: job.title, pip: pip)
         }
         .sheet(item: $exportSheet) { s in
