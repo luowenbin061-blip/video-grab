@@ -16,6 +16,15 @@ struct LongPressMenuInfo: Identifiable, Equatable {
     /// 需要跟用户说明一句时才有值（例如「已改用抓到的真实地址」）。
     /// 非空时在标题行下面显示一行小字 —— 平时不占地方。
     var hint: String? = nil
+
+    // MARK: - 页面上下文（★ v1.0.106）
+    //
+    // 下载防盗链站的片子，请求里必须带 Referer / Cookie，否则服务器直接不给内容。
+    // 这三个**由长按探测时从页面直接取回来**，随菜单带到下载 —— 不再依赖
+    // 「嗅探结果里恰巧有同一条」（自动嗅探默认关之后那份结果常常是空的）。
+    var referrer: String = ""
+    var ua: String = ""
+    var cookie: String = ""
 }
 
 /// 长按视频弹出来的菜单。

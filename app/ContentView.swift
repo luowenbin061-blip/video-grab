@@ -375,6 +375,17 @@ struct ContentView: View {
                               cookie: hit?.cookie ?? "")
                 model.showToast("已加入下载")
             }
+            // ★ v1.0.106：长按下载 —— 上下文**由长按自己带回来**（探测时从页面直接取的），
+            //   不再依赖「嗅探结果里恰巧有同一条」。自动嗅探默认关之后，
+            //   那条路基本拿不到东西 → Referer/Cookie 全空 → 防盗链站必然失败。
+            model.onLongPressDownload = { m in
+                downloads.add(title: m.title.isEmpty ? "Download" : m.title,
+                              url: m.url,
+                              referrer: m.referrer,
+                              ua: m.ua,
+                              cookie: m.cookie)
+                model.showToast("已加入下载")
+            }
         }
     }
 

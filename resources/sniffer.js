@@ -469,6 +469,28 @@
         } catch (e) { return ''; }
       }
 
+      // ★ v1.0.106：长按下载要用的「页面上下文」（Referer / UA / Cookie）
+      //   **在这里直接取**，随探测结果一起交回去。
+      //   以前是回到原生后再去「嗅探结果」里找同一条 —— 而自动嗅探默认关之后，
+      //   那份结果常常是空的 → Referer/Cookie 全空 → 防盗链站必然「拿不到内容」，
+      //   而嗅探面板点下载却正常（它用的是自己那条记录的上下文）。
+      //   优先用这条请求**真实记录**下来的上下文；没有就用当前页面现取。
+      function ctxFor(u) {
+        var ref = '', ua = '', ck = '';
+        try {
+          var f = found[(u || '').split('#')[0]];
+          if (f) { ref = f.ref || ''; ua = f.ua || ''; ck = f.ck || ''; }
+        } catch (e) {}
+        try { if (!ua) ua = navigator.userAgent || ''; } catch (e) {}
+        try { if (!ck) ck = document.cookie || ''; } catch (e) {}
+        // ★ 兜底的 Referer 用**当前页面地址**，不是 document.referrer：
+        //   防盗链校验的就是"这个请求从哪个页面发出来的"——而 document.referrer
+        //   是"你从哪一页跳进来的"，站外来源反而会被服务器拒掉。
+        try { if (!ref) ref = location.href || ''; } catch (e) {}
+        try { if (!ref) ref = document.referrer || ''; } catch (e) {}
+        return { ref: ref, ua: ua, ck: ck };
+      }
+
       function mediaInfo(v, doc, via) {
         var r = v.getBoundingClientRect();
         return {
@@ -476,6 +498,7 @@
           via: via,
           url: v.currentSrc || v.src || '',
           alt: pickAlt(v.currentSrc || v.src || ''),
+          ctx: ctxFor(v.currentSrc || v.src || ''),
           poster: v.poster || '',
           title: ((doc && doc.title) || document.title || '').slice(0, 140),
           w: Math.round(r.width),

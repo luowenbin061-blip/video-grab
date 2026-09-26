@@ -152,6 +152,14 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 系统长按菜单里的「Download」被点 —— 界面接线成真正的下载动作
     var onDownloadRequest: ((String) -> Void)?
+
+    /// ★ v1.0.106：长按菜单里点了下载 → 走这个（**带着页面上下文**）。
+    ///
+    /// 为什么单开一个回调：长按探测时已经把 Referer/UA/Cookie 一起取回来了，
+    /// 而上面那个老回调只收一个地址 —— 调用方拿到地址后还得去嗅探结果里找上下文，
+    /// 那条路在「自动嗅探默认关」之后基本是空的（拿不到 → 防盗链站必失败）。
+    /// 没人接这个新回调时，`downloadFromLongPressMenu` 会退回老回调。
+    var onLongPressDownload: ((LongPressMenuInfo) -> Void)?
     @Published var toast: String?
     @Published var mseSeen = false
     @Published var hint: String?
@@ -1852,6 +1860,14 @@ extension BrowserModel {
         let host = wv.url?.host ?? ""
         let title = (d["title"] as? String) ?? ""
 
+        // ★ v1.0.106：页面上下文（Referer / UA / Cookie）—— 探测时脚本顺手取回来的。
+        //   防盗链站就靠它；没有它服务器不给内容（正是「地址获取不到内容」的真因）。
+        let ctx = (d["ctx"] as? [String: Any]) ?? [:]
+        let cRef = (ctx["ref"] as? String) ?? ""
+        let cUA = (ctx["ua"] as? String) ?? ""
+        let cCk = (ctx["ck"] as? String) ?? ""
+        out.append("上下文  Referer \(cRef.isEmpty ? "无" : "有")   Cookie \(cCk.isEmpty ? "无" : "有")")
+
         // ★ v1.0.105：长按拿到的不一定是能下的地址 —— MSE 播放器的 currentSrc 是
         //   `blob:` 临时地址，只在页面里有效，交给下载器必然「拿不到内容」。
         //   抓请求那一半一直在记（不受自动嗅探开关影响），所以脚本会给一个备选地址。
@@ -1873,7 +1889,8 @@ extension BrowserModel {
 
         lpMenu = LongPressMenuInfo(point: point, url: finalURL,
                                    title: title.isEmpty ? pageTitle : title,
-                                   host: host, hint: hint)
+                                   host: host, hint: hint,
+                                   referrer: cRef, ua: cUA, cookie: cCk)
     }
 
     /// 诊断日志：只在开关打开时显示，8 秒后自己消失（也能点一下立刻关掉）——
@@ -1921,7 +1938,12 @@ extension BrowserModel {
     func downloadFromLongPressMenu() {
         guard let m = lpMenu else { return }
         closeLongPressMenu()
-        onDownloadRequest?(m.url)
+        // ★ v1.0.106：带上上下文走新回调（老回调只收地址，拿不到页面上下文）
+        if let f = onLongPressDownload {
+            f(m)
+        } else {
+            onDownloadRequest?(m.url)
+        }
     }
 }
 
