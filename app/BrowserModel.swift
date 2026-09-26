@@ -172,6 +172,9 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 错误页上的「重试」
     func retry() {
         guard let s = loadError?.url, !s.isEmpty, let u = URL(string: s) else { return }
+        // ★ 手动重试 = 给一次全新的机会（崩溃计数清零），
+        //   否则「一直崩」那页会一进来就又立刻认输，重试等于没试。
+        currentTab?.crashCount = 0
         clearLoadError(currentTab)
         readyWebView().load(URLRequest(url: u))
     }
@@ -515,6 +518,15 @@ final class BrowserModel: NSObject, ObservableObject {
             t.warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
         } else if let u = URL(string: t.address) {
             wv.load(URLRequest(url: u))              // 睡过的标签：把它的页面重新拉起来
+        } else {
+            // ★ v1.0.86：存档里的地址是坏的（带空格 / 编码坏了 / 根本不是 URL）。
+            //   以前这条分支**什么都不做** —— 标签是白的、也不说为什么，
+            //   又是一个"点了完全没反应"。现在把它当空白标签收尾：
+            //   说一声 + 清掉坏地址（下次切回来就走上面 `address.isEmpty` 那条正常路）。
+            t.address = ""
+            t.title = ""
+            t.warmupNav = wv.load(URLRequest(url: URL(string: "about:blank")!))
+            showToast("有一个标签的地址读不出来，已恢复成空白标签")
         }
         return wv
     }
@@ -562,20 +574,39 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
+    /// 正在截图、还没回来的标签（id → 开始时刻）。
+    ///
+    /// ★ 为什么需要它（v1.0.86 修的一个真 bug）：这里原来是「切走不到 2 秒的跳过不睡」，
+    ///   为的是给旧标签留出截图时间。但那个判据在**快速连点切标签**时会**一个都不符合**
+    ///   —— 每个刚被访问过的标签都在豁免期内 → 一个都不睡 → 活着的 WebView 越堆越多，
+    ///   每个几十 MB。（三家 AI 独立提到了这条。）
+    ///   正解**不是**把那 2 秒砍短（砍短了缩略图会变白），而是**盯住"截图这件事本身"**：
+    ///   截完就让它睡（回调里再收一次）。外加 3 秒兜底 —— 万一回调永远不来
+    ///   （WebView 已被拆掉），也不会把某个标签永远钉在"不能睡"。
+    private var snapshotPending: [UUID: Date] = [:]
+
+    private func pruneSnapshotPending() {
+        let cut = Date().addingTimeInterval(-3)
+        snapshotPending = snapshotPending.filter { $0.value > cut }
+    }
+
     /// 活着的太多了 → 把「最久没用过、且不是当前」的睡掉。
     ///
-    /// ★ 为什么要跳过"刚用过 2 秒内"的：切走那一瞬我们要给旧标签截一张缩略图，
-    ///   立刻把 WebView 拆掉就会截到空白。给它留 2 秒。
-    ///   （少数情况下这一轮就少睡一个，下次切换会补上，不影响正确性。）
+    /// ★ 唯一的例外是"截图还没回来"的那一个（见 snapshotPending）——
+    ///   它是**事件驱动**的，不是拍脑袋定个 2 秒，所以快速连点也不会卡住不动。
     private func trimLive() {
         let cur = currentTab
-        let now = Date()
+        pruneSnapshotPending()
         while tabs.filter({ $0.isAwake }).count > TabLimits.maxLive {
-            let candidates = tabs.filter {
-                $0.isAwake && $0 !== cur && now.timeIntervalSince($0.lastActiveAt) > 2
-            }
-            guard let oldest = candidates.min(by: { $0.lastActiveAt < $1.lastActiveAt }) else { break }
-            sleep(oldest)
+            let others = tabs.filter { $0.isAwake && $0 !== cur }
+            guard !others.isEmpty else { break }
+            // 优先挑"没在截图"的；一个都没有时，只有在**超出上限 2 个以上**的情况下
+            // 才强行睡一个 —— 宁可缩略图偶发空白，也不能让 WebView 无限堆下去。
+            let free = others.filter { snapshotPending[$0.id] == nil }
+            let overBudget = tabs.filter({ $0.isAwake }).count > TabLimits.maxLive + 1
+            let pool = free.isEmpty ? (overBudget ? others : []) : free
+            guard let victim = pool.min(by: { $0.lastActiveAt < $1.lastActiveAt }) else { break }
+            sleep(victim)
         }
     }
 
@@ -589,15 +620,22 @@ final class BrowserModel: NSObject, ObservableObject {
               wv.bounds.width > 1, wv.bounds.height > 1 else { return }
         let cfg = WKSnapshotConfiguration()
         cfg.rect = CGRect(origin: .zero, size: wv.bounds.size)   // 只要看得见这一屏
+        // ★ 截这张图的期间不许把它睡掉（睡了截出来是空白）—— 见 snapshotPending 的说明。
+        snapshotPending[t.id] = Date()
         wv.takeSnapshot(with: cfg) { img, _ in
-            guard let img else { return }
-            let small = Self.shrink(img, toWidth: 300)
             Task { @MainActor in
-                t.thumb = small
-                t.thumbAt = Date()
-                TabStore.saveThumb(small, id: t.id)   // 顺手落盘：重启后网格里还有图
-                self.trimThumbs()
-                self.refreshTabs()
+                // 不管截到没截到，都要销账 + 再收一次 ——
+                // 「截完再让它睡」的落点就在这一句 trimLive()。
+                self.snapshotPending[t.id] = nil
+                if let img {
+                    let small = Self.shrink(img, toWidth: 300)
+                    t.thumb = small
+                    t.thumbAt = Date()
+                    TabStore.saveThumb(small, id: t.id)   // 顺手落盘：重启后网格里还有图
+                    self.trimThumbs()
+                    self.refreshTabs()
+                }
+                self.trimLive()
             }
         }
     }
@@ -1326,6 +1364,10 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     /// ★ v1.0.79：网页的渲染进程被系统回收 / 崩掉 —— **必须自己兜**。
     /// 不实现这个回调时：页面白屏或冻住、点什么都没反应，用户只能手动刷新。
     /// Safari 会自己重载，用户几乎察觉不到。
+    ///
+    /// ★ v1.0.86 加了「认输机制」：自动重载原本**没有上限** —— 遇到那种稳定把内核
+    ///   搞崩的页面，就是"崩 → 重载 → 崩"死循环，风扇起飞。现在崩够
+    ///   TabLimits.maxCrashReloads 次就停手，把这一页摆成错误页，由用户决定要不要再来。
     nonisolated func webViewWebContentProcessDidTerminate(_ wv: WKWebView) {
         Task { @MainActor in
             guard let t = self.tab(for: wv) else { return }
@@ -1334,11 +1376,28 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 self.isLoading = false
                 self.progressActive = false
                 self.progress = 0
+            }
+            let recoverable = !t.address.isEmpty && t.address != "about:blank"
+
+            // 崩太多次了 → 不再自动重载（只提示一次，别反复刷屏）
+            if t.crashCount >= TabLimits.maxCrashReloads {
+                if t.crashCount == TabLimits.maxCrashReloads {
+                    t.crashCount += 1
+                    t.loadError = PageError.crashGaveUp(url: t.address,
+                                                        attempts: TabLimits.maxCrashReloads)
+                    if t === self.currentTab {
+                        self.loadError = t.loadError
+                        self.showToast("这页反复崩，先不自动恢复了 —— 点「重试」再试一次")
+                    }
+                }
+                return
+            }
+
+            t.crashCount += 1
+            if t === self.currentTab {
                 self.showToast("页面被系统回收了，正在自动恢复…")
             }
-            if !t.address.isEmpty, t.address != "about:blank" {
-                wv.reload()
-            }
+            if recoverable { wv.reload() }
         }
     }
 
@@ -1351,6 +1410,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             t.address = wv.url?.absoluteString ?? t.address
             t.canGoBack = wv.canGoBack
             t.canGoForward = wv.canGoForward
+            t.crashCount = 0     // ★ v1.0.86：这一页正常活下来了 → 崩溃计数清零
 
             self.loadTimeoutTask?.cancel()
             if t === self.currentTab {
@@ -1650,7 +1710,11 @@ extension BrowserModel {
         case "iframe":
             let w = (d["w"] as? NSNumber)?.intValue ?? 0
             let h = (d["h"] as? NSNumber)?.intValue ?? 0
-            extra = "跨域=\((d["cross"] as? Bool) == true)  框 \(w)×\(h)"
+            // ★ v1.0.86：以前只报个"跨域=是/否"，而 JS 侧把"同源但还没加载完"也算成了
+            //   跨域 —— 于是一律被读成"跨域进不去"，照着去查是白查。现在两种分开写。
+            let cross = (d["cross"] as? Bool) == true
+            extra = (cross ? "跨域 iframe" : "同源 iframe（拿不到内容 = 还没加载完）")
+                    + "  框 \(w)×\(h)"
         case "other":
             let cls = (d["cls"] as? String) ?? ""
             let n = (d["vids"] as? NSNumber)?.intValue ?? -1
@@ -1670,7 +1734,13 @@ extension BrowserModel {
 
         guard kind == "media", !url.isEmpty else {
             if kind == "iframe" {
-                out.append("视频在 iframe 里（跨域进不去）→ 不弹菜单")
+                // ★ 按**真实原因**分两种说法：跨域是"进不去"，同源多半是"还没加载完"。
+                if (d["cross"] as? Bool) == true {
+                    out.append("视频在跨域 iframe 里 → 同源策略进不去，不弹菜单")
+                } else {
+                    out.append("命中的是同源 iframe，但里面没找到 video"
+                               + "（多半是还没加载完 / 视频在更深一层）→ 不弹菜单")
+                }
             } else {
                 out.append("这点上不是视频 → 不弹菜单，页面照旧")
             }

@@ -198,22 +198,41 @@ enum TabStore {
 
     // MARK: - 缩略图（一个标签一个文件）
 
+    /// 缩略图存成 **JPEG**（v1.0.86 起）。
+    /// ★ 为什么换：网页截图是**连续色调**的位图，PNG（无损）在这种内容上效率极差 ——
+    ///   实测 15 张 7.5 MB，换 JPEG 只要约 1 MB。缩略图只看个大概，0.8 的画质足够。
     private static func thumbFile(_ id: UUID) -> URL {
+        thumbsDir.appendingPathComponent("\(id.uuidString).jpg")
+    }
+
+    /// 老版本（PNG）的缩略图文件。
+    /// ★ 必须有这一层：不做迁移的话，一升级老用户的缩略图就**全没了** ——
+    ///   而这纯属我们自己换格式造成的，不该让用户买单。读到老文件就顺手转成 JPEG。
+    private static func legacyThumbFile(_ id: UUID) -> URL {
         thumbsDir.appendingPathComponent("\(id.uuidString).png")
     }
 
     static func saveThumb(_ img: UIImage, id: UUID) {
-        guard let d = img.pngData() else { return }
+        guard let d = img.jpegData(compressionQuality: 0.8) else { return }
         try? d.write(to: thumbFile(id), options: .atomic)
     }
 
     static func loadThumb(id: UUID) -> UIImage? {
-        guard let d = try? Data(contentsOf: thumbFile(id)) else { return nil }
-        return UIImage(data: d)
+        // 先找新版 JPEG
+        if let d = try? Data(contentsOf: thumbFile(id)), let img = UIImage(data: d) {
+            return img
+        }
+        // 再找老版 PNG —— 找到就**顺手迁移**（存成 JPEG、删掉旧的），只付一次代价
+        guard let d = try? Data(contentsOf: legacyThumbFile(id)),
+              let img = UIImage(data: d) else { return nil }
+        saveThumb(img, id: id)
+        try? FileManager.default.removeItem(at: legacyThumbFile(id))
+        return img
     }
 
     static func removeThumb(id: UUID) {
         try? FileManager.default.removeItem(at: thumbFile(id))
+        try? FileManager.default.removeItem(at: legacyThumbFile(id))   // 老的也一起清
     }
 
     /// 存档里已经不存在的标签，它们的缩略图文件也该删掉（否则越攒越多）。

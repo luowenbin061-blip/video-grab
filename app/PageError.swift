@@ -76,6 +76,19 @@ struct PageError: Equatable {
                          url: failing,
                          isCertificate: cert)
     }
+
+    /// 「这个页面反复把浏览器内核搞崩」—— 不是网络问题，是页面自己的问题。
+    /// ★ 为什么要单独一条：崩溃自动重载本来就有，但**没上限** —— 崩→重载→崩会转不停。
+    ///   崩够次数就停止自动恢复，把这一页摆成错误页，让用户自己决定要不要再试
+    ///   （点「重试」会给一次全新的机会）。
+    static func crashGaveUp(url: String, attempts: Int) -> PageError {
+        PageError(title: "这个网页一直崩",
+                  reason: "它连续 \(attempts) 次把浏览器内核搞崩了，我们就不再自动恢复了 —— "
+                        + "再转下去也是白转（还费电）。过一会儿点「重试」，或者换个网页看。",
+                  detail: "WebContentProcessDidTerminate ×\(attempts)",
+                  url: url,
+                  isCertificate: false)
+    }
 }
 
 /// 错误页本体：整页盖住网页内容（不透明），给原因 + 「重试」。

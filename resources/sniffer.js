@@ -256,11 +256,30 @@
   // ---------- 6c. 重活：把整页 HTML 序列化再跑正则 ----------
   // 只在两处调用：页面加载完成之后、用户手动刷新/长按时。
   // 绝不放回定时器或 MutationObserver —— 那里一秒能跑几十次。
+  //
+  // ★ 时间保护（v1.0.86）：这一步是**同步**的，中途打不断 ——
+  //   所以只能「做之前先看成本，太大就直接放弃」。这就是为什么这里不是"超时中断"，
+  //   而是"先看大小再决定"。
+  //   ★ 成本指标用**元素个数**而不是 HTML 长度：想量长度就得先序列化，
+  //     那正是要避免的那一步；元素个数是浏览器现成维护的计数，几乎零成本。
+  var MAX_HEAVY_NODES = 40000;     // 元素数超过这个 = 页面太重，重活直接跳过
+  var heavySkipUntil = 0;          // 放弃之后的冷却期（epoch 毫秒）
+
   function scanPageHtml() {
     try {
+      if (nowMs() < heavySkipUntil) return;
+      var nodeCount = document.getElementsByTagName
+        ? document.getElementsByTagName('*').length : 0;
+      if (nodeCount > MAX_HEAVY_NODES) {
+        heavySkipUntil = nowMs() + 30000;      // 太重 → 这 30 秒不再试，别每次都白跑
+        return;
+      }
+      var t0 = nowMs();
       var html = document.documentElement ? document.documentElement.innerHTML : '';
       if (!html) return;
       scanText(html, 'page-html');
+      // 事后记账：这一次实际花了多久。真超了（说明元素个数不是好指标）→ 再冷一会儿。
+      if (nowMs() - t0 > 300) heavySkipUntil = nowMs() + 30000;
     } catch (e) {}
   }
 
@@ -444,19 +463,26 @@
         var frameInfo = null;
         if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
           var ir = el.getBoundingClientRect();
+          // ★ v1.0.86 修掉的一句谎话：以前"拿不到 document"就一律 cross=true，
+          //   于是「同源、只是还没加载完」被谎报成「跨域」，诊断日志把人带偏。
+          //   能区分两者的只有一点：**访问 contentWindow.document 抛不抛异常** ——
+          //   抛（SecurityError）= 真跨域；不抛但为 null = 同源、还没加载完。
           var inner = null;
+          var cross = false;
           try {
             inner = el.contentDocument || (el.contentWindow && el.contentWindow.document);
-          } catch (e) { inner = null; }
+          } catch (e) {
+            cross = true;                    // 只有抛异常才是真跨域
+          }
           if (inner) {
             var sub = hitIn(inner, x - ir.left, y - ir.top, depth + 1);
             if (sub && sub.hit === 'media') return sub;
           }
           frameInfo = {
-            hit: 'iframe', cross: !inner, src: el.src || '',
+            hit: 'iframe', cross: cross, src: el.src || '',
             x: ir.left, y: ir.top, w: ir.width, h: ir.height
           };
-          if (!inner) return frameInfo;      // 跨域进不去，只能回报它
+          if (!inner) return frameInfo;      // 进不去（跨域 / 还没加载完）—— 只能回报它本身
         }
 
         // ★ 按几何找（封面图/控制条是 video 的兄弟元素压在上面时，只有这条能认出来）
