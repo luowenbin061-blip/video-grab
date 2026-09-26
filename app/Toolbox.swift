@@ -137,7 +137,7 @@ struct ToolboxView: View {
         }
         let entries = BookmarkImporter.parse(data)
         guard !entries.isEmpty else {
-            note = "没从这个文件里读到书签。\n支持各家浏览器导出的「书签 HTML」，以及 Chromium 的书签 JSON。"
+            note = "没从这个文件里读到书签。\n" + BookmarkImporter.diagnose(data)
             return
         }
         let r = store.importMarks(entries)

@@ -26,7 +26,23 @@ enum BookmarkImporter {
         if head.first == "{" || head.first == "[" {
             if let ents = parseChromiumJSON(data), !ents.isEmpty { return ents }
         }
-        return parseHTML(text)
+        let html = parseHTML(text)
+        if !html.isEmpty { return html }
+        // ★ v1.0.92 兜底：结构解析一条都没出来时，用最笨的办法再捞一次。
+        //   宁可"文件夹丢了但书签进来了"，也不要"一条都没进来"。
+        return fallbackScan(text)
+    }
+
+    /// 一条都没读到时，把「它到底看到了什么」交出来 —— 让失败自己说明白。
+    /// ★ 同 v1.0.88 那条规矩：凡"用户看到没生效"的功能，都要留可查证的东西，
+    ///   否则下一次还是只能猜。
+    static func diagnose(_ data: Data) -> String {
+        let text = decode(data)
+        let href = text.components(separatedBy: "HREF").count - 1
+        let dt = text.components(separatedBy: "<DT>").count - 1
+        return "文件 \(data.count / 1024) KB、\(text.count) 个字符；"
+             + "里面有 \(href) 处 HREF、\(dt) 处 <DT>。"
+             + "把这句话发我就能定位。"
     }
 
     /// 文本解码：中文书签导出常见 UTF-8；老 Chrome/记事本另存过的可能是 GB18030；
@@ -42,41 +58,81 @@ enum BookmarkImporter {
 
     // MARK: - Netscape HTML
 
-    private static func parseHTML(_ text: String) -> [Entry] {
-        var out: [Entry] = []
-        var stack: [String] = []          // 文件夹栈（根层是空串）
-        var pendingFolder: String?        // 刚读到的 <H3> 名字，等它下面的 <DL> 入栈
+    /// ★ v1.0.92 重写：**一次扫全篇，不再按行**。
+    ///
+    /// 为什么必须改：原来假设"一行一个标签"（先按 \n 切行，每行只走一个分支）。
+    /// 只要导出工具把整份压成一行、或者一行里既有文件夹又有书签，就会漏掉 ——
+    /// 用户那份夸克导出就栽在这类脆弱假设上（实测格式完全标准）。
+    ///
+    /// 现在用一个正则把四种记号**按出现顺序**一次抓出来，再走一遍栈：
+    ///   ① 文件夹 `<DT><H3 ...>名字</H3>`
+    ///   ② 书签   `<DT><A HREF="地址" ...>标题</A>`
+    ///   ③ 进目录  `<DL ...>`      ④ 出目录 `</DL>`
+    private static let tokenRE: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"<DT>\s*<H3[^>]*>(.*?)</H3>|<DT>\s*<A\s+HREF\s*=\s*"?([^"\s>]+)"?[^>]*>(.*?)</A>|<DL\b|</DL>"#,
+        options: [.caseInsensitive])
 
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            // ★ 注意用**原始字符串** #"..."#：正则里的 \s 在普通字符串里是非法转义，
-            //   编译器会报 "invalid escape sequence in literal"（run #90 就死在这一行）。
-            if line.range(of: #"<DT>\s*<H3"#, options: [.regularExpression, .caseInsensitive]) != nil
-                || line.range(of: "<H3", options: .caseInsensitive) != nil,
-               let name = group(line, #"<H3[^>]*>(.*?)</H3>"#) {
-                pendingFolder = decodeEntities(name)
+    /// 最笨的兜底：不管结构，把所有 HREF + 它后面的标题捞出来（文件夹算没有）
+    private static let looseRE: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"HREF\s*=\s*"?([^"\s>]+)"?[^>]*>(.*?)</A>"#,
+        options: [.caseInsensitive])
+
+    private static func parseHTML(_ text: String) -> [Entry] {
+        guard let re = tokenRE else { return [] }      // 正则都编不出来 → 交给兜底
+        let ns = text as NSString
+        let matches = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        var out: [Entry] = []
+        var stack: [String] = []           // 文件夹栈（根层是空串）
+        var pending: String?               // 刚读到的 <H3> 名字，等它下面的 <DL> 入栈
+
+        for m in matches {
+            // ① 文件夹
+            if m.range(at: 1).location != NSNotFound {
+                pending = decodeEntities(ns.substring(with: m.range(at: 1)))
                 continue
             }
-            if line.range(of: "<DL", options: .caseInsensitive) != nil {
-                stack.append(pendingFolder ?? "")
-                pendingFolder = nil
+            // ② 书签
+            if m.range(at: 2).location != NSNotFound {
+                let url = decodeEntities(ns.substring(with: m.range(at: 2)))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !url.isEmpty else { continue }
+                let title = m.range(at: 3).location != NSNotFound
+                    ? decodeEntities(ns.substring(with: m.range(at: 3)))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                // 最近的**有名字的**祖先文件夹 —— 没有就 nil（= 根目录）
+                out.append(Entry(title: title, url: url,
+                                 folder: stack.last(where: { !$0.isEmpty })))
                 continue
             }
-            if line.range(of: "</DL", options: .caseInsensitive) != nil {
+            // ③④ 目录进 / 出
+            let whole = ns.substring(with: m.range)
+            if whole.hasPrefix("</") {
                 if !stack.isEmpty { stack.removeLast() }
-                continue
+            } else {
+                stack.append(pending ?? "")
+                pending = nil
             }
-            guard let href = group(line, #"<A\s+HREF\s*=\s*"?([^"\s>]+)"?[^>]*>(.*?)</A>"#)
-            else { continue }
-            let url = decodeEntities(href).trimmingCharacters(in: .whitespacesAndNewlines)
-            let title = decodeEntities(group(line, #"<A[^>]*>(.*?)</A>"#) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !url.isEmpty else { continue }
-            // 最近的**有名字的**祖先文件夹 —— 没有就 nil（= 根目录）
-            let folder = stack.last(where: { !$0.isEmpty })
-            out.append(Entry(title: title, url: url, folder: folder))
         }
         return out
+    }
+
+    /// 兜底：只认 HREF，不要结构
+    private static func fallbackScan(_ text: String) -> [Entry] {
+        guard let re = looseRE else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .compactMap { m -> Entry? in
+                guard m.range(at: 1).location != NSNotFound else { return nil }
+                let url = decodeEntities(ns.substring(with: m.range(at: 1)))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !url.isEmpty else { return nil }
+                let title = m.range(at: 2).location != NSNotFound
+                    ? decodeEntities(ns.substring(with: m.range(at: 2)))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                return Entry(title: title, url: url, folder: nil)
+            }
     }
 
     // MARK: - Chromium JSON
@@ -114,17 +170,6 @@ enum BookmarkImporter {
     }
 
     // MARK: - 小工具
-
-    /// 取第一个捕获组（找不到返回 nil）
-    private static func group(_ s: String, _ pattern: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-        else { return nil }
-        let ns = s as NSString
-        guard let m = re.firstMatch(in: s, range: NSRange(location: 0, length: ns.length)),
-              m.numberOfRanges > 1, m.range(at: 1).location != NSNotFound
-        else { return nil }
-        return ns.substring(with: m.range(at: 1))
-    }
 
     /// HTML 实体解码（书签里最常见的几个 + 数字实体）
     private static func decodeEntities(_ s: String) -> String {

@@ -67,7 +67,7 @@ struct BookmarksView: View {
         }
         let entries = BookmarkImporter.parse(data)
         guard !entries.isEmpty else {
-            note = "没从这个文件里读到书签（支持各家导出的书签 HTML / Chromium 书签 JSON）。"
+            note = "没从这个文件里读到书签。" + BookmarkImporter.diagnose(data)
             return
         }
         let r = store.importMarks(entries)
