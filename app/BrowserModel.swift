@@ -156,8 +156,9 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 网页弹窗 / 证书（v1.0.80）
 
-    /// 用户点过「仍然访问」的域名 —— 同一个站不再反复问（问一次就够了）
-    private var trustedHosts: Set<String> = []
+    // ★ 这里原来有一份「用户点过仍然访问的域名」内存名单（v1.0.87 已删）——
+    //   改成存盘的 `TrustedHosts`：那份名单在 TLS 握手的回调里用，不能只在内存里
+    //   （App 一重启就忘 = 同一个站又被问一遍）。
     /// 有系统弹窗正在显示。防止连环弹窗（网页一个接一个 alert）把 present 弄乱
     private var dialogBusy = false
 
@@ -179,11 +180,14 @@ final class BrowserModel: NSObject, ObservableObject {
         readyWebView().load(URLRequest(url: u))
     }
 
-    /// 证书错误页上的「仍然访问」：把这个站记进白名单，然后重新加载。
-    /// 这条是「证书挑战回调没收到」时的第二条路 —— 两条路都能通到「放行」。
+    /// 证书错误页上的「仍然访问」：把这个站记进放行名单，然后重新加载。
+    ///
+    /// ★ v1.0.87 起这只是**兜底的第二条路** —— 正常情况下证书有问题的站会被
+    ///   `didReceive challenge` 里无条件放行，根本走不到错误页。留着它是为了
+    ///   "万一还是失败了"时给用户一个明确的再试入口。
     func trustAndReload() {
         guard let s = loadError?.url, let u = URL(string: s) else { return }
-        if let h = u.host { trustedHosts.insert(h) }
+        if let h = u.host { TrustedHosts.add(h) }      // 存盘，重开也记得
         clearLoadError(currentTab)
         readyWebView().load(URLRequest(url: u))
     }
@@ -1588,15 +1592,23 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    // MARK: 服务器证书有问题 → 问一句"仍要继续访问吗"（对齐 Safari）
+    // MARK: 服务器证书有问题 → **一律放行**，只在第一次提醒一句（v1.0.87 改）
 
-    /// 证书过期 / 自签 / 不是它自己的时候，系统会来这里问。
+    /// 证书过期 / 自签 / 身份对不上的时候，系统会来这里问。
     ///
-    /// ★ 原来这种站**直接打不开**，用户不知道发生了什么。
-    /// ★ 一个不确定点（老实说）：iOS 上这个回调能不能收到，资料说法不一。
-    ///   所以另外配了第二条路 —— 真收不到时，加载会失败并走到错误页
-    ///   （-1202 这类错误码会被翻成"这个网站的证书有问题"），
-    ///   用户在那一页点「仍然访问」也能进去。
+    /// ★ v1.0.87 按用户要求重做（原话：「不能影响我正常访问」「首次访问可以有提示，
+    ///   我选择了仍然访问后下次就不能再提示我」「不拦截网站加载，可以有提醒，
+    ///   但到底选不选择访问的权利还是在用户」）。现在的规矩：
+    ///   · **绝不取消加载** —— 无条件放行，页面照常打开；
+    ///   · **第一次**遇到这个站 → 顶部轻提示一句（不挡页面、不要你点任何东西）；
+    ///   · 之后**永久不再提示**（名单存磁盘，见 `TrustedHosts`）；
+    ///   · 去留完全由你 —— 我们不拦，也不替你决定。
+    ///
+    /// ★ 为什么原来那版会"点了也进不去"：它是"先拦下来、弹窗问你"。弹不出来
+    ///   （后台标签 / 已有别的弹窗）就直接 cancel → 页面变成"打不开"；而"记住这个站"
+    ///   只存在内存里、重开就忘。旧注释甚至承认过「iOS 上这个回调能不能收到，资料说法不一」
+    ///   —— 真收不到时，错误页那条补救路（`trustAndReload`）**同样依赖这个回调** →
+    ///   死循环，永远进不去。现在**放行是无条件的**，不再依赖"你点过什么"。
     nonisolated func webView(_ wv: WKWebView,
                              didReceive challenge: URLAuthenticationChallenge,
                              completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -1612,43 +1624,16 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             completionHandler(.useCredential, URLCredential(trust: trust))
             return
         }
+        // ★ 证书有问题：**先放行**。这一步必须无条件、同步做掉 —— 不能等任何 UI，
+        //   否则"UI 没弹出来"就等于"页面打不开"。
         let host = challenge.protectionSpace.host
-        Task { @MainActor in
-            // 用户对这个站过一次「仍然访问」→ 之后直接放行，不再反复问
-            if self.trustedHosts.contains(host) {
-                completionHandler(.useCredential, URLCredential(trust: trust))
-                return
-            }
-            let gate = OnceGate()
-            guard let vc = self.dialogHost(for: wv) else {
-                if gate.take() { completionHandler(.cancelAuthenticationChallenge, nil) }
-                return
-            }
-            let a = UIAlertController(
-                title: "这个网站的证书有问题",
-                message: "\(host) 的身份证书不被信任（可能过期，或者不是它自己的）。\n继续访问 = 不再检查这个网站的身份，请确认你信任它。",
-                preferredStyle: .alert)
-            a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
-                Task { @MainActor in
-                    self.dialogBusy = false
-                    if gate.take() { completionHandler(.cancelAuthenticationChallenge, nil) }
-                }
-            })
-            a.addAction(UIAlertAction(title: "仍然访问", style: .default) { _ in
-                Task { @MainActor in
-                    self.dialogBusy = false
-                    self.trustedHosts.insert(host)
-                    if gate.take() { completionHandler(.useCredential, URLCredential(trust: trust)) }
-                }
-            })
-            self.dialogBusy = true
-            vc.present(a, animated: true) {
-                Task { @MainActor in
-                    if vc.presentedViewController !== a {
-                        self.dialogBusy = false
-                        if gate.take() { completionHandler(.cancelAuthenticationChallenge, nil) }
-                    }
-                }
+        let firstTime = TrustedHosts.add(host)      // 存盘；true = 第一次见
+        completionHandler(.useCredential, URLCredential(trust: trust))
+        // 第一次见 → 轻提示一句（只在你看的这一页上说，后台标签别来打扰）
+        if firstTime {
+            Task { @MainActor in
+                guard self.tab(for: wv) === self.currentTab else { return }
+                self.showToast("这个网站的证书不被信任，已放行 —— 以后不再提示")
             }
         }
     }

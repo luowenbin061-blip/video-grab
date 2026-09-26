@@ -54,12 +54,25 @@ struct PageError: Equatable {
             case .networkConnectionLost:
                 (title, reason) = ("网络断了",
                                    "连接中途断开。等一会儿再点重试。")
+            // ★ v1.0.87 拆成了两个 case —— 以前它们挤在一起，都是"证书有问题"，
+            //   还都配一个「仍然访问」按钮。问题在 -1200：
             case .serverCertificateUntrusted, .serverCertificateHasBadDate,
                  .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot,
-                 .clientCertificateRejected, .secureConnectionFailed:
+                 .clientCertificateRejected:
+                // 证书类：我们现在**一律自动放行**，所以正常情况根本走不到这一页。
+                // 真走到了，说明失败的不是"证书那一步"（多半是网站自己的问题）。
                 cert = true
                 title = "这个网站的证书有问题"
-                reason = "为了安全，我们没有继续连接。如果你确定这个网站可以信任，可以点下面的「仍然访问」。"
+                reason = "系统不信任它的身份证书（可能过期，或者不是它自己的）。"
+                       + "我们已经按你的设置自动放行了 —— 如果这一页还是打不开，"
+                       + "多半是网站自己的问题，可以点「重试」再试一次。"
+            case .secureConnectionFailed:
+                // ★ 这一条**不是**证书问题：多是 TLS 协议 / 加密套件对不上，
+                //   在系统层面就握不上手。给"仍然访问"是骗人点一个没用的按钮，
+                //   所以这里不给（cert 保持 false），文案也照实说。
+                title = "连不上它的加密通道"
+                reason = "这个网站用的加密方式太老（或者跟系统对不上），系统层面就握不上手 —— "
+                       + "Safari 也进不去。这一步我们没法绕过，换一个网站吧。"
             case .appTransportSecurityRequiresSecureConnection:
                 (title, reason) = ("这个网站不让安全连接",
                                    "它要求用不加密的方式连接，被系统拦住了。")

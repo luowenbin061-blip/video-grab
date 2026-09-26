@@ -20,6 +20,8 @@ struct SettingsView: View {
     @AppStorage("lpDebug") private var lpDebug = false
     /// 嗅探按钮要不要一直待在屏幕上（默认关：不占地方）
     @AppStorage("sniffButtonResident") private var sniffResident = false
+    /// 已经放行过的网站数（证书不被信任、但按设置一律放行）。进页面时读一次。
+    @State private var trustedCount = 0
 
     var body: some View {
         NavigationView {
@@ -64,6 +66,21 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    labeled("已放行的网站", "\(trustedCount) 个")
+                    if trustedCount > 0 {
+                        Button("忘掉所有已放行的网站", role: .destructive) {
+                            TrustedHosts.forgetAll()
+                            trustedCount = TrustedHosts.count
+                            note = "已忘记。这些网站下次打开会再提醒你一次 —— 页面照常放行，我们从不拦网站。"
+                        }
+                    }
+                } header: {
+                    Text("证书")
+                } footer: {
+                    Text("有些网站的加密证书不被系统信任（过期 / 自签 / 身份对不上）。**这类网站我们一律照常打开**，只在第一次提醒你一句，之后不再打扰。\n\n「忘掉」之后，下次打开会重新提醒一次 —— 但页面照样能开，我们不会拦任何网站。")
+                }
+
+                Section {
                     Toggle("嗅探按钮常驻屏幕", isOn: $sniffResident)
                 } header: {
                     Text("嗅探")
@@ -98,6 +115,7 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { trustedCount = TrustedHosts.count }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { isPresented = false }
