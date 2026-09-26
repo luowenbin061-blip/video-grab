@@ -34,6 +34,14 @@
   var dirty = false;       // 有变化待上报
   var mseSeen = false;     // 页面是否用过 MSE
 
+  // ★ v1.0.104：「后台自动嗅探」开关（默认关）。这一行由原生在注入时替换成
+  //   `var autoOn = true;`（见 BrowserModel.snifferSource(autoSniff:)）。
+  //   关着的时候：下面那些 hook **照旧装**（抓请求的能力不能丢 —— 一闪而过的
+  //   m3u8 全靠它），但**不**反复扫页面、**不**自动上报。用户点开「嗅探结果」
+  //   面板时，原生会调 __vgScan() 手动扫一次（那才是"需要的时候"）。
+  var autoOn = false;
+  var booted = false;      // 首扫只做一次
+
   // ★ 必须用绝对时钟（epoch 毫秒）。之前用 performance.now()（页面加载后
   //   经过的毫秒数），被原生当成 1970 年起点 → 面板时间全显示「01-01 08:00」。
   function nowMs() {
@@ -519,35 +527,46 @@
   // 等于白跑一次整页序列化。而且本脚本同步阻塞解析（必须抢在页面之前装 hook），
   // 越早做重活越拖首屏。
   function boot() {
+    if (booted) return;
+    booted = true;
     scanLive();
     report(true);
     // DOMContentLoaded 之后有些播放器才把地址注进页面，稍后补一次重活
     setTimeout(function () { scanPageHtml(); report(false); }, 1200);
   }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
+  if (autoOn) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot);
+    } else {
+      boot();
+    }
   }
 
-  // 定时：1.5 秒 → 3 秒，且只做轻活（不再含整页序列化）。
-  setInterval(function () {
-    if (slowSkips > 0) { slowSkips--; return; }   // 页面太重就先歇一轮（见 scanLive 的自保）
-    scanLive();
-    report(false);
-  }, 3000);
+  // ═══ 自动扫描（v1.0.104 起受开关控制、默认关）═══
+  var tickTimer = null;    // 每 3 秒的轻活定时器
+  var mo = null;           // DOM 变化观察器
+  var moTimer = null;      // 变化合并用的定时器
+
+  function startAuto() {
+    if (tickTimer) return;   // 已经在跑（重复调用无害）
+    // 定时：1.5 秒 → 3 秒，且只做轻活（不再含整页序列化）。
+    tickTimer = setInterval(function () {
+      if (slowSkips > 0) { slowSkips--; return; }   // 页面太重就先歇一轮（见 scanLive 的自保）
+      scanLive();
+      report(false);
+    }, 3000);
 
   // DOM 变化：合并 400ms 内的所有变动，只跑一次轻活。
   // 原来是「每变一次就全量扫一次」。另外补上 attributes 过滤：有些播放器用
   // setAttribute('src', ...) 写地址，那条路不经过我们 hook 的 setter，只能靠这里兜。
   try {
-    var moTimer = null;
+    moTimer = null;
     // ★ v1.0.79：原来这里一有 DOM 变化（合并 400ms）就跑 scanLive()，
     //   而 scanLive 里是**全文档** querySelectorAll —— 弹幕、计时器、广告轮播这类
     //   每秒都在改 DOM 的页面会一直重扫，把页面自己的主线程挤住。
     //   改成先做一次**极便宜的判断**：这次变化里有没有跟媒体相关的节点？
     //   没有就直接 return，什么都不做。
-    var mo = new MutationObserver(function (recs) {
+    mo = new MutationObserver(function (recs) {
       var relevant = false;
       for (var i = 0; i < recs.length && !relevant; i++) {
         var r = recs[i];
@@ -587,4 +606,22 @@
     if (document.documentElement) start();
     else document.addEventListener('DOMContentLoaded', start);
   } catch (e) {}
+  }   // ← startAuto() 到此结束
+
+  function stopAuto() {
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+    if (moTimer) { clearTimeout(moTimer); moTimer = null; }
+    if (mo) { try { mo.disconnect(); } catch (e) {} mo = null; }
+  }
+
+  // 运行时切换 —— 原生改了开关后立刻调它，不用刷新页面
+  window.__vgSetAuto = function (on) {
+    autoOn = !!on;
+    if (autoOn) startAuto(); else stopAuto();
+    return autoOn;
+  };
+
+  // ★ 默认关。注意：**长按和抓请求都不依赖这个开关** ——
+  //   长按走 __vgHit（第 10 段，独立），抓请求走上面那些 hook（第 1~5 段）。
+  if (autoOn) startAuto();
 })();

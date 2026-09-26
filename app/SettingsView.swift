@@ -21,6 +21,9 @@ struct SettingsView: View {
     @AppStorage("lpDebug") private var lpDebug = false
     /// 嗅探按钮要不要一直待在屏幕上（默认关：不占地方）
     @AppStorage("sniffButtonResident") private var sniffResident = false
+    /// 后台自动嗅探（★ v1.0.104 起默认**关**）。关着时：不自动扫页面、不自动刷新结果，
+    /// 但抓请求照旧、长按下载照旧。打开嗅探面板时会自动扫一次。
+    @AppStorage("autoSniff") private var autoSniff = false
     /// 已经放行过的网站数（证书不被信任、但按设置一律放行）。进页面时读一次。
     @State private var trustedCount = 0
     /// 启动主页（v1.0.90）。**留空 = 每次打开只显示空白页**。
@@ -139,11 +142,13 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("后台自动嗅探", isOn: $autoSniff)
+                        .onChange(of: autoSniff) { _ in model.applyAutoSniffSetting() }
                     Toggle("嗅探按钮常驻屏幕", isOn: $sniffResident)
                 } header: {
                     Text("嗅探")
                 } footer: {
-                    Text("关掉（默认）那个按钮就不占屏幕了 —— 嗅探结果改从「功能」卡片或「工具箱」里打开。\n**后台嗅探一直在跑，跟这个按钮没关系**：显示这个开关只影响页面上要不要留那个圆按钮。")
+                    Text("**后台自动嗅探（默认关）** 开着：页面每 3 秒自己扫一遍，结果自动刷新。关着：不扫页面，你打开「嗅探结果」面板时会扫一次，面板右上角「⋯ → 重新扫描」也能手动扫。\n\n关掉**不影响任何下载能力** —— 长按视频照旧能下；页面发过哪些网址也照旧被记下来。关掉的只是「反复扫页面 + 反复上报」这一件事。\n\n上面那个只管页面上要不要留一个圆按钮，跟嗅探跑不跑无关。")
                 }
 
                 Section {

@@ -109,6 +109,15 @@ final class DownloadCenter: ObservableObject {
 
     /// 进后台前调用：把"进度从哪来"告诉 PiP
     func preparePiP() {
+        // ★ v1.0.104：用户自己划掉小窗 → 保活没了 → 共享在后台也就失效了。
+        //   与其让开关显示"开着"骗人，不如跟着关掉。
+        //   挂在这里是因为它每次 start 之前都会被调用；重复赋值无害。
+        pip.onUserClosed = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.lanOn else { return }
+                self.stopSharing()
+            }
+        }
         pip.prime()          // 先让层显示一次（AVKit 拒绝给「从没显示过」的层起画中画）
         pip.provider = { [weak self] in
             guard let self else { return PiPProgress.Snapshot() }
@@ -803,6 +812,9 @@ struct SniffPanel: View {
             }
         }
         .navigationViewStyle(.stack)
+        // ★ v1.0.104：打开面板就扫一次。自动扫描默认关了 —— 那么「用户打开
+        //   这个面板」本身就是「现在需要嗅探」的信号，代他扫一下最省事。
+        .onAppear { model.scanQuietly() }
         .safeAreaInset(edge: .bottom) {
             if let p = picked {
                 startBar(p)

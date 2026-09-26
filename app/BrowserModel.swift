@@ -140,6 +140,15 @@ final class BrowserModel: NSObject, ObservableObject {
     private var lpDebugOn: Bool {
         (UserDefaults.standard.object(forKey: "lpDebug") as? Bool) ?? false
     }
+    /// 设置里的「后台自动嗅探」（★ v1.0.104 起默认**关**）。
+    ///
+    /// 关着的时候：页面不会每 3 秒自己扫、也不会自动把结果推上来 ——
+    /// 但**抓请求那一半照旧在跑**（hook 一直在记），而长按下载完全不受影响。
+    /// 用户打开「嗅探结果」面板时会手动扫一次（见 scanQuietly）。
+    /// 用户自己选的是「只关自动扫描」这一档，不是把嗅探整个关掉。
+    private var autoSniffOn: Bool {
+        (UserDefaults.standard.object(forKey: "autoSniff") as? Bool) ?? false
+    }
 
     /// 系统长按菜单里的「Download」被点 —— 界面接线成真正的下载动作
     var onDownloadRequest: ((String) -> Void)?
@@ -304,14 +313,30 @@ final class BrowserModel: NSObject, ObservableObject {
     /// address 变，监听它的话每切一次窗口就虚增一次「访问次数」。
     var onPageFinished: ((String, String) -> Void)?
 
-    /// 注入脚本的源码（从 bundle 读 resources/sniffer.js）
-    static let snifferSource: String = {
+    /// sniffer.js 的**原始**内容（只读一次盘）
+    private static let rawSnifferSource: String = {
         guard let url = Bundle.main.url(forResource: "sniffer", withExtension: "js"),
               let s = try? String(contentsOf: url, encoding: .utf8) else {
             return "/* sniffer.js 没打进 bundle */"
         }
         return s
     }()
+
+    /// 要注入的脚本源码。
+    ///
+    /// ★ v1.0.104：按「后台自动嗅探」开关把 autoOn 那一行改掉。
+    ///   **关着时脚本照样注入、hook 照旧装** —— 这是故意的：
+    ///   ① 长按下载要的 `window.__vgHit` 就在这份脚本里，不注入长按就废了；
+    ///   ② 抓请求（fetch / XHR / 播放地址）是抓到「一闪而过的 m3u8」的唯一手段，
+    ///      它几乎不耗 CPU，不能跟着一起关 —— 关的只是「反复扫页面 + 自动上报」。
+    static func snifferSource(autoSniff: Bool) -> String {
+        let s = rawSnifferSource
+        let line = "var autoOn = false;"
+        guard s.contains(line) else { return s }   // 脚本没这个开关 → 原样注入
+        return s.replacingOccurrences(
+            of: line,
+            with: "var autoOn = " + (autoSniff ? "true" : "false") + ";")
+    }
 
     /// 建一个「裸」的 WebView（不登记成标签）。
     /// 配置跟单窗口时代完全一致 —— 嗅探脚本、消息通道、查找开关、UA 一个都不能少。
@@ -483,7 +508,7 @@ final class BrowserModel: NSObject, ObservableObject {
         // ★ 必须用 page world —— 要 hook 页面自己的 fetch/XHR，也要读页面上的
         //   var now / player_aaaa 这些全局变量。isolated world 读不到。
         let world = WKContentWorld.page
-        let script = WKUserScript(source: Self.snifferSource,
+        let script = WKUserScript(source: Self.snifferSource(autoSniff: autoSniffOn),
                                   injectionTime: .atDocumentStart,
                                   forMainFrameOnly: false,        // ★ 覆盖 iframe
                                   in: world)
@@ -793,8 +818,9 @@ final class BrowserModel: NSObject, ObservableObject {
         syncFromTab(t)
         trimLive()
         refreshTabs()
-        // 切过来补扫一次：这个页面的嗅探可能是在别的标签跑的时候完成的
-        webView?.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
+        // ★ v1.0.104：这里原来会「切过来补扫一次」。自动扫描默认关之后，
+        //   这一扫就成了唯一还在自动跑的扫描 —— 而且它跑的是重活（整页序列化），
+        //   正是最贵的那一下。取消，改由「打开嗅探面板」时扫（见 scanQuietly）。
     }
 
     func switchTo(id: UUID) {
@@ -1131,6 +1157,23 @@ final class BrowserModel: NSObject, ObservableObject {
         showToast("已重新扫描")
     }
 
+    /// 静默扫一次（不弹提示）—— 打开嗅探面板时用。
+    /// 自动扫描默认关了，所以「用户点开面板」这个动作本身就是「现在需要嗅探」。
+    func scanQuietly() {
+        webView?.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
+    }
+
+    /// 设置里改了「后台自动嗅探」→ 通知**所有已经建好的页面**立刻生效，
+    /// 不用刷新页面（新开的页面在注入时就带上正确的值，见 snifferSource）。
+    func applyAutoSniffSetting() {
+        let on = autoSniffOn ? "true" : "false"
+        let js = "window.__vgSetAuto ? window.__vgSetAuto(\(on)) : 0"
+        for t in tabs {
+            guard let wv = t.webView else { continue }   // 还没建过 WebView 的标签不用管
+            wv.evaluateJavaScript(js) { _, _ in }
+        }
+    }
+
     /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
     ///
     /// ★ 为什么加 seconds（v1.0.88）：证书那条提示有 18 个字，1.8 秒根本读不完，
@@ -1333,7 +1376,7 @@ final class BrowserModel: NSObject, ObservableObject {
         if hasHls {
             return nil
         } else if items.isEmpty {
-            return "还没嗅到东西。让视频先播几秒，再点右下角圆圈刷新。"
+            return "还没嗅到东西。让视频先播几秒，然后下拉刷新一次。"
         } else if items.allSatisfy({ $0.kind == "segment" }) {
             return "只看到分片。往上翻，通常能找到一个 .m3u8 —— 那个才是要下的。"
         } else {
@@ -1490,8 +1533,9 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 // 历史只记「你正在看的这一页」—— 后台标签加载完成不算你访问过
                 self.onPageFinished?(t.address, t.title)
             }
-            // 页面加载完再补扫一次（有些地址是 DOM 造好之后才有的）
-            wv.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
+            // ★ v1.0.104：这里原来会「加载完补扫一次」（上面那条注释说得对：
+            //   有些地址是 DOM 造好之后才有的）。但那是**自动**扫，跟默认关矛盾 ——
+            //   改由用户打开嗅探面板时扫，一样能拿到（见 scanQuietly）。
         }
     }
 

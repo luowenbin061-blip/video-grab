@@ -42,6 +42,12 @@ final class PiPProgress: NSObject, ObservableObject {
     private let fh: CGFloat = 100
 
     private let layer = AVSampleBufferDisplayLayer()
+    /// 用户自己把小窗划掉时的回调（我们主动 stop() 引起的不算）。
+    /// 小窗没了 = 后台保活没了 → 「共享给电脑」在后台也就失效了，
+    /// 所以跟着把它关掉，别让开关显示"开着"骗人。
+    var onUserClosed: (() -> Void)?
+    /// 我们自己调 stop() 引起的结束 → 不算"用户划掉"
+    private var stoppingByUs = false
     private var controller: AVPictureInPictureController?
     /// 必须**留着**这个引用：content source 被释放掉的话画中画会没
     private var source: AVPictureInPictureController.ContentSource?
@@ -208,7 +214,12 @@ final class PiPProgress: NSObject, ObservableObject {
         timer?.invalidate()
         timer = nil
         isRunning = false
-        if controller?.isPictureInPictureActive == true {
+        // ★ 只有"真在播"时调 stopPictureInPicture() 才会触发 didStop 回调 ——
+        //   所以也只在那时置位；否则这个标志会残留下来，把用户下一次
+        //   自己划掉小窗误判成"我们自己停的"，连带关共享就永远不生效。
+        let wasActive = controller?.isPictureInPictureActive == true
+        stoppingByUs = wasActive
+        if wasActive {
             controller?.stopPictureInPicture()
         }
         releaseAudio()
@@ -486,6 +497,7 @@ extension PiPProgress: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStartPictureInPicture(_ c: AVPictureInPictureController) {
         lastError = nil
         starting = false
+        stoppingByUs = false      // 真的起来了 → 上一轮的标志一律作废
         isRunning = true
         startTicking()
     }
@@ -495,6 +507,12 @@ extension PiPProgress: AVPictureInPictureControllerDelegate {
         timer = nil
         isRunning = false
         releaseAudio()          // 小窗被关掉＝用户停用，把音频会话也让出去
+        // ★ 不是我们调 stop() 的，那就是用户自己划掉的 → 告诉外界
+        if stoppingByUs {
+            stoppingByUs = false
+        } else {
+            onUserClosed?()
+        }
     }
 
     func pictureInPictureController(_ c: AVPictureInPictureController,
