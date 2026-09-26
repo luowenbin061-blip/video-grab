@@ -25,6 +25,8 @@ struct SettingsView: View {
     @State private var trustedCount = 0
     /// 启动主页（v1.0.90）。**留空 = 每次打开只显示空白页**。
     @AppStorage("homePageURL") private var homePage = ""
+    /// 回收站（v1.0.97）
+    @State private var showTrash = false
 
     var body: some View {
         NavigationView {
@@ -60,6 +62,16 @@ struct SettingsView: View {
                 Section("浏览数据") {
                     labeled("收藏", "\(store.marks.count) 条")
                     labeled("浏览历史", "\(store.history.count) 条")
+                    Button {
+                        showTrash = true
+                    } label: {
+                        HStack {
+                            Text("回收站")
+                            Spacer()
+                            Text(store.trash.isEmpty ? "空" : "\(store.trash.count) 条")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Button("清空浏览历史", role: .destructive) { confirmClearHistory = true }
                     Button("清除网页缓存") { clearWebCache() }
                     // 标签存档：清了之后下次启动就是干净的空白页（组也一起没）
@@ -162,6 +174,7 @@ struct SettingsView: View {
             }
             // 说明页自己带导航栏，所以用弹窗打开，别嵌进来（嵌了会套两层导航栏）
             .sheet(isPresented: $showHelp) { HelpView() }
+            .sheet(isPresented: $showTrash) { TrashView(store: store, isPresented: $showTrash) }
         }
     }
 

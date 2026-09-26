@@ -26,6 +26,25 @@ struct Bookmark: Codable, Identifiable, Hashable {
     }()
 }
 
+/// 回收站里的一条（v1.0.97）。
+/// 删分组 / 删书签都先扔这儿，用户确认不要了再清。
+/// ★ 故意记住 `folder`：恢复时如果原分组还在就自动归位；不在了也没事 ——
+///   这条自带名字，列表里那个分组会自己"复活"。
+struct TrashItem: Codable, Identifiable, Hashable {
+    var id: String { url + "|" + String(deletedAt.timeIntervalSince1970) }
+    var url: String
+    var title: String
+    var folder: String?
+    var deletedAt: Date
+
+    var label: String { title.isEmpty ? url : title }
+    var timeText: String { TrashItem.fmt.string(from: deletedAt) }
+
+    private static let fmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"; return f
+    }()
+}
+
 /// 历史的一条：**同一个地址只占一条**，记次数 + 最近一次时间。
 /// （不做的话，一个视频站来回点几次，列表就全是同一页刷屏了。）
 struct HistoryEntry: Codable, Identifiable, Hashable {
@@ -68,6 +87,18 @@ final class BookmarkStore: ObservableObject {
     /// ★ 为什么需要单独存：我们现在的"分组"不是实体，是**从书签身上的 folder 推导出来的** ——
     ///   所以一个"还没有任何书签的空分组"根本无处安放。新建分组就得有地方记它。
     @Published private(set) var customGroups: [String] = []
+    /// 用户排好的**分组顺序**（v1.0.97）。没记过的分组按"首次出现顺序"补在后面。
+    @Published private(set) var groupOrder: [String] = []
+    /// 回收站（v1.0.97）。删分组 / 删书签先扔这儿，可恢复。
+    @Published private(set) var trash: [TrashItem] = []
+
+    /// 回收站最多留多少条 —— 别让它自己涨成第二个收藏
+    private let trashLimit = 500
+
+    /// 「我的收藏」在**排序列表**里用的哨兵 key（跟真实分组名不会撞）。
+    /// ★ 放在 store 这边而不是 view 那边：applyFlat 要用它判断"这一段是我的收藏"，
+    ///   store 不该反过来依赖界面层的常量。
+    static let mineSortKey = "__mine__"
 
     /// 历史最多留这么多条，超了丢最旧的 —— 别让它无限涨
     private let historyLimit = 500
@@ -78,6 +109,9 @@ final class BookmarkStore: ObservableObject {
         /// ★ 可选：老版本写的记录里没有这个键 → 合成 Codable 用 decodeIfPresent，
         ///   不会因为缺键让整份收藏读不出来。
         var customGroups: [String]?
+        /// ★ 同样可选（v1.0.97）
+        var groupOrder: [String]?
+        var trash: [TrashItem]?
     }
 
     private static var fileURL: URL {
@@ -104,13 +138,59 @@ final class BookmarkStore: ObservableObject {
     }
 
     func removeMark(url: String) {
-        marks.removeAll { $0.url == url }
+        if let i = marks.firstIndex(where: { $0.url == url }) {
+            pushTrash([marks[i]])
+            marks.remove(at: i)
+        }
+        save()
+    }
+
+    /// 塞进回收站（并裁剪到上限）
+    private func pushTrash(_ items: [Bookmark]) {
+        let now = Date()
+        for m in items {
+            trash.insert(TrashItem(url: m.url, title: m.title,
+                                   folder: m.folder, deletedAt: now), at: 0)
+        }
+        if trash.count > trashLimit { trash.removeLast(trash.count - trashLimit) }
+    }
+
+    // MARK: - 回收站（v1.0.97）
+
+    /// 恢复一条。地址已经在了 → 不动它（返回 false），顺手把它从回收站去掉。
+    @discardableResult
+    func restore(_ item: TrashItem) -> Bool {
+        trash.removeAll { $0.id == item.id }
+        guard !marks.contains(where: { $0.url == item.url }) else { save(); return false }
+        marks.insert(Bookmark(url: item.url, title: item.title,
+                              addedAt: Date(), folder: item.folder), at: 0)
+        save()
+        return true
+    }
+
+    /// 恢复全部（已经在的不重复加）
+    func restoreAll() {
+        let going = trash
+        trash.removeAll()
+        for it in going where !marks.contains(where: { $0.url == it.url }) {
+            marks.insert(Bookmark(url: it.url, title: it.title,
+                                  addedAt: Date(), folder: it.folder), at: 0)
+        }
+        save()
+    }
+
+    /// 彻底清空回收站
+    func emptyTrash() {
+        trash.removeAll()
         save()
     }
 
     func clearMarks() {
+        // ★ 也进回收站 —— 用户要的是"有后悔药"，那清空也该能救回来（回收站有上限，不会涨爆）
+        pushTrash(marks)
         marks.removeAll()
         customGroups.removeAll()
+        groupOrder.removeAll()
         save()
     }
 
@@ -120,12 +200,60 @@ final class BookmarkStore: ObservableObject {
     //   所以这里所有操作都是"按名字批量改"。好处是改动小；代价是**改不了中间层**
     //   （「书签栏」和「书签栏 / AI」是两个独立的名字，没有父子关系）。
 
-    /// 当前所有分组名：已有的（从书签推导）+ 手动建的（可能是空的）。排好序。
+    /// 当前所有分组名（**按用户排好的顺序**，没排过的按首次出现顺序补在后面）。
+    /// ★ v1.0.97：以前是 `Set(...).sorted()` —— 按名字排，那样用户永远排不了序。
     var allGroups: [String] {
-        var s = Set(marks.compactMap { $0.folder })
-        s.formUnion(customGroups)
-        s.remove("")
-        return s.sorted()
+        var seen: [String] = []
+        for m in marks {
+            if let f = m.folder, !f.isEmpty, !seen.contains(f) { seen.append(f) }
+        }
+        for g in customGroups where !seen.contains(g) { seen.append(g) }
+        var out = groupOrder.filter { seen.contains($0) }        // 排过的，按用户顺序
+        for g in seen where !out.contains(g) { out.append(g) }   // 新的 / 没排过的，补后面
+        return out
+    }
+
+    /// 某个分组里的书签 —— **按 marks 数组里的相对顺序**（这就是组内顺序）。
+    /// ★ 以前显示层还按标题排了一次，那样用户拖完会被排回去。
+    func marksIn(_ group: String?) -> [Bookmark] {
+        if let g = group, !g.isEmpty {
+            return marks.filter { $0.folder == g }
+        }
+        return marks.filter { ($0.folder ?? "").isEmpty }
+    }
+
+    /// 把「排序模式」拖完的结果落盘。
+    ///
+    /// 入参是一串平铺的行：`isGroup = true` 表示"从这一行开始，下面的书签归它"。
+    /// ★ 为什么用"规范化"而不是死板校验每次拖动：用户在平铺列表里怎么拖都可能
+    ///   （把书签拖到分组行之间、把分组拖到书签下面……）。这里统一按
+    ///   **"每条书签归到它前面最近的那个分组"** 来解释 ——
+    ///   任何拖动都能得到一个确定、可保存的结果，且**不会丢任何一条**。
+    func applyFlat(_ flat: [(isGroup: Bool, key: String)]) {
+        var order: [String] = []                 // 新的分组顺序（不含"我的收藏"）
+        var placement: [String: String] = [:]    // url → 目标分组（空串 = 我的收藏）
+        var urlOrder: [String] = []
+        var current = ""                         // 当前归属（空串 = 我的收藏）
+        for row in flat {
+            if row.isGroup {
+                if row.key == BookmarkStore.mineSortKey {
+                    current = ""
+                } else {
+                    current = row.key
+                    if !order.contains(row.key) { order.append(row.key) }
+                }
+            } else {
+                placement[row.key] = current
+                urlOrder.append(row.key)
+            }
+        }
+        for i in marks.indices {
+            if let p = placement[marks[i].url] { marks[i].folder = p.isEmpty ? nil : p }
+        }
+        let pos = Dictionary(uniqueKeysWithValues: urlOrder.enumerated().map { ($1, $0) })
+        marks.sort { (pos[$0.url] ?? Int.max) < (pos[$1.url] ?? Int.max) }
+        groupOrder = order
+        save()
     }
 
     /// 某个分组里有几条书签（删分组确认框要用）
@@ -153,6 +281,8 @@ final class BookmarkStore: ObservableObject {
         for i in marks.indices where marks[i].folder == from { marks[i].folder = n }
         if let k = customGroups.firstIndex(of: from) { customGroups[k] = n }
         customGroups = Array(Set(customGroups)).sorted()
+        // 顺序表里也要跟着改，否则改完名顺序就丢到末尾去了
+        groupOrder = groupOrder.map { $0 == from ? n : $0 }
         save()
         return true
     }
@@ -163,11 +293,14 @@ final class BookmarkStore: ObservableObject {
     /// 用户要求"每次问我一下"，所以调用方要先弹确认框再进来。
     func deleteGroup(_ name: String, alsoDelete: Bool) {
         if alsoDelete {
+            // ★ 不是直接消失 —— 先进回收站（用户明确要了这层保险）
+            pushTrash(marks.filter { $0.folder == name })
             marks.removeAll { $0.folder == name }
         } else {
             for i in marks.indices where marks[i].folder == name { marks[i].folder = nil }
         }
         customGroups.removeAll { $0 == name }
+        groupOrder.removeAll { $0 == name }
         save()
     }
 
@@ -271,13 +404,16 @@ final class BookmarkStore: ObservableObject {
         marks = p.marks
         history = p.history
         customGroups = p.customGroups ?? []      // 老记录没这个键 → 空数组
+        groupOrder = p.groupOrder ?? []
+        trash = p.trash ?? []
     }
 
     private func save() {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let p = Payload(marks: marks, history: history, customGroups: customGroups)
+        let p = Payload(marks: marks, history: history,
+                        customGroups: customGroups, groupOrder: groupOrder, trash: trash)
         guard let d = try? enc.encode(p) else { return }
         try? d.write(to: Self.fileURL, options: .atomic)
     }

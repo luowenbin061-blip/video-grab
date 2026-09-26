@@ -25,6 +25,8 @@ struct BookmarksView: View {
     /// 收起了哪些分组（v1.0.96）。★ 初值直接读盘：收藏卡片每次打开都是**新建的视图**，
     /// @State 会被重置 —— 不存盘的话每次进来都全展开，等于白收。
     @State private var collapsed: Set<String> = GroupCollapse.load()
+    /// 排序模式（v1.0.97）：进去后列表拍平，分组和书签都能长按拖
+    @State private var sorting = false
 
     var body: some View {
         NavigationView {
@@ -37,27 +39,41 @@ struct BookmarksView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
 
-                if tab == 0 { marksList } else { historyList }
+                if tab == 0 {
+                    if sorting { sortList } else { marksList }
+                } else {
+                    historyList
+                }
             }
             .navigationTitle("收藏 / 历史")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button { showPick = true } label: {
-                        Image(systemName: "square.and.arrow.down")
+                if !sorting {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button { showPick = true } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                        .accessibilityLabel("导入书签")
                     }
-                    .accessibilityLabel("导入书签")
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button { showCreate = true } label: {
+                            Image(systemName: "folder.badge.plus")
+                        }
+                        .accessibilityLabel("新建分组")
+                        .disabled(tab != 0)
+                    }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button { showCreate = true } label: {
-                        Image(systemName: "folder.badge.plus")
+                    Button(sorting ? "结束排序" : "排序") {
+                        sorting.toggle()
                     }
-                    .accessibilityLabel("新建分组")
-                    .disabled(tab != 0)
+                    .disabled(tab != 0 && !sorting)
                 }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("清空", role: .destructive) { confirmClear = true }
-                        .disabled(currentCount == 0)
+                if !sorting {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("清空", role: .destructive) { confirmClear = true }
+                            .disabled(currentCount == 0)
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { isPresented = false }
@@ -108,7 +124,7 @@ struct BookmarksView: View {
                 }
                 Button("取消", role: .cancel) { deleteTarget = nil }
             } message: {
-                Text("删了就找不回来了。「只解散」不会丢书签。")
+                Text("「一起删掉」的那些会先进回收站（设置 → 回收站 里能恢复）。「只解散」一条都不会丢。")
             }
         }
     }
@@ -134,7 +150,7 @@ struct BookmarksView: View {
     // MARK: - 两组（手动收藏 / 导入的书签）
 
     /// 手动收藏的（没有文件夹信息）
-    private var myMarks: [Bookmark] { store.marks.filter { $0.folder == nil } }
+    private var myMarks: [Bookmark] { store.marksIn(nil) }
 
     /// 导入的书签按**文件夹路径**分组 —— 一个文件夹一段，标题就是它在导出文件里的路径。
     /// ★ v1.0.93：以前是"全都塞进一个组、只在每行小字写文件夹名"，
@@ -145,16 +161,11 @@ struct BookmarksView: View {
         let marks: [Bookmark]
     }
 
+    /// ★ v1.0.97：**去掉显示层的两个写死排序**（原来分组按名字排、组内按标题排）——
+    ///   不拿掉的话用户拖完会被立刻排回去，等于排序功能白做。
+    ///   现在：分组顺序来自 `store.allGroups`（用户排的），组内顺序就是 marks 数组顺序。
     private var importedGroups: [FolderGroup] {
-        let items = store.marks.filter { $0.folder != nil }
-        let by = Dictionary(grouping: items) { $0.folder ?? "" }
-        var names = Set(by.keys)
-        // ★ 手动新建的分组**还没有书签也要列出来** —— 否则刚建完就看不到，以为没建成
-        names.formUnion(store.customGroups)
-        names.remove("")
-        return names.sorted().map { k in
-            FolderGroup(folder: k, marks: (by[k] ?? []).sorted { $0.title < $1.title })
-        }
+        store.allGroups.map { FolderGroup(folder: $0, marks: store.marksIn($0)) }
     }
 
     /// 要删的那个分组里有几条（写进确认框，别让人瞎点）
@@ -214,9 +225,9 @@ struct BookmarksView: View {
         }
     }
 
-    /// 「我的收藏」那一组在收起状态里的 key。
-    /// 用一个不会跟真实文件夹重名的串 —— 否则用户真建了个叫「我的收藏」的分组会串。
-    private static let mineKey = "__mine__"
+    /// 「我的收藏」那一组用的哨兵 key（收起状态和排序列表都用它）。
+    /// 定义在 store 那边（applyFlat 也要用它），保证只有一处真值。
+    private static let mineKey = BookmarkStore.mineSortKey
 
     private func isCollapsed(_ key: String) -> Bool { collapsed.contains(key) }
 
@@ -248,6 +259,78 @@ struct BookmarksView: View {
             Spacer()
             if menu { groupMenu(name) }
         }
+    }
+
+    // MARK: - 排序模式（v1.0.97）
+
+    /// 平铺的一行：要么是分组，要么是书签
+    private struct SortRow: Identifiable {
+        let isGroup: Bool
+        let key: String        // 分组名 / 书签地址
+        let title: String
+        let count: Int         // 只有分组行用
+        var id: String { (isGroup ? "g:" : "m:") + key }
+    }
+
+    /// 拍平：每个分组一行，紧跟它下面的书签行；「我的收藏」放最后一段
+    private var sortRows: [SortRow] {
+        var out: [SortRow] = []
+        for g in store.allGroups {
+            let ms = store.marksIn(g)
+            out.append(SortRow(isGroup: true, key: g, title: g, count: ms.count))
+            for m in ms { out.append(SortRow(isGroup: false, key: m.url, title: m.label, count: 0)) }
+        }
+        let mine = store.marksIn(nil)
+        if !mine.isEmpty {
+            out.append(SortRow(isGroup: true, key: Self.mineKey,
+                               title: "我的收藏", count: mine.count))
+            for m in mine { out.append(SortRow(isGroup: false, key: m.url, title: m.label, count: 0)) }
+        }
+        return out
+    }
+
+    private func moveSortRows(from: IndexSet, to: Int) {
+        var rows = sortRows
+        rows.move(fromOffsets: from, toOffset: to)
+        store.applyFlat(rows.map { (isGroup: $0.isGroup, key: $0.key) })
+    }
+
+    /// 排序模式的列表。
+    /// ★ 为什么必须拍平：**iOS 只允许列表里的"行"被拖动，分区（Section）不行** ——
+    ///   想让分组也能长按拖，就只能把它们放到同一层当行。
+    /// ★ `.environment(\.editMode, .constant(.active))` 让拖动常驻，
+    ///   不用再点一次系统"编辑"；这里也没挂 .onDelete，所以不会冒出一排减号。
+    private var sortList: some View {
+        List {
+            Section {
+                Text("长按任意一行（分组或书签）拖动即可排序。\n书签会归到它上面最近的那个分组里；拖乱了也不会丢东西。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(sortRows) { r in
+                HStack(spacing: 6) {
+                    if r.isGroup {
+                        Image(systemName: "folder")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                        Text(r.title).font(.system(size: 15, weight: .semibold))
+                        Text("\(r.count)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(r.title).font(.system(size: 14))
+                    }
+                    Spacer()
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.leading, r.isGroup ? 0 : 18)
+            }
+            .onMove(perform: moveSortRows)
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, .constant(.active))
     }
 
     /// 分组标题右边那个「⋯」
