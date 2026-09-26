@@ -22,6 +22,9 @@ struct BookmarksView: View {
     @State private var showMove = false
     @State private var movingURL = ""         // 正在移动哪一条书签
     @State private var deleteTarget: String?  // 正在删哪个分组（非 nil = 弹确认框）
+    /// 收起了哪些分组（v1.0.96）。★ 初值直接读盘：收藏卡片每次打开都是**新建的视图**，
+    /// @State 会被重置 —— 不存盘的话每次进来都全展开，等于白收。
+    @State private var collapsed: Set<String> = GroupCollapse.load()
 
     var body: some View {
         NavigationView {
@@ -180,33 +183,70 @@ struct BookmarksView: View {
                         .foregroundStyle(.secondary)
                 }
                 if !myMarks.isEmpty {
-                    Section("我的收藏 \(myMarks.count)") {
-                        ForEach(myMarks) { m in markRow(m) }
-                    }
-                }
-                // 导入的书签：**一个文件夹一段**；标题右边「⋯」可以改名 / 删整组
-                ForEach(importedGroups) { g in
                     Section {
-                        if g.marks.isEmpty {
-                            Text("这个分组还没有书签 —— 左滑任意一条选「移动」放进来。")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.tertiary)
-                        } else {
-                            ForEach(g.marks) { m in markRow(m) }
+                        if !isCollapsed(Self.mineKey) {
+                            ForEach(myMarks) { m in markRow(m) }
                         }
                     } header: {
-                        HStack(spacing: 6) {
-                            Text(g.folder)
-                            Text("\(g.marks.count)")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            groupMenu(g.folder)
+                        // 「我的收藏」可以收起，但**不给改名/删除** —— 它是默认组
+                        sectionHeader("我的收藏", count: myMarks.count,
+                                      key: Self.mineKey, menu: false)
+                    }
+                }
+                // 导入的书签：**一个文件夹一段**；点标题展开/收起，右边「⋯」改名 / 删整组
+                ForEach(importedGroups) { g in
+                    Section {
+                        if !isCollapsed(g.folder) {
+                            if g.marks.isEmpty {
+                                Text("这个分组还没有书签 —— 左滑任意一条选「移动」放进来。")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.tertiary)
+                            } else {
+                                ForEach(g.marks) { m in markRow(m) }
+                            }
                         }
+                    } header: {
+                        sectionHeader(g.folder, count: g.marks.count, key: g.folder)
                     }
                 }
             }
             .listStyle(.plain)
+        }
+    }
+
+    /// 「我的收藏」那一组在收起状态里的 key。
+    /// 用一个不会跟真实文件夹重名的串 —— 否则用户真建了个叫「我的收藏」的分组会串。
+    private static let mineKey = "__mine__"
+
+    private func isCollapsed(_ key: String) -> Bool { collapsed.contains(key) }
+
+    private func toggleCollapse(_ key: String) {
+        if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }
+        GroupCollapse.save(collapsed)     // 存盘，见 collapsed 的说明
+    }
+
+    /// 分组标题：**左边箭头 + 标题整块可点**（展开/收起），右边是「⋯」管理菜单。
+    /// 收起时下面那一组书签不渲染；标题上仍显示条数，所以你知道里面有多少。
+    private func sectionHeader(_ name: String, count: Int, key: String,
+                              menu: Bool = true) -> some View {
+        HStack(spacing: 6) {
+            Button { toggleCollapse(key) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isCollapsed(key) ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)      // 固定宽度：切换时标题不会左右跳
+                    Text(name)
+                    Text("\(count)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())      // 让整块（含箭头与文字之间）都能点
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(name)，\(count) 条，\(isCollapsed(key) ? "已收起" : "已展开")")
+            Spacer()
+            if menu { groupMenu(name) }
         }
     }
 
@@ -320,6 +360,19 @@ struct BookmarksView: View {
     private func open(_ url: String) {
         isPresented = false
         onOpen(url)
+    }
+}
+
+/// 分组的「展开 / 收起」状态（v1.0.96）。
+/// ★ 为什么必须存盘：收藏卡片每次打开都是**新建的 SwiftUI 视图**，
+///   @State 会被重置 —— 只放内存的话每次进来都全展开，收起就等于没用。
+private enum GroupCollapse {
+    private static let key = "vgCollapsedGroups"
+    static func load() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+    static func save(_ s: Set<String>) {
+        UserDefaults.standard.set(Array(s), forKey: key)
     }
 }
 
