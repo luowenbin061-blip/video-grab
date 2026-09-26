@@ -70,6 +70,10 @@ final class DownloadCenter: ObservableObject {
     /// 把进度画进画中画小窗，让 App 进后台也继续跑（Stay 用的同一招）
     let pip = PiPProgress()
 
+    /// 这个小窗是「开共享」连带起的吗？
+    /// 只记连带起的 —— 用户自己手动开的那个，关共享时不许替他收掉。
+    private var pipByShare = false
+
     /// 局域网共享开着没有（给按钮上色用）
     @Published var lanOn = false
 
@@ -78,12 +82,29 @@ final class DownloadCenter: ObservableObject {
         guard LocalHTTPServer.shared.enableLAN(root: JobStore.dir) else { return nil }
         lanOn = true
         preparePiP()
+
+        // ★ 共享要真做到「切走了电脑也能连」，就得靠这个小窗把进程保活 ——
+        //   所以开共享直接连带起小窗。此刻一定在前台，正好是起画中画唯一靠谱的时机
+        //   （进了后台再起必失败：画布层已被后台事件打成 -11847）。
+        //   只记「是我连带起的」，用户自己开的那个不记账。
+        let wasRunning = pip.isRunning
+        pip.start()
+        if !wasRunning { pipByShare = true }
+
         return LocalHTTPServer.shared.lanURL
     }
 
     func stopSharing() {
         LocalHTTPServer.shared.disableLAN()
         lanOn = false
+
+        // 关共享就把「连带起的小窗」收回去 —— 否则它白占一个窗、还一直抢着音频通道。
+        // 两个前提缺一不可：① 是共享连带起的（用户手动开的不动）
+        //                   ② 没有下载在跑（那种情况这窗是给下载保活用的，不能收）
+        if pipByShare && activeCount == 0 {
+            pip.stop()
+            pipByShare = false
+        }
     }
 
     /// 进后台前调用：把"进度从哪来"告诉 PiP
@@ -259,7 +280,7 @@ struct ContentView: View {
             Button("取消", role: .cancel) {}
             Button("好的") { downloads.pip.start() }
         } message: {
-            Text("开启后会立刻出现一个画中画小窗，里面的进度就是下载进度。这样切到别的 App 或锁屏，下载都继续跑。随时关掉小窗即可停用。")
+            Text("开启后会立刻出现一个画中画小窗，里面的进度就是下载进度。这样切到别的 App 或锁屏，下载都继续跑。随时关掉小窗即可停用。\n\n开着「共享给电脑」时也靠它保活 —— 那种情况开共享会自动起，不用在这里点。")
         }
         .sheet(isPresented: $showPanel) {
             SniffPanel(model: model, downloads: downloads, isPresented: $showPanel)
@@ -1397,7 +1418,8 @@ struct LanShareView: View {
                     }
 
                     Section("怎么用") {
-                        bullet("手机保持这个 App 开着就行，锁屏也能用（会自动弹一个小窗保持运行）。")
+                        bullet("会自动弹一个小窗保活 —— 有它，切到别的 App 或锁屏，电脑照样能连（小窗要留着，别划掉）。")
+                        bullet("代价就一条：小窗在的时候，手机别处的声音（音乐、视频）会被暂停 —— 它得占着播放通道。不想共享了就点下面的「关闭共享」，小窗会跟着收掉。")
                         bullet("浏览器方式（只读）：电脑上点文件名即开始下载。mp4 一般能直接在线播放；m3u8 建议下载后用播放器打开。")
                         bullet("WebDAV 方式（能读能写）：手机在电脑里就像一个 U 盘。注意 —— 拿到地址和口令的人都能改删文件，用完记得关。")
                         bullet("电脑打不开时：先确认手机连的是 Wi-Fi（只有蜂窝网时不开局域网），再看系统设置里有没有允许这个 App 访问「本地网络」。")
@@ -1413,7 +1435,7 @@ struct LanShareView: View {
                             Label("关闭共享", systemImage: "stop.circle")
                         }
                     } footer: {
-                        Text("关掉后地址立刻失效，下次开启会换一个新口令。")
+                        Text("关掉后地址立刻失效，下次开启会换一个新口令；没有下载在跑的话，保活小窗会跟着收掉。")
                     }
                 } else {
                     Section {
