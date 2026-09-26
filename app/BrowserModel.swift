@@ -1699,14 +1699,25 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    /// 站内 target=_blank 之类的，直接在**它自己那个** WebView 里打开，
-    /// 免得弹出一个我们嗅探不到的新窗口。
+    /// 网页要求「开新窗口」的链接（`target="_blank"` / `window.open`）。
+    ///
+    /// ★ v1.0.103：改成**照 Safari 的策略**（用户要求"参考 Safari"）：
+    ///   · **用户点出来的**（`navigationType == .linkActivated`）→ 开**新标签**并切过去
+    ///     —— Safari 的默认就是"开新标签 + 立刻切过去"（它的「Open Links」设置才管后台打开）
+    ///   · **没有用户手势**的脚本弹窗（广告那种 `window.open`）→ **不开**，同 Safari 的弹窗拦截
+    ///   · 页内普通链接（不带 target）**不走这个回调** → 仍在本标签内跳转，同 Safari
+    ///
+    /// 以前这里是把链接塞回**同一个** WebView（老注释写着"免得弹出嗅探不到的新窗口"）——
+    /// 那个担心在多标签架构（v1.0.48）之后已经不成立：**每个标签都有自己的嗅探**。
     nonisolated func webView(_ wv: WKWebView,
                              createWebViewWith cfg: WKWebViewConfiguration,
                              for action: WKNavigationAction,
                              windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = action.request.url {
-            Task { @MainActor in wv.load(URLRequest(url: url)) }
+        guard let url = action.request.url else { return nil }
+        let byTap = action.navigationType == .linkActivated
+        Task { @MainActor in
+            guard byTap else { return }        // 脚本自己弹的：不理会（同 Safari）
+            _ = self.newTab(load: url.absoluteString)
         }
         return nil
     }
