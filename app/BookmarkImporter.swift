@@ -15,7 +15,12 @@ enum BookmarkImporter {
     struct Entry {
         let title: String
         let url: String
-        /// 文件里的文件夹名；根目录下的条目是 nil
+        /// 文件里的**完整文件夹路径**（例："书签栏 / AI"）；根目录下的条目是 nil。
+        ///
+        /// ★ v1.0.93 改：以前只存**最近一层**的名字（"AI"），结果 "其他/GITHUB/AI"
+        ///   被拍平成跟 "书签栏" 平级，显示出来就不像用户的导出文件了。
+        ///   实测用户那份导出：书签栏 38 / 书签栏-其他 15 / 书签栏-GITHUB 8 /
+        ///   书签栏-AI 5 / 8-27导入收藏 79 —— 层级得留着才对得上。
         let folder: String?
     }
 
@@ -100,9 +105,10 @@ enum BookmarkImporter {
                     ? decodeEntities(ns.substring(with: m.range(at: 3)))
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     : ""
-                // 最近的**有名字的**祖先文件夹 —— 没有就 nil（= 根目录）
+                // **完整路径**（从最外层有名字的文件夹一直到最近一层）—— 没有就 nil（= 根目录）
+                let path = stack.filter { !$0.isEmpty }
                 out.append(Entry(title: title, url: url,
-                                 folder: stack.last(where: { !$0.isEmpty })))
+                                 folder: path.isEmpty ? nil : path.joined(separator: " / ")))
                 continue
             }
             // ③④ 目录进 / 出
@@ -162,8 +168,15 @@ enum BookmarkImporter {
             }
             return
         }
-        // 文件夹（或 bookmark_bar / other / synced 这几个根）
-        let here = name.isEmpty ? folder : name
+        // 文件夹（或 bookmark_bar / other / synced 这几个根）—— 同样拼完整路径
+        let here: String?
+        if name.isEmpty {
+            here = folder
+        } else if let f = folder, !f.isEmpty {
+            here = f + " / " + name
+        } else {
+            here = name
+        }
         if let kids = node["children"] as? [[String: Any]] {
             for k in kids { walk(k, folder: here, into: &out) }
         }

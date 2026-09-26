@@ -108,20 +108,40 @@ final class BookmarkStore: ObservableObject {
 
     // MARK: - 导入（v1.0.90）
 
-    /// 批量导入书签。**按网址去重**（已经存在的算跳过），返回（新增, 跳过）。
+    /// 批量导入书签。**按网址去重**，返回（新增, 更新分组, 跳过）。
     ///
-    /// 导入的条目带上文件里的文件夹名（`folder`），于是收藏页能把它们
-    /// 单独归一组，不会跟你手动收藏的混在一起。
+    /// 导入的条目带上文件里的**完整文件夹路径**（`folder`），收藏页按它分组 ——
+    /// 这样显示出来就跟你导出的结构一致。
+    ///
+    /// ★ v1.0.93：对**已经存在**的地址，如果这次带到了文件夹信息、且跟旧的不一样，
+    ///   就**就地更新它的分组**（计入"更新"）而不是干跳过。
+    ///   为什么必须这样：v1.0.92 存的是"最近一层文件夹名"，已经导进去的 145 条都是旧分组；
+    ///   没有这条，用户就非得先清空再重导一次才能看到正确分组。
+    ///   现在「重新导一次同一个文件」就是修复动作。
     @discardableResult
-    func importMarks(_ entries: [BookmarkImporter.Entry]) -> (added: Int, skipped: Int) {
+    func importMarks(_ entries: [BookmarkImporter.Entry]) -> (added: Int, updated: Int, skipped: Int) {
         var added = 0
+        var updated = 0
         var skipped = 0
-        var seen = Set(marks.map { $0.url })
+        var indexByURL: [String: Int] = [:]
+        for (i, m) in marks.enumerated() { indexByURL[m.url] = i }
+
+        var seen = Set<String>()
         var fresh: [Bookmark] = []
         for e in entries {
             guard Self.usable(e.url) else { skipped += 1; continue }
-            if seen.contains(e.url) { skipped += 1; continue }
+            if seen.contains(e.url) { skipped += 1; continue }   // 同一个文件里重复出现
             seen.insert(e.url)
+
+            if let i = indexByURL[e.url] {
+                if let f = e.folder, marks[i].folder != f {
+                    marks[i].folder = f          // 补上 / 修正分组
+                    updated += 1
+                } else {
+                    skipped += 1
+                }
+                continue
+            }
             fresh.append(Bookmark(url: e.url, title: e.title,
                                   addedAt: Date(), folder: e.folder))
             added += 1
@@ -129,7 +149,7 @@ final class BookmarkStore: ObservableObject {
         // 刚导完，用户最想看的就是它们 → 放最前面
         marks.insert(contentsOf: fresh, at: 0)
         save()
-        return (added, skipped)
+        return (added, updated, skipped)
     }
 
     // MARK: - 历史

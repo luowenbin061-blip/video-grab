@@ -142,8 +142,9 @@ struct ToolboxView: View {
         }
         let r = store.importMarks(entries)
         note = "导入完成：新增 \(r.added) 条"
+            + (r.updated > 0 ? "，修正分组 \(r.updated) 条" : "")
             + (r.skipped > 0 ? "，跳过 \(r.skipped) 条（重复或地址无效）" : "")
-            + "。到「收藏 / 历史」里看（导入的单独归一组）。"
+            + "。到「收藏 / 历史」里看（按原文件夹分组）。"
     }
 
     // MARK: - 动作

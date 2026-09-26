@@ -72,6 +72,7 @@ struct BookmarksView: View {
         }
         let r = store.importMarks(entries)
         note = "导入完成：新增 \(r.added) 条"
+            + (r.updated > 0 ? "，修正分组 \(r.updated) 条" : "")
             + (r.skipped > 0 ? "，跳过 \(r.skipped) 条（重复或地址无效）" : "") + "。"
         tab = 0
     }
@@ -80,10 +81,22 @@ struct BookmarksView: View {
 
     /// 手动收藏的（没有文件夹信息）
     private var myMarks: [Bookmark] { store.marks.filter { $0.folder == nil } }
-    /// 导入进来的：**单独归一组**；组内按文件夹名排，同文件夹的挨在一起
-    private var importedMarks: [Bookmark] {
-        store.marks.filter { $0.folder != nil }
-            .sorted { (($0.folder ?? ""), $0.title) < (($1.folder ?? ""), $1.title) }
+
+    /// 导入的书签按**文件夹路径**分组 —— 一个文件夹一段，标题就是它在导出文件里的路径。
+    /// ★ v1.0.93：以前是"全都塞进一个组、只在每行小字写文件夹名"，
+    ///   用户说不像他的导出文件；现在真按文件夹分段（书签栏 / 书签栏 / AI …）。
+    private struct FolderGroup: Identifiable {
+        var id: String { folder }
+        let folder: String
+        let marks: [Bookmark]
+    }
+
+    private var importedGroups: [FolderGroup] {
+        let items = store.marks.filter { $0.folder != nil }
+        let by = Dictionary(grouping: items) { $0.folder ?? "" }
+        return by.keys.sorted().map { k in
+            FolderGroup(folder: k, marks: (by[k] ?? []).sorted { $0.title < $1.title })
+        }
     }
 
     private var currentCount: Int {
@@ -115,14 +128,14 @@ struct BookmarksView: View {
                         }
                     }
                 }
-                if !importedMarks.isEmpty {
-                    Section("导入的书签 \(importedMarks.count)") {
-                        ForEach(importedMarks) { m in
-                            row(title: m.label, host: m.host,
-                                extra: m.folder ?? "") { open(m.url) }
+                // 导入的书签：**一个文件夹一段**（标题就是导出文件里的路径）
+                ForEach(importedGroups) { g in
+                    Section("\(g.folder)  \(g.marks.count)") {
+                        ForEach(g.marks) { m in
+                            row(title: m.label, host: m.host, extra: "") { open(m.url) }
                         }
                         .onDelete { idx in
-                            let urls = idx.map { importedMarks[$0].url }
+                            let urls = idx.map { g.marks[$0].url }
                             urls.forEach { store.removeMark(url: $0) }
                         }
                     }
