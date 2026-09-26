@@ -14,6 +14,15 @@ struct BookmarksView: View {
     @State private var showPick = false
     @State private var note: String?
 
+    // MARK: 分组管理（v1.0.94）
+    @State private var showRename = false
+    @State private var renameTarget = ""      // 正在改名的哪个分组
+    @State private var renameText = ""
+    @State private var showCreate = false
+    @State private var showMove = false
+    @State private var movingURL = ""         // 正在移动哪一条书签
+    @State private var deleteTarget: String?  // 正在删哪个分组（非 nil = 弹确认框）
+
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
@@ -36,6 +45,13 @@ struct BookmarksView: View {
                     }
                     .accessibilityLabel("导入书签")
                 }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { showCreate = true } label: {
+                        Image(systemName: "folder.badge.plus")
+                    }
+                    .accessibilityLabel("新建分组")
+                    .disabled(tab != 0)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("清空", role: .destructive) { confirmClear = true }
                         .disabled(currentCount == 0)
@@ -55,6 +71,41 @@ struct BookmarksView: View {
             .sheet(isPresented: $showPick) {
                 FilePickerBox(onPicked: { files in importBookmarks(files) },
                               types: [.html, .json])
+            }
+            // ── 分组管理（v1.0.94）──
+            .sheet(isPresented: $showRename) {
+                NameSheet(title: "重命名分组", initial: renameText, placeholder: "分组名") { n in
+                    store.renameGroup(renameTarget, to: n)
+                }
+            }
+            .sheet(isPresented: $showCreate) {
+                NameSheet(title: "新建分组", initial: "", placeholder: "分组名") { n in
+                    if !store.createGroup(n) { note = "分组名重复或为空，没建成。" }
+                }
+            }
+            .sheet(isPresented: $showMove) {
+                MoveSheet(groups: store.allGroups, current: movingFrom) { target in
+                    store.moveMark(url: movingURL, to: target)
+                }
+            }
+            // 删分组：用户要求"每次问我一下" —— 所以给两个明确选项（一起删 / 只解散）
+            .confirmationDialog(
+                "删除分组「\(deleteTarget ?? "")」？",
+                isPresented: Binding(get: { deleteTarget != nil },
+                                     set: { if !$0 { deleteTarget = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("一起删掉（连里面 \(deleteCount) 条书签）", role: .destructive) {
+                    if let g = deleteTarget { store.deleteGroup(g, alsoDelete: true) }
+                    deleteTarget = nil
+                }
+                Button("只解散分组（书签回到「我的收藏」）") {
+                    if let g = deleteTarget { store.deleteGroup(g, alsoDelete: false) }
+                    deleteTarget = nil
+                }
+                Button("取消", role: .cancel) { deleteTarget = nil }
+            } message: {
+                Text("删了就找不回来了。「只解散」不会丢书签。")
             }
         }
     }
@@ -94,9 +145,21 @@ struct BookmarksView: View {
     private var importedGroups: [FolderGroup] {
         let items = store.marks.filter { $0.folder != nil }
         let by = Dictionary(grouping: items) { $0.folder ?? "" }
-        return by.keys.sorted().map { k in
+        var names = Set(by.keys)
+        // ★ 手动新建的分组**还没有书签也要列出来** —— 否则刚建完就看不到，以为没建成
+        names.formUnion(store.customGroups)
+        names.remove("")
+        return names.sorted().map { k in
             FolderGroup(folder: k, marks: (by[k] ?? []).sorted { $0.title < $1.title })
         }
+    }
+
+    /// 要删的那个分组里有几条（写进确认框，别让人瞎点）
+    private var deleteCount: Int { deleteTarget.map { store.count(inGroup: $0) } ?? 0 }
+
+    /// 正在移动的那条现在在哪个分组（移动列表里打勾用）
+    private var movingFrom: String? {
+        store.marks.first { $0.url == movingURL }?.folder
     }
 
     private var currentCount: Int {
@@ -107,7 +170,7 @@ struct BookmarksView: View {
 
     @ViewBuilder
     private var marksList: some View {
-        if store.marks.isEmpty {
+        if store.marks.isEmpty && store.customGroups.isEmpty {
             empty("还没有收藏。\n用功能卡片里的「收藏网址」把当前页存下来，或点左上角导入书签。")
         } else {
             List {
@@ -118,30 +181,76 @@ struct BookmarksView: View {
                 }
                 if !myMarks.isEmpty {
                     Section("我的收藏 \(myMarks.count)") {
-                        ForEach(myMarks) { m in
-                            row(title: m.label, host: m.host, extra: m.timeText) { open(m.url) }
-                        }
-                        .onDelete { idx in
-                            // 先把要删的地址收集出来再删 —— 边删边按下标取会错位
-                            let urls = idx.map { myMarks[$0].url }
-                            urls.forEach { store.removeMark(url: $0) }
-                        }
+                        ForEach(myMarks) { m in markRow(m) }
                     }
                 }
-                // 导入的书签：**一个文件夹一段**（标题就是导出文件里的路径）
+                // 导入的书签：**一个文件夹一段**；标题右边「⋯」可以改名 / 删整组
                 ForEach(importedGroups) { g in
-                    Section("\(g.folder)  \(g.marks.count)") {
-                        ForEach(g.marks) { m in
-                            row(title: m.label, host: m.host, extra: "") { open(m.url) }
+                    Section {
+                        if g.marks.isEmpty {
+                            Text("这个分组还没有书签 —— 左滑任意一条选「移动」放进来。")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            ForEach(g.marks) { m in markRow(m) }
                         }
-                        .onDelete { idx in
-                            let urls = idx.map { g.marks[$0].url }
-                            urls.forEach { store.removeMark(url: $0) }
+                    } header: {
+                        HStack(spacing: 6) {
+                            Text(g.folder)
+                            Text("\(g.marks.count)")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            groupMenu(g.folder)
                         }
                     }
                 }
             }
             .listStyle(.plain)
+        }
+    }
+
+    /// 分组标题右边那个「⋯」
+    private func groupMenu(_ name: String) -> some View {
+        Menu {
+            Button {
+                renameTarget = name
+                renameText = name
+                showRename = true
+            } label: {
+                Label("重命名分组", systemImage: "pencil")
+            }
+            Button(role: .destructive) {
+                deleteTarget = name
+            } label: {
+                Label("删除分组", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 15))
+        }
+        .accessibilityLabel("管理分组 \(name)")
+    }
+
+    /// 一条书签：左滑出「删除 / 移动」
+    /// （以前只有 .onDelete 的删除；现在把两个动作都挂在左滑上，手指习惯不变）
+    private func markRow(_ m: Bookmark) -> some View {
+        row(title: m.label, host: m.host, extra: m.folder == nil ? m.timeText : "") {
+            open(m.url)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                store.removeMark(url: m.url)
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+            Button {
+                movingURL = m.url
+                showMove = true
+            } label: {
+                Label("移动", systemImage: "folder")
+            }
+            .tint(.blue)
         }
     }
 
@@ -211,5 +320,79 @@ struct BookmarksView: View {
     private func open(_ url: String) {
         isPresented = false
         onOpen(url)
+    }
+}
+
+/// 只问一个名字的小卡片。
+/// ★ 故意**不用 `.alert` + TextField** —— 那个 API 是 iOS 16 起，我们的部署目标是 15.0。
+private struct NameSheet: View {
+    let title: String
+    let initial: String
+    let placeholder: String
+    let onDone: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    var body: some View {
+        NavigationView {
+            Form {
+                TextField(placeholder, text: $text)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .font(.system(size: 15))
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("确定") { onDone(text); dismiss() }
+                        .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .onAppear { text = initial }
+    }
+}
+
+/// 选一个目标分组（nil = 我的收藏）
+private struct MoveSheet: View {
+    let groups: [String]
+    let current: String?
+    let onPick: (String?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                Button { onPick(nil); dismiss() } label: {
+                    HStack {
+                        Text("我的收藏（不归任何分组）")
+                        Spacer()
+                        if current == nil { Image(systemName: "checkmark") }
+                    }
+                }
+                ForEach(groups, id: \.self) { g in
+                    Button { onPick(g); dismiss() } label: {
+                        HStack {
+                            Text(g)
+                            Spacer()
+                            if current == g { Image(systemName: "checkmark") }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("移到哪个分组")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
     }
 }

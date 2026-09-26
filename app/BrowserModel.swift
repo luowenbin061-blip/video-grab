@@ -321,6 +321,14 @@ final class BrowserModel: NSObject, ObservableObject {
     override init() {
         super.init()
         restoreFromDisk()
+
+        // ★ v1.0.94：第一次打开时主动碰一下网络 —— 把国行设备的
+        //   「允许"XX"使用数据?」弹窗提前引出来（用户要求：打开程序就弹，
+        //   而不是等开网页时才弹）。延迟 1 秒是为了让界面先出来，别把弹窗盖在黑屏上。
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            NetWarmup.runIfNeeded()
+        }
     }
 
     /// 从存档恢复「档案」。

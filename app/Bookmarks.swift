@@ -64,6 +64,10 @@ final class BookmarkStore: ObservableObject {
 
     @Published private(set) var marks: [Bookmark] = []
     @Published private(set) var history: [HistoryEntry] = []
+    /// 手动新建的分组名（v1.0.94）。
+    /// ★ 为什么需要单独存：我们现在的"分组"不是实体，是**从书签身上的 folder 推导出来的** ——
+    ///   所以一个"还没有任何书签的空分组"根本无处安放。新建分组就得有地方记它。
+    @Published private(set) var customGroups: [String] = []
 
     /// 历史最多留这么多条，超了丢最旧的 —— 别让它无限涨
     private let historyLimit = 500
@@ -71,6 +75,9 @@ final class BookmarkStore: ObservableObject {
     private struct Payload: Codable {
         var marks: [Bookmark]
         var history: [HistoryEntry]
+        /// ★ 可选：老版本写的记录里没有这个键 → 合成 Codable 用 decodeIfPresent，
+        ///   不会因为缺键让整份收藏读不出来。
+        var customGroups: [String]?
     }
 
     private static var fileURL: URL {
@@ -103,6 +110,71 @@ final class BookmarkStore: ObservableObject {
 
     func clearMarks() {
         marks.removeAll()
+        customGroups.removeAll()
+        save()
+    }
+
+    // MARK: - 分组管理（v1.0.94）
+    //
+    // ★ 现状说明（重要）：我们的"分组"不是实体，只是每条书签身上的一个**名字**。
+    //   所以这里所有操作都是"按名字批量改"。好处是改动小；代价是**改不了中间层**
+    //   （「书签栏」和「书签栏 / AI」是两个独立的名字，没有父子关系）。
+
+    /// 当前所有分组名：已有的（从书签推导）+ 手动建的（可能是空的）。排好序。
+    var allGroups: [String] {
+        var s = Set(marks.compactMap { $0.folder })
+        s.formUnion(customGroups)
+        s.remove("")
+        return s.sorted()
+    }
+
+    /// 某个分组里有几条书签（删分组确认框要用）
+    func count(inGroup name: String) -> Int {
+        marks.filter { $0.folder == name }.count
+    }
+
+    /// 新建一个空分组。重名 / 空名 → 返回 false
+    @discardableResult
+    func createGroup(_ name: String) -> Bool {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty, !allGroups.contains(n) else { return false }
+        customGroups.append(n)
+        customGroups = Array(Set(customGroups)).sorted()
+        save()
+        return true
+    }
+
+    /// 重命名分组：该组下所有书签跟着改名；手动建的空组也一起改。
+    /// 改名后跟另一个已有分组重名 → **合并到那个组**（Safari 也是这个行为）。
+    @discardableResult
+    func renameGroup(_ from: String, to: String) -> Bool {
+        let n = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty, n != from else { return false }
+        for i in marks.indices where marks[i].folder == from { marks[i].folder = n }
+        if let k = customGroups.firstIndex(of: from) { customGroups[k] = n }
+        customGroups = Array(Set(customGroups)).sorted()
+        save()
+        return true
+    }
+
+    /// 删除分组。
+    /// - alsoDelete = true：连里面的书签一起删（Safari 删文件夹就是这个行为）
+    /// - alsoDelete = false：只解散分组，里面的书签回到「我的收藏」（不丢东西）
+    /// 用户要求"每次问我一下"，所以调用方要先弹确认框再进来。
+    func deleteGroup(_ name: String, alsoDelete: Bool) {
+        if alsoDelete {
+            marks.removeAll { $0.folder == name }
+        } else {
+            for i in marks.indices where marks[i].folder == name { marks[i].folder = nil }
+        }
+        customGroups.removeAll { $0 == name }
+        save()
+    }
+
+    /// 把一条书签移到别的分组（`to` 传 nil = 回到「我的收藏」）
+    func moveMark(url: String, to folder: String?) {
+        guard let i = marks.firstIndex(where: { $0.url == url }) else { return }
+        marks[i].folder = folder
         save()
     }
 
@@ -198,13 +270,15 @@ final class BookmarkStore: ObservableObject {
         guard let p = try? dec.decode(Payload.self, from: d) else { return }
         marks = p.marks
         history = p.history
+        customGroups = p.customGroups ?? []      // 老记录没这个键 → 空数组
     }
 
     private func save() {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let d = try? enc.encode(Payload(marks: marks, history: history)) else { return }
+        let p = Payload(marks: marks, history: history, customGroups: customGroups)
+        guard let d = try? enc.encode(p) else { return }
         try? d.write(to: Self.fileURL, options: .atomic)
     }
 }

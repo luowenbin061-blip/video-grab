@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 /// 设置。所有开关都收在这一页里，不往主界面加按钮。
@@ -113,6 +114,20 @@ struct SettingsView: View {
                     Text("长按下载")
                 } footer: {
                     Text("上面那个管功能，下面那个只管排查 —— 两个互不影响。\n诊断开着时，每次长按会在屏幕顶部显示一行过程记录，8 秒自动消失，点一下立刻关掉。平时关着。")
+                }
+
+                Section {
+                    Button {
+                        if let u = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(u)
+                        }
+                    } label: {
+                        Label("打开系统设置（网络权限在这里）", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                } header: {
+                    Text("网络")
+                } footer: {
+                    Text("国行 iPhone 第一次装 App 会弹一次「允许"视频抓取"使用数据?」—— 选「无线局域网与蜂窝网络」就行。\n**这个弹窗一辈子只弹一次**：要是当时点了"不允许"，系统不会再来问，得去「设置 → 蜂窝网络 → 使用无线局域网与蜂窝网络」里手动打开（上面那个按钮直接跳过去）。\n另外「共享给电脑」用的是**本地网络**权限，是另一个弹窗，也只问一次。")
                 }
 
                 Section {
