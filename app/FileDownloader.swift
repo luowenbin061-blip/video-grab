@@ -25,12 +25,37 @@ struct FileDownloader {
     enum Fail: LocalizedError {
         case badStatus(Int)
         case empty
+        case noSpace
         var errorDescription: String? {
             switch self {
             case .badStatus(let c): return "服务器返回 HTTP \(c)"
             case .empty: return "服务器返回了空内容"
+            case .noSpace:
+                // ★ v1.0.101：会诊指出"磁盘满"的报错在不同路径上完全不一样
+                //（URLError / NSPOSIXErrorDomain 28 / NSFileWriteOutOfSpaceError），
+                // 不识别就会显示成一句看不懂的系统错误。
+                return "手机空间不够了（写文件失败）。先清一下空间再点重试。"
             }
         }
+    }
+
+    /// ★ v1.0.101：直链下载改用 **ephemeral** 会话 ——
+    /// 默认的 shared 会话会把响应塞进 URLCache、还带上凭据存储，全在进程内存里；
+    /// 下大文件时这是白白多占一份。
+    private static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.urlCache = nil
+        return URLSession(configuration: c)
+    }()
+
+    /// 判断"写不下去"是不是因为空间满了（各家错误域都算上）
+    static func isNoSpace(_ e: Error) -> Bool {
+        let ns = e as NSError
+        if ns.domain == NSPOSIXErrorDomain && ns.code == 28 { return true }      // ENOSPC
+        if ns.domain == NSCocoaErrorDomain && ns.code == 640 { return true }     // fileWriteOutOfSpace
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCannotWriteToFile { return true }
+        return false
     }
 
     let options: Options
@@ -58,7 +83,7 @@ struct FileDownloader {
                 let start = done
                 var req = request(for: url)
                 req.setValue("bytes=\(start)-\(start + chunk - 1)", forHTTPHeaderField: "Range")
-                let (data, resp) = try await URLSession.shared.data(for: req)
+                let (data, resp) = try await Self.session.data(for: req)
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
 
                 if code == 200 && start > 0 {
@@ -71,10 +96,15 @@ struct FileDownloader {
                 }
                 guard !data.isEmpty else { break }
 
-                let fh = try FileHandle(forWritingTo: options.partURL)
-                try fh.seekToEnd()
-                try fh.write(contentsOf: data)
-                try fh.close()
+                do {
+                    let fh = try FileHandle(forWritingTo: options.partURL)
+                    try fh.seekToEnd()
+                    try fh.write(contentsOf: data)
+                    try fh.close()
+                } catch {
+                    if Self.isNoSpace(error) { throw Fail.noSpace }
+                    throw error
+                }
 
                 done += Int64(data.count)
                 onProgress(done, total)
@@ -82,12 +112,29 @@ struct FileDownloader {
                 if data.count < Int(chunk) { break }     // 最后一段
             }
         } else {
-            let (data, resp) = try await URLSession.shared.data(for: request(for: url))
+            // ★★ v1.0.101（会诊两家都点了这条，属"必崩点"）：
+            //   服务端不支持分段时，**绝不能把整份文件读进内存** ——
+            //   原来这里是 data(for:) 拿到整份再 write(.atomic)，1GB 的片子就是 1GB 内存。
+            //   改成 download(for:)：由系统流式落到临时文件，内存只占缓冲区。
+            //   代价：.part 里已有的字节作废（服务端不给 Range，本来也接不上）。
+            if done > 0 {
+                try? fm.removeItem(at: options.partURL)
+                done = 0
+                fm.createFile(atPath: options.partURL.path, contents: nil)
+            }
+            let (tmp, resp) = try await Self.session.download(for: request(for: url))
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard (200...299).contains(code) else { throw Fail.badStatus(code) }
-            guard !data.isEmpty else { throw Fail.empty }
-            try data.write(to: options.partURL, options: .atomic)
-            done = Int64(data.count)
+            // download(for:) 给的临时文件在回调返回后会被系统删掉 → 必须立刻挪走
+            try? fm.removeItem(at: options.partURL)
+            do {
+                try fm.moveItem(at: tmp, to: options.partURL)
+            } catch {
+                if Self.isNoSpace(error) { throw Fail.noSpace }
+                throw error
+            }
+            let sz = (try? fm.attributesOfItem(atPath: options.partURL.path)[.size] as? Int64) ?? 0
+            done = sz
             onProgress(done, total)
         }
 

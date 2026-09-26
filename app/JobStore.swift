@@ -50,18 +50,65 @@ enum JobStore {
     }
 
     /// 这个目录占了多少空间（界面上给用户看）
+    ///
+    /// ★ v1.0.101：改成**递归**统计。以前只算顶层条目 —— 而分片在
+    /// `parts_<uuid>/` 子目录里，等于"临时文件吃掉的空间用户完全看不见"。
     static func totalSize() -> Int64 {
         let fm = FileManager.default
         guard let list = try? fm.contentsOfDirectory(at: dir,
                                                      includingPropertiesForKeys: [.fileSizeKey]) else {
             return 0
         }
-        var sum: Int64 = 0
-        for u in list {
-            let v = try? u.resourceValues(forKeys: [.fileSizeKey])
-            sum += Int64(v?.fileSize ?? 0)
+        return list.reduce(0) { $0 + sizeOfItem($1, fm: fm) }
+    }
+
+    /// 一个文件 / 一个目录（递归）的字节数
+    private static func sizeOfItem(_ u: URL, fm: FileManager) -> Int64 {
+        guard let e = fm.enumerator(at: u,
+                                    includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
+            return 0
         }
-        return sum
+        var s: Int64 = 0
+        for case let f as URL in e {
+            let v = try? f.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if v?.isRegularFile == true { s += Int64(v?.fileSize ?? 0) }
+        }
+        return s
+    }
+
+    /// 设备可用空间（拿不到就给 nil）—— 转码前预检用
+    static func freeSpace() -> Int64? {
+        let u = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage
+    }
+
+    /// 清理「下载临时文件」：所有 `parts_*` 分片目录 + `joined_*.json` 完成标记。
+    /// **不动**任何成品、不动 records.json。返回释放的字节数。
+    ///
+    /// ★ v1.0.101：以前**完全没有清理入口** —— 失败/中断的任务把分片留着（为了续传），
+    /// 但谁都不清，于是磁盘只减不增、越用越容易失败（会诊的机制②）。
+    /// `keeping` 传"正在下载的任务 id"，那些任务的目录跳过（否则会把正在下的弄坏）。
+    @discardableResult
+    static func cleanupTemp(keeping activeIDs: Set<String> = []) -> Int64 {
+        let fm = FileManager.default
+        guard let list = try? fm.contentsOfDirectory(at: dir,
+                                                     includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return 0
+        }
+        var freed: Int64 = 0
+        for u in list {
+            let n = u.lastPathComponent
+            if n.hasPrefix("parts_") {
+                let uid = String(n.dropFirst("parts_".count))
+                if activeIDs.contains(uid) { continue }
+            } else if !n.hasPrefix("joined_") {
+                continue
+            }
+            freed += sizeOfItem(u, fm: fm)
+            try? fm.removeItem(at: u)
+        }
+        return freed
     }
 
     // MARK: - 记录的持久化

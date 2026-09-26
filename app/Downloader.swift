@@ -13,7 +13,9 @@ import Foundation
 struct HLSDownloader {
 
     struct Options {
-        var concurrency = 4
+        /// v1.0.101：4 → 6。两家会诊一致建议 6
+        ///（8 会被部分 CDN 判异常流量 / 触发挑战页）。
+        var concurrency = 6
         var timeout: TimeInterval = 20
         var retry = 2
         var userAgent: String
@@ -73,6 +75,10 @@ struct HLSDownloader {
         let fileURL: URL
         let duration: Double
         let segmentCount: Int
+        /// ★ v1.0.101：拼接时**实际写进成品**的字节数（AES 解密后的量）。
+        /// 拿它和成品大小对比，才敢断定"拼接真的成功了"—— 会诊两家都指出
+        /// 光靠分片个数 / 名义大小不可靠（半文件也可能凑巧对上）。
+        let joinedBytes: Int64
     }
 
     // MARK: - 主流程
@@ -176,13 +182,17 @@ struct HLSDownloader {
         // 一个 key 只拉一次。整条清单共用同一个 key，
         // 逐分片去拉的话 694 个分片就是 694 次多余请求（还容易被判定为异常流量）。
         var keyCache: [URL: Data] = [:]
+        var written: Int64 = 0          // ★ v1.0.101：写进成品的真实字节数
         for (i, _) in segs.enumerated() {
             let part = partURL(i)
             guard let data = try? Data(contentsOf: part) else { continue }
             let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
                                                    keyCache: &keyCache)
             out.write(payload)
-            // 分片**故意不删** —— 见上面那段说明（v1.0.89）
+            written += Int64(payload.count)
+            // 分片**故意不删** —— 见上面那段说明（v1.0.89）。
+            // v1.0.101：改由 DownloadJob 在「拼接校验通过」之后立刻清（不再等转码成功），
+            // 所以磁盘 2× 只存在于拼接这一小段，而不是整段转码期间。
             if i % 25 == 0 {
                 onProgress(Progress(stage: .join, done: i + 1, total: total,
                                     bytes: bytesDone, message: "拼接 \(i + 1)/\(total)"))
@@ -195,7 +205,8 @@ struct HLSDownloader {
         onProgress(Progress(stage: .finished, done: total, total: total, bytes: bytesDone, message: "完成"))
         return Output(fileURL: options.outputURL,
                       duration: playlist.totalDuration,
-                      segmentCount: total)
+                      segmentCount: total,
+                      joinedBytes: written)
     }
 
     // MARK: - 网络

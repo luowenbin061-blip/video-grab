@@ -574,20 +574,57 @@ final class DownloadJob: ObservableObject, Identifiable {
                 return
             }
 
-            let result = try await dl.run(sourceURL: src)
-            if Task.isCancelled { paused = true; onUpdate?(); return }
+            // ★ v1.0.101：上次已经拼好的 .ts 还在（有完成标记、大小也对得上）
+            //   → 不重下也不重拼，直接进转码。崩在转码阶段的重试，从此是"重转一遍"
+            //   而不是"重下几百 MB"。（标记由下面拼接校验通过时写入。）
+            var joinedBytes: Int64 = 0
+            if let m = Self.readJoinedMarker(id: id), m.bytes > 0,
+               JobStore.size(of: tsURL.lastPathComponent) == m.bytes {
+                duration = m.duration
+                fileSize = m.bytes
+                joinedBytes = m.bytes
+                // 这里**故意不 stageBegin("转码")** —— 下面转码块会先 stageEnd(当前阶段)
+                // 再 stageBegin("转码")，多起一次会让阶段耗时对不上（埋点就白做了）。
+                notes.append("· 上次已经拼好了（\(Self.mb(m.bytes))MB）→ 跳过下载与拼接，直接转码")
+            } else {
+                let r = try await dl.run(sourceURL: src)
+                if Task.isCancelled { paused = true; onUpdate?(); return }
 
-            duration = result.duration
-            fileSize = JobStore.size(of: tsURL.lastPathComponent)
-            notes.append("✓ 下载完成 \(result.segmentCount) 个分片 · \(Int(result.duration)) 秒")
+                duration = r.duration
+                fileSize = JobStore.size(of: tsURL.lastPathComponent)
+                joinedBytes = r.joinedBytes
+                notes.append("✓ 下载完成 \(r.segmentCount) 个分片 · \(Int(r.duration)) 秒")
+
+                // ★ v1.0.101：拼接**校验通过**就清分片（不再等转码成功）。
+                //   判据 = 成品大小 == 实际写进成品的字节数 —— 会诊两家都提醒
+                //   "光看大小不够"，所以同时写一份**显式完成标记**，重试时才敢跳过拼接。
+                if joinedBytes > 0, fileSize == joinedBytes {
+                    Self.writeJoinedMarker(id: id, segments: r.segmentCount,
+                                           bytes: fileSize, duration: r.duration)
+                    try? FileManager.default.removeItem(at: tempDir)
+                    notes.append("· 拼接校验通过 → 临时分片已清理（腾出约 \(Self.mb(joinedBytes))MB）")
+                } else {
+                    notes.append("· 拼接结果与写进成品的字节数对不上"
+                                 + "（成品 \(Self.mb(fileSize))MB / 写进 \(Self.mb(joinedBytes))MB）"
+                                 + "，分片保留待重试")
+                }
+            }
 
             // ── 写一条只含这个 .ts 的 m3u8 ──────────────────────────
             // 只在"转 mp4 失败"时才用得上（本地 .ts 必须靠本机 HTTP 包成 HLS 才能播）
             let playName = "play_\(id.uuidString.prefix(8)).m3u8"
             let wrotePlaylist = Self.writePlaylist(tsName: tsURL.lastPathComponent,
-                                                   duration: result.duration,
+                                                   duration: duration,
                                                    folder: JobStore.dir,
                                                    name: playName) != nil
+
+            // ★ v1.0.101：转码前**先看空间**（.ts 与 .mp4 会同时存在）——
+            //   不够就提前说清楚，而不是写到一半失败（那种失败还要被自动重试，白烧一遍）。
+            let need = fileSize + 200 * 1024 * 1024
+            if let free = JobStore.freeSpace(), free < need {
+                throw Self.fail("手机空间不够：转码还要约 \(Self.mb(need - free))MB。"
+                                + "先清一下空间（设置 → 浏览数据 → 清理下载临时文件），再点重试。")
+            }
 
             // ── 自动转 MP4（留在程序内，不外发）────────────────────
             if let cur = Self.stageName(stage) { stageEnd(cur) }
@@ -622,6 +659,7 @@ final class DownloadJob: ObservableObject, Identifiable {
                 fileSize = JobStore.size(of: outputName)
                 // 转成功了就把 .ts 和清单删掉 —— 留着只是白占一份空间
                 JobStore.remove([tsURL.lastPathComponent, playName])
+                Self.removeJoinedMarker(id: id)      // ★ v1.0.101：完成标记一起清
                 phase = "完成 · MP4 已就绪"
                 notes.append("✓ 已转成 MP4（程序内保存，需要的话点「存相册」或「存文件夹」）")
                 thumbSource = mp4URL
@@ -658,7 +696,14 @@ final class DownloadJob: ObservableObject, Identifiable {
             }
             // 自动重试一次：网络抖动占失败的大头，隔 1.5 秒再试能救回一大半。
             // 只自动试一次 —— 无限重试会一直烧流量，剩下的交给人工点「重试」。
-            if !autoRetried {
+            //
+            // ★ v1.0.101（会诊建议）：**确定性失败不自动重试** ——
+            //   空间不够 / 这种视频暂时下不了，重试一次只是再失败一次（二次伤害）。
+            let msg = error.localizedDescription
+            let deterministic = msg.contains("空间不够")
+                || msg.contains("这种视频暂时下不了")
+                || msg.contains("认不出是什么")
+            if !autoRetried && !deterministic {
                 autoRetried = true
                 notes.append("· 自动重试（第 1 次）—— 上次失败：\(error.localizedDescription)")
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -675,6 +720,37 @@ final class DownloadJob: ObservableObject, Identifiable {
             finished = true
             onUpdate?()
         }
+    }
+
+    // MARK: - 拼接完成标记（v1.0.101）
+
+    /// 为什么要它：光看"成品大小 == 分片总和"不够可靠（会诊两家都提了），
+    /// 得有一个**显式的完成标记**，重试时才敢跳过下载与拼接。
+    private struct JoinedMark: Codable {
+        var segments: Int
+        var bytes: Int64
+        var duration: Double
+    }
+
+    private static func joinedMarkURL(_ id: UUID) -> URL {
+        JobStore.dir.appendingPathComponent("joined_\(id.uuidString).json")
+    }
+
+    static func writeJoinedMarker(id: UUID, segments: Int, bytes: Int64, duration: Double) {
+        let m = JoinedMark(segments: segments, bytes: bytes, duration: duration)
+        if let d = try? JSONEncoder().encode(m) {
+            try? d.write(to: joinedMarkURL(id), options: .atomic)
+        }
+    }
+
+    static func readJoinedMarker(id: UUID) -> (segments: Int, bytes: Int64, duration: Double)? {
+        guard let d = try? Data(contentsOf: joinedMarkURL(id)),
+              let m = try? JSONDecoder().decode(JoinedMark.self, from: d) else { return nil }
+        return (m.segments, m.bytes, m.duration)
+    }
+
+    static func removeJoinedMarker(id: UUID) {
+        try? FileManager.default.removeItem(at: joinedMarkURL(id))
     }
 
     /// 从成片里抽一帧当列表缩略图。

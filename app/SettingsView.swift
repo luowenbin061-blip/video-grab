@@ -74,6 +74,8 @@ struct SettingsView: View {
                     }
                     Button("清空浏览历史", role: .destructive) { confirmClearHistory = true }
                     Button("清除网页缓存") { clearWebCache() }
+                    // ★ v1.0.101：以前失败的任务把分片一直留在磁盘上，却**没有任何清理入口**
+                    Button("清理下载临时文件") { cleanupTemp() }
                     // 标签存档：清了之后下次启动就是干净的空白页（组也一起没）
                     Button("清空标签存档（下次启动是空白页）", role: .destructive) {
                         model.wipeSavedTabs()
@@ -210,6 +212,17 @@ struct SettingsView: View {
                         note = nil
                     }
                 })
+    }
+
+    /// 清理下载临时分片（v1.0.101）。正在下载的任务会跳过 —— 清了会把它们弄坏。
+    /// 成品视频、回收站、记录都不动。
+    private func cleanupTemp() {
+        let active = Set(downloads.jobs.filter { $0.isActive }.map { $0.id.uuidString })
+        let freed = JobStore.cleanupTemp(keeping: active)
+        note = freed > 0
+            ? "已清理下载临时文件，释放约 \(max(1, freed / 1048576))MB"
+                + (active.isEmpty ? "。" : "（正在下载的 \(active.count) 个任务已跳过）")
+            : "没有需要清理的临时文件。"
     }
 
     /// 只清缓存文件，**不动 Cookie** —— 免得一清就把各站的登录状态清掉
