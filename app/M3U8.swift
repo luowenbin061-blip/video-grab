@@ -35,7 +35,33 @@ struct M3U8Playlist {
     var mediaSequence = 0
     var rawText = ""
 
+    /// #EXT-X-MAP 的原样文本（fMP4/CMAF 的初始化段）。
+    /// 记下来**不是为了用它**，是为了能明确告诉用户「这种格式我们拼不出来」。
+    var initSegmentRaw: String?
+    /// 见过 #EXT-X-BYTERANGE（分片按字节区间给，不是一个个独立文件）
+    var sawByteRange = false
+    /// 见过的 DRM 加密方式（SAMPLE-AES 那一类；AES-128 不算）
+    var drmMethod: String?
+
     var totalDuration: Double { segmentDurations.reduce(0, +) }
+
+    /// 这份清单里有没有**我们拼不出来 / 解不了**的写法。
+    ///
+    /// ★ 为什么必须显式拦下来：以前这些标签被当成「看不懂就跳过」，
+    ///   结果是把分片硬拼成一个**缺了开头、播不了的残缺文件**，界面上还显示「下载成功」。
+    ///   **产出坏文件却报成功，比直接失败恶劣得多。** 宁可诚实地失败。
+    var unsupportedReason: String? {
+        if let m = drmMethod {
+            return "它用了 \(m) 加密（这是真 DRM，跟流媒体网站那种一回事），我们解不了"
+        }
+        if let map = initSegmentRaw {
+            return "它是 fMP4 格式（清单里有 \(map.prefix(70))），我们的拼接器只认传统的 TS 分片"
+        }
+        if sawByteRange {
+            return "它的分片是按字节区间给的（#EXT-X-BYTERANGE），我们还不支持这种取法"
+        }
+        return nil
+    }
 
     // MARK: - 解析
 
@@ -76,10 +102,25 @@ struct M3U8Playlist {
                     continue
                 }
 
+                if upper.hasPrefix("#EXT-X-MAP") {
+                    p.initSegmentRaw = line
+                    continue
+                }
+
+                if upper.hasPrefix("#EXT-X-BYTERANGE") {
+                    p.sawByteRange = true
+                    continue
+                }
+
                 if upper.hasPrefix("#EXT-X-KEY") {
                     let method = attrString(line, "METHOD") ?? "NONE"
                     if method.uppercased() == "NONE" {
                         currentKey = nil
+                    } else if method.uppercased().hasPrefix("SAMPLE-AES") {
+                        // SAMPLE-AES / SAMPLE-AES-CTR = 真 DRM。我们解不了，
+                        // 但要说清楚 —— 以前会一路下到最后才报一句「分片解密失败」。
+                        p.drmMethod = method
+                        currentKey = Key(method: method, uri: nil, iv: nil)
                     } else {
                         var uri: URL? = nil
                         if let u = attrString(line, "URI") {

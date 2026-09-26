@@ -20,6 +20,36 @@ struct TabGroup: Identifiable, Codable, Equatable {
 
     /// 界面上显示的名字（空名字给个默认）
     var displayName: String { name.isEmpty ? "标签页" : name }
+
+    // ★ 容错解码（v1.0.85）：**每个字段都用 decodeIfPresent + 默认值**。
+    //   为什么必须这样：Swift 合成的 Codable 对「非可选字段」用的是 decode ——
+    //   存档里少一个键就整个解码失败 → 上层拿到 nil → **标签一次性全丢，而且一声不响**。
+    //   也就是说：以后只要给这个结构加一个新字段，所有老用户的标签就会没。
+    //   现在「缺失 / 类型不对 / 是 null」三种情况都退回默认值，加字段再也不会炸。
+    private enum CodingKeys: String, CodingKey {
+        case id, name, isPrivate, tabIDs, currentTabID
+    }
+
+    /// ★ 必须有：一旦写了自定义 init(from:) 编译器就**不再生成 memberwise 初始化器**，
+    ///   而 BrowserModel 里是用 `TabGroup(name:)` / `TabGroup(name:tabIDs:)` 建的。
+    ///   （这就是"改 Codable"最容易崩的地方 —— 本地结构检查看不出来，只有真编译器认。）
+    init(id: UUID = UUID(), name: String, isPrivate: Bool = false,
+         tabIDs: [UUID] = [], currentTabID: UUID? = nil) {
+        self.id = id
+        self.name = name
+        self.isPrivate = isPrivate
+        self.tabIDs = tabIDs
+        self.currentTabID = currentTabID
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.soft(UUID.self, .id, UUID())
+        name = c.soft(String.self, .name, "")
+        isPrivate = c.soft(Bool.self, .isPrivate, false)
+        tabIDs = c.soft([UUID].self, .tabIDs, [])
+        currentTabID = c.softOptional(UUID.self, .currentTabID)
+    }
 }
 
 /// 一个标签档案的持久化形态。
@@ -34,6 +64,47 @@ struct TabRecord: Codable {
     var address: String
     var groupID: UUID
     var lastActiveAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, address, groupID, lastActiveAt
+    }
+
+    init(id: UUID, title: String, address: String, groupID: UUID, lastActiveAt: Date) {
+        self.id = id; self.title = title; self.address = address
+        self.groupID = groupID; self.lastActiveAt = lastActiveAt
+    }
+
+    /// 同上（v1.0.85）：缺字段不许把整份存档带崩
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.soft(UUID.self, .id, UUID())
+        title = c.soft(String.self, .title, "")
+        address = c.soft(String.self, .address, "")
+        groupID = c.soft(UUID.self, .groupID, UUID())
+        // 缺时间戳就当作「很久没用过」—— 这样它会被优先休眠，而不是被误当成刚用过
+        lastActiveAt = c.soft(Date.self, .lastActiveAt, .distantPast)
+    }
+}
+
+/// 宽容解码的小工具（v1.0.85）。
+/// 目的只有一个：**存档多一个/少一个字段，都不该让用户的标签消失。**
+private extension KeyedDecodingContainer {
+
+    /// 取值：字段缺失 / 类型不对 / 是 null —— 三种情况都退回默认值，绝不抛。
+    ///
+    /// ★ 为什么写成 do/catch 而不是 `try?`：Swift 5 起 `try?` 会把可选值**压平**
+    ///   （`T??` → `T?`），再叠 `?? nil` 那种写法容易踩到"左边不是可选"的编译错。
+    ///   do/catch 语义直白，没有这个坑。
+    func soft<T: Decodable>(_ type: T.Type, _ key: Key, _ fallback: T) -> T {
+        do { return try decodeIfPresent(type, forKey: key) ?? fallback }
+        catch { return fallback }
+    }
+
+    /// 可空字段的宽容版（缺失 / 类型不对都当没有）
+    func softOptional<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
+        do { return try decodeIfPresent(type, forKey: key) }
+        catch { return nil }
+    }
 }
 
 /// 落盘的完整结构（一次写一个文件）。
@@ -41,12 +112,34 @@ struct TabStorePayload: Codable {
     var groups: [TabGroup]
     var records: [TabRecord]
     var currentGroupID: UUID?
+
+    private enum CodingKeys: String, CodingKey {
+        case groups, records, currentGroupID
+    }
+
+    init(groups: [TabGroup], records: [TabRecord], currentGroupID: UUID?) {
+        self.groups = groups; self.records = records; self.currentGroupID = currentGroupID
+    }
+
+    /// 同上（v1.0.85）
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        groups = c.soft([TabGroup].self, .groups, [])
+        records = c.soft([TabRecord].self, .records, [])
+        currentGroupID = c.softOptional(UUID.self, .currentGroupID)
+    }
 }
 
 /// 标签档案的落盘。
 /// 位置：Application Support/VideoGrab/Tabs/（跟下载记录、收藏同一个根目录）。
 /// 缩略图**存成单独的文件**，不塞进 JSON —— base64 会白白膨胀三分之一。
 enum TabStore {
+
+    /// 最近一次读写失败的原因。**nil = 一切正常。**
+    /// ★ 为什么必须有它：以前 load() 是 `try?` —— 读失败就返回 nil，上层当成「没有存档」，
+    ///   用户看到的只是「标签莫名其妙全没了」，而且不知道为什么。
+    ///   本项目的铁律：失败必须留痕、必须能显示出来，不许被静默吞掉。
+    private(set) static var lastError: String?
 
     static var dir: URL {
         let d = JobStore.dir.appendingPathComponent("Tabs", isDirectory: true)
@@ -65,19 +158,36 @@ enum TabStore {
     // MARK: - 整体读写
 
     static func load() -> TabStorePayload? {
-        guard let d = try? Data(contentsOf: file) else { return nil }
-        let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601
-        // 旧版本写的存档字段对不上也不该整个读不出来 → 失败就当没有
-        return try? dec.decode(TabStorePayload.self, from: d)
+        lastError = nil
+        // ★ 先分清「本来就没有存档」和「有存档但读不出来」——
+        //   前者是正常（第一次用 / 你手动清过），后者**必须告诉用户**。
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        do {
+            let d = try Data(contentsOf: file)
+            let dec = JSONDecoder()
+            dec.dateDecodingStrategy = .iso8601
+            return try dec.decode(TabStorePayload.self, from: d)
+        } catch {
+            lastError = "存档读取失败（\(error.localizedDescription)）"
+            return nil
+        }
     }
 
-    static func save(_ p: TabStorePayload) {
-        let enc = JSONEncoder()
-        enc.dateEncodingStrategy = .iso8601
-        enc.outputFormatting = [.sortedKeys]
-        guard let d = try? enc.encode(p) else { return }
-        try? d.write(to: file, options: .atomic)
+    /// 返回是否写成功。**写失败不再静默**（以前是两处 `try?` 全吞掉）。
+    @discardableResult
+    static func save(_ p: TabStorePayload) -> Bool {
+        lastError = nil
+        do {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            enc.outputFormatting = [.sortedKeys]
+            let d = try enc.encode(p)
+            try d.write(to: file, options: .atomic)
+            return true
+        } catch {
+            lastError = "存档写入失败（\(error.localizedDescription)）"
+            return false
+        }
     }
 
     /// 把存档整个清掉（设置里的「清空标签存档」用；也用于测试）

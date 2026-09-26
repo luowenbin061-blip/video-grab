@@ -31,6 +31,7 @@ struct HLSDownloader {
         case noVariant
         case noSegment(String)
         case decryptFailed
+        case unsupported(String)
 
         var errorDescription: String? {
             switch self {
@@ -40,6 +41,10 @@ struct HLSDownloader {
                 return "m3u8 里没有解析出任何分片"
                     + (head.isEmpty ? "" : " —— 取回内容开头：\(head)")
             case .decryptFailed: return "分片解密失败（AES-128）"
+            case .unsupported(let why):
+                // ★ 宁可诚实地失败，也不产出「打不开但显示成功」的残缺文件
+                return "这种视频暂时下不了：\(why)。"
+                    + "硬拼只会得到一个打不开的残缺文件，所以这次直接停下（不浪费你流量）。"
             }
         }
     }
@@ -97,6 +102,11 @@ struct HLSDownloader {
         } else {
             playlist = first
         }
+
+        // ★ 先看这份清单有没有我们拼不出来的写法 —— 有就**现在**停下并说清楚。
+        //   以前这些标签被当成「看不懂就跳过」，结果是硬拼出一个缺了开头、播不了的
+        //   残缺文件，界面上还显示「下载成功」。产出坏文件却报成功，比直接失败恶劣得多。
+        if let why = playlist.unsupportedReason { throw Fail.unsupported(why) }
 
         guard !playlist.segmentURLs.isEmpty else { throw Fail.noSegment(head) }
         let segs = playlist.segmentURLs

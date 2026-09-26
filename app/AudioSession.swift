@@ -39,6 +39,21 @@ enum AppAudio {
         }
     }
 
+    /// 被来电 / 闹钟 / Siri 打断之后，系统会把会话置成 **inactive**。
+    /// 恢复播放前必须**重新激活一次** —— 不然会出现「画面在动、但没有声音」。
+    ///
+    /// ★ 只在确实持有会话时做（holders > 0）：否则等于平白去抢别人的音频，
+    ///   用户正在听歌会被我们掐掉。
+    static func reactivate() {
+        guard holders > 0 else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            lastError = nil
+        } catch {
+            lastError = "音频会话没能恢复：\(error.localizedDescription)"
+        }
+    }
+
     /// 不再需要时调用；最后一个持有者走了才真正让出
     static func release() {
         guard holders > 0 else { return }

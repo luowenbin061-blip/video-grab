@@ -323,6 +323,12 @@ final class BrowserModel: NSObject, ObservableObject {
         guard let p = TabStore.load(), !p.groups.isEmpty else {
             tabGroups = [TabGroup(name: "标签页")]     // 第一次用 / 存档被清了
             currentGroupIndex = 0
+            // ★ 存档「在、但读不出来」时必须说一声（v1.0.85）——
+            //   以前的写法是静默当没有：用户只看到「我的标签莫名其妙全没了」，
+            //   而且不知道为什么。真·第一次用不会有 lastError，所以不会乱弹。
+            if let why = TabStore.lastError {
+                showToast("上次的标签没能恢复：\(why)")
+            }
             return
         }
         tabGroups = p.groups
@@ -1154,17 +1160,23 @@ final class BrowserModel: NSObject, ObservableObject {
             return $0.url < $1.url
         }
 
+        // ★ 截断到上限（v1.0.85）—— 这份列表只增不减，见 TabLimits.maxSniffItems 的说明。
+        //   排序已经保证「hls 优先、同类里最近的在前」，所以从头截断留下的就是最有用的那批。
+        let capped = sorted.count > TabLimits.maxSniffItems
+            ? Array(sorted.prefix(TabLimits.maxSniffItems))
+            : sorted
+
         // 先落到这个标签自己身上
-        t.items = sorted
-        t.groups = Self.makeGroups(sorted)
+        t.items = capped
+        t.groups = Self.makeGroups(capped)
         t.lastUpdated = now
         t.mseSeen = mse
-        t.hint = Self.hint(for: sorted)
+        t.hint = Self.hint(for: capped)
         if t.address.isEmpty { t.address = href }
 
         guard isCurrent else { return }      // 后台标签：到此为止，不碰界面状态
 
-        items = sorted
+        items = capped
         groups = t.groups
         lastUpdated = now
         mseSeen = mse

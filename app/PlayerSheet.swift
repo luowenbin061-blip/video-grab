@@ -1,3 +1,4 @@
+import AVFoundation
 import AVKit
 import SwiftUI
 import UIKit
@@ -380,6 +381,14 @@ final class PlayerBox: ObservableObject {
 
     private var failObs: NSObjectProtocol?
     private var stallObs: NSObjectProtocol?
+    /// ★ v1.0.85：音频「被别的 App 抢走」和「耳机拔了」这两件事的观察者。
+    ///   不接它们的后果（都是用户立刻能感觉到的）：
+    ///     · 来电 / 闹钟 / Siri → 系统会**直接停掉我们的播放**，挂断后不会自己续播
+    ///     · 拔耳机（旧路由不可用）→ 不暂停的话声音会从外放**突然炸出来**
+    private var interruptionObs: NSObjectProtocol?
+    private var routeObs: NSObjectProtocol?
+    /// 是不是「被打断而暂停」（区别于用户自己按的暂停）—— 只有这种情况才续播
+    private var interrupted = false
     private var pollTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
 
@@ -404,14 +413,70 @@ final class PlayerBox: ObservableObject {
             object: item, queue: .main) { [weak self] _ in
             self?.beginStallWatch()
         }
+
+        // 音频被别的 App/系统抢走（来电、闹钟、Siri…）
+        interruptionObs = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil, queue: .main) { [weak self] n in
+            self?.handleAudioInterruption(n)
+        }
+
+        // 音频走哪条路变了（典型：拔耳机）
+        routeObs = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil, queue: .main) { [weak self] n in
+            self?.handleAudioRouteChange(n)
+        }
     }
 
     deinit {
         if let f = failObs { NotificationCenter.default.removeObserver(f) }
         if let s = stallObs { NotificationCenter.default.removeObserver(s) }
+        if let i = interruptionObs { NotificationCenter.default.removeObserver(i) }
+        if let r = routeObs { NotificationCenter.default.removeObserver(r) }
         pollTask?.cancel()
         stallTask?.cancel()
         stateTask?.cancel()
+    }
+
+    // MARK: - 音频被打断 / 路由变化（v1.0.85）
+
+    /// 被打断开始 → 暂停，并记下「是它打断了我」；打断结束 → 该恢复就恢复。
+    /// ★ 只认「系统打断」这一种 —— 用户自己按的暂停不会被这里覆盖掉，
+    ///   否则会出现「来了个通知，视频自己开始播」这种莫名其妙的事。
+    private func handleAudioInterruption(_ n: Notification) {
+        let info = n.userInfo ?? [:]
+        guard let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+
+        switch type {
+        case .began:
+            interrupted = (player.timeControlStatus == .playing)
+            if interrupted { player.pause() }
+        case .ended:
+            guard interrupted else { return }
+            interrupted = false
+            let optRaw = (info[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
+            let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume)
+            guard shouldResume, error == nil else { return }
+            // 会话已经被系统置成 inactive 了 —— 不先重新激活，就是「画面在动、没有声音」
+            AppAudio.reactivate()
+            player.play()
+        @unknown default:
+            break
+        }
+    }
+
+    /// 音频路由变了。**旧设备不可用**（拔耳机 / 断开蓝牙）要暂停 ——
+    /// 不暂停的话，本来戴耳机听的东西会突然从外放炸出来。
+    private func handleAudioRouteChange(_ n: Notification) {
+        let info = n.userInfo ?? [:]
+        guard let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        if reason == .oldDeviceUnavailable {
+            interrupted = false        // 这是用户自己拔的，别记着"等着恢复"
+            player.pause()
+        }
     }
 
     /// 盯着"在不在播"。轮询而不是 KVO —— 理由和其他地方一样（KVO 回调不在主线程，
