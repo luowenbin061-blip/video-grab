@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 import UIKit
 
@@ -70,6 +71,86 @@ final class DownloadJob: ObservableObject, Identifiable {
     private var noticeTask: Task<Void, Never>?
     /// 自动重试只用一次（每次 start 重置）—— 无限自动重试会一直烧流量
     private var autoRetried = false
+
+    // MARK: - 诊断埋点（v1.0.89）
+
+    /// ★ 为什么必须有（用户原话：「卡死或者闪退才是让一个 app 背负着一个超大炸弹」）：
+    ///   只读代码锁不死根因 —— 内存压力、主线程被堵、引擎内部，三者静态上都排不掉。
+    ///   所以在每次运行的**阶段边界**记三样东西，全部写进「过程记录」：
+    ///     · **各阶段耗时** → 卡在哪一步
+    ///     · **内存峰值** → 是不是内存压力（卡死 + 被系统杀）
+    ///     · **主线程最长失联** → 是不是主线程被堵（那才是"界面卡死"）
+    ///   下次再出问题，过程记录里直接有数据，不用再猜。
+    private var stageMark: [String: Date] = [:]
+    private var memPeak: Int64 = 0
+    private var mainStallMs: Int = 0
+    private var heartbeat: Task<Void, Never>?
+
+    private static func stageName(_ s: HLSDownloader.Stage) -> String? {
+        switch s {
+        case .prepare:  return nil
+        case .download: return "下载"
+        case .join:     return "拼接"
+        case .convert:  return "转码"
+        case .finished: return nil
+        }
+    }
+
+    private func stageBegin(_ name: String) {
+        stageMark[name] = Date()
+        memPeak = 0
+        mainStallMs = 0
+        startHeartbeat()
+        notes.append("▶ \(name) 开始")
+    }
+
+    private func stageEnd(_ name: String) {
+        stopHeartbeat()
+        guard let t = stageMark[name] else { return }
+        let sec = Date().timeIntervalSince(t)
+        notes.append(String(format: "■ %@ 用时 %.1f 秒 · 内存峰值 %.0f MB · 主线程最长失联 %d 毫秒",
+                            name, sec, Double(memPeak) / 1_048_576, mainStallMs))
+        stageMark[name] = nil
+        // 立刻落盘：万一下一步就崩了，这条记录必须已经在磁盘上
+        onUpdate?()
+    }
+
+    /// 主线程心跳：每秒一次。
+    /// ★ 关键点 —— 如果主线程被堵，**这个 Task 自己就会被推迟**，测出来的间隔就会变大。
+    ///   这才是"界面卡死"的直接证据（内存压力导致的卡顿不会让它变这么大）。
+    private func startHeartbeat() {
+        stopHeartbeat()
+        let target = self
+        heartbeat = Task { @MainActor in
+            var last = Date()
+            while !Task.isCancelled {
+                target.memPeak = max(target.memPeak, Self.residentMemory())
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let now = Date()
+                let gap = Int(now.timeIntervalSince(last) * 1000)
+                if gap > 2000 { target.mainStallMs = max(target.mainStallMs, gap) }
+                last = now
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeat?.cancel()
+        heartbeat = nil
+    }
+
+    /// 当前进程实际占用（resident size）
+    nonisolated static func residentMemory() -> Int64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size
+                                           / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? Int64(info.resident_size) : 0
+    }
 
     /// 本阶段内的进度（下载/拼接共用分片计数）
     var progress: Double { total > 0 ? Double(done) / Double(total) : 0 }
@@ -156,20 +237,27 @@ final class DownloadJob: ObservableObject, Identifiable {
         resolution = record.resolution
         notes = record.notes
 
-        // 上次是下到一半被关掉的 —— 标成「非自愿暂停」，界面上给「继续」
+        // 上次是下到一半被关掉的
+        //
+        // ★ v1.0.89 改：以前这里写 `failed = "上次运行中被中断（没下完）"` ——
+        //   而列表的红字判据正是 `failed != nil`（ContentView.swift:1114）→
+        //   **每次崩溃/被杀后台之后重启，任务都顶着一条假的"失败"红字**，
+        //   用户以为下载失败了。其实它只是被中断、分片还在、可以直接继续。
+        //   现在只标 paused（按钮自动变「继续」），不给 failed —— 不再谎报失败。
         if !record.finished, record.failed == nil {
-            failed = "上次运行中被中断（没下完）"
-            phase = "中断"
+            phase = "已中断（分片还在，可直接继续）"
             paused = true
         }
         let t = Self.thumbName(for: record.id)
         thumbName = JobStore.exists(named: t) ? t : nil
 
-        if !JobStore.exists(named: record.outputName) {
+        // ★ v1.0.89 改：以前是 `!JobStore.exists(named: record.outputName)` ——
+        //   outputName 还是 nil（只是"还没产出"）时 exists 返回 false →
+        //   **fileMissing 被误判成 true**，界面会说"文件已不在"。
+        //   现在只有"记录里写了产物名、但文件真的没了"才算 fileMissing。
+        if let out = record.outputName, !out.isEmpty, !JobStore.exists(named: out) {
             fileMissing = true
-            if record.outputName != nil {
-                phase = "文件已不在"
-            }
+            phase = "文件已不在"
         }
     }
 
@@ -443,6 +531,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         dl.onProgress = { [weak self] p in
             Task { @MainActor in
                 guard let self else { return }
+                // ★ 阶段切换就是埋点的落点（下载 → 拼接 → 转码）
+                if p.stage != self.stage {
+                    if let cur = Self.stageName(self.stage) { self.stageEnd(cur) }
+                    if let nxt = Self.stageName(p.stage) { self.stageBegin(nxt) }
+                }
                 self.stage = p.stage
                 self.done = p.done
                 self.total = p.total
@@ -461,6 +554,7 @@ final class DownloadJob: ObservableObject, Identifiable {
             //   而用户只看到一句失败、不知道卡在哪。探完才知道该走哪条路。
             //   探测结果同时写进过程记录 —— 以后出问题一眼看出原因。
             phase = "探测地址…"
+            stageBegin("探测")
             let probe = await SourceProbe.fetch(url: src,
                                                 ua: opt.userAgent,
                                                 referer: opt.referer,
@@ -496,6 +590,8 @@ final class DownloadJob: ObservableObject, Identifiable {
                                                    name: playName) != nil
 
             // ── 自动转 MP4（留在程序内，不外发）────────────────────
+            if let cur = Self.stageName(stage) { stageEnd(cur) }
+            stageBegin("转码")
             phase = "正在转成 MP4…"
             let mp4URL = JobStore.file(named: baseName + ".mp4")
             let (ok, log) = await Exporter.toMP4(
@@ -536,6 +632,15 @@ final class DownloadJob: ObservableObject, Identifiable {
                 phase = "可以播放；MP4 没转出来（原因见过程记录）"
             }
 
+            // ★ v1.0.89 三件事一起补（以前全漏了）：
+            //   ① `failed = nil` —— 成功块原来**只设 finished/mp4Ready，不清 failed**，
+            //      而红字判据是 failed != nil → 成功也可能顶着红字。
+            //   ② 转码也成功了，现在才清临时目录（分片留到这里就是为了崩了能续）。
+            //   ③ 收尾埋点。
+            failed = nil
+            if let cur = Self.stageName(stage) { stageEnd(cur) }
+            stageEnd("探测")
+            try? FileManager.default.removeItem(at: tempDir)
             finished = true
             onUpdate?()
             // 缩略图放在「完成」之后抽：界面立刻变成完成态，图晚一两秒自己出现。
@@ -562,6 +667,8 @@ final class DownloadJob: ObservableObject, Identifiable {
                     return
                 }
             }
+            if let cur = Self.stageName(stage) { stageEnd(cur) }
+            stageEnd("探测")
             failed = error.localizedDescription
             phase = "失败"
             notes.append("✗ 下载失败：\(error.localizedDescription)")

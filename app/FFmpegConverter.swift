@@ -40,9 +40,15 @@ enum FFmpegConverter {
         // 返回 0 = 成功，非 0 = ffmpeg 自己的退出码。
         let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
             var argv = args.map { strdup($0) }
-            // strdup 出来的字符串不释放 —— 一次转码一次调用，量级可忽略
-            // （kewlbear 原实现同样标注 FIXME: free，行为一致）
-            return HookFFmpeg(Int32(args.count), &argv)
+            let c = HookFFmpeg(Int32(args.count), &argv)
+            // ★ v1.0.89：**必须释放**。
+            //   以前是"一次转码泄一份、量级可忽略"（kewlbear 原实现的 FIXME 也留着）。
+            //   但注意 ffmpeg 的 CLI main 是被 setjmp/longjmp 兜住的 ——
+            //   ffmpeg 内部 exit() 会跳过它自己那套清理，全局状态只靠 resetFFmpeg()
+            //   清三个计数。所以这里每一点泄漏都是**每次转码累积一次**，
+            //   而且这条路上本来就容易越跑越胖。顺手清干净。
+            for p in argv { free(p) }
+            return c
         }.value
 
         guard code == 0 else {

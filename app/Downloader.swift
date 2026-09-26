@@ -156,7 +156,15 @@ struct HLSDownloader {
             throw Fail.badStatus(0, "有 \(total - done) 个分片没下完，已保留已下载的部分，可再点一次继续")
         }
 
-        // 2) 按顺序拼接（边拼边删，控制磁盘占用）
+        // 2) 按顺序拼接
+        //
+        // ★ v1.0.89：**不再边拼边删分片**。
+        //   原因（用户报的真问题）：以前拼完一个分片就删一个，最后还删掉整个临时目录 ——
+        //   于是**一旦崩在"拼接之后 / 转码途中"（正是最容易崩的环节），续传的底料
+        //   已经被程序自己删光了** → 用户点「重试」只能从零重下几百 MB。
+        //   现在分片一律留到**整条流程（含转码）成功之后**，由 DownloadJob 统一清理。
+        //   代价：峰值磁盘占用约 2 倍（分片 + 成品同时存在）——
+        //   换来的是"崩了重试 = 重新拼接十几秒"，而不是"重下一遍"。
         onProgress(Progress(stage: .join, done: 0, total: total, bytes: bytesDone, message: "正在拼接…"))
         let fm = FileManager.default
         if fm.fileExists(atPath: options.outputURL.path) {
@@ -174,7 +182,7 @@ struct HLSDownloader {
             let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
                                                    keyCache: &keyCache)
             out.write(payload)
-            try? fm.removeItem(at: part)
+            // 分片**故意不删** —— 见上面那段说明（v1.0.89）
             if i % 25 == 0 {
                 onProgress(Progress(stage: .join, done: i + 1, total: total,
                                     bytes: bytesDone, message: "拼接 \(i + 1)/\(total)"))
@@ -182,7 +190,8 @@ struct HLSDownloader {
         }
         try? out.close()
 
-        try? fm.removeItem(at: options.tempDir)
+        // ★ 临时目录也**不在这里删** —— 留给 DownloadJob 在"转码也成功"之后统一清。
+        //   （以前这里删掉，等于把续传底料在最后一步销毁。）
         onProgress(Progress(stage: .finished, done: total, total: total, bytes: bytesDone, message: "完成"))
         return Output(fileURL: options.outputURL,
                       duration: playlist.totalDuration,
