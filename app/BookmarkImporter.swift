@@ -49,7 +49,9 @@ enum BookmarkImporter {
 
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
-            if line.range(of: "<DT>\s*<H3", options: [.regularExpression, .caseInsensitive]) != nil
+            // ★ 注意用**原始字符串** #"..."#：正则里的 \s 在普通字符串里是非法转义，
+            //   编译器会报 "invalid escape sequence in literal"（run #90 就死在这一行）。
+            if line.range(of: #"<DT>\s*<H3"#, options: [.regularExpression, .caseInsensitive]) != nil
                 || line.range(of: "<H3", options: .caseInsensitive) != nil,
                let name = group(line, #"<H3[^>]*>(.*?)</H3>"#) {
                 pendingFolder = decodeEntities(name)
