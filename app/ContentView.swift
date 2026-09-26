@@ -688,6 +688,8 @@ struct ContentView: View {
                 .background(Color.black.opacity(0.82), in: Capsule())
                 .padding(.top, 70)
                 .transition(.opacity)
+                // 点一下就能收掉（尤其证书那条现在会停 8 秒）
+                .onTapGesture { model.toast = nil }
         }
     }
 }

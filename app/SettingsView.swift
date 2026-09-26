@@ -67,6 +67,10 @@ struct SettingsView: View {
 
                 Section {
                     labeled("已放行的网站", "\(trustedCount) 个")
+                    if let last = TrustedHosts.lastApproved {
+                        labeled("最近一次放行", last.host)
+                        labeled("时间", Self.stamp.string(from: last.at))
+                    }
                     if trustedCount > 0 {
                         Button("忘掉所有已放行的网站", role: .destructive) {
                             TrustedHosts.forgetAll()
@@ -175,6 +179,13 @@ struct SettingsView: View {
             }
         }
     }
+
+    /// "最近一次放行"的时间格式（短，够看就行）
+    private static let stamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
 
     private static var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"

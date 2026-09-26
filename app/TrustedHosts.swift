@@ -14,8 +14,23 @@ enum TrustedHosts {
 
     private static let key = "vgTrustedCertHosts"
 
+    private static let lastHostKey = "vgTrustedCertLastHost"
+    private static let lastAtKey = "vgTrustedCertLastAt"
+
     /// 进程内缓存一份，别为每次 TLS 握手都去读 UserDefaults
     private static var cache: Set<String>?
+
+    /// 最近一次放行的网站 + 时间（设置页显示）。
+    ///
+    /// ★ 为什么要记这个：那条"已放行"的顶部提示只活几秒 —— 万一没看到，
+    ///   用户要能**事后查证**"到底放行过没有"。这也让"提示没出现"这类问题可判定：
+    ///   设置里显示"刚刚 · <域名>"就说明检测到了、只是提示没看到；
+    ///   什么都不显示就说明检测那一层就没走到。
+    static var lastApproved: (host: String, at: Date)? {
+        let d = UserDefaults.standard
+        guard let h = d.string(forKey: lastHostKey), !h.isEmpty else { return nil }
+        return (h, Date(timeIntervalSince1970: d.double(forKey: lastAtKey)))
+    }
 
     private static func load() -> Set<String> {
         if let c = cache { return c }
@@ -41,13 +56,19 @@ enum TrustedHosts {
         if s.contains(h) { return false }
         s.insert(h)
         cache = s
-        UserDefaults.standard.set(Array(s), forKey: key)
+        let d = UserDefaults.standard
+        d.set(Array(s), forKey: key)
+        d.set(h, forKey: lastHostKey)
+        d.set(Date().timeIntervalSince1970, forKey: lastAtKey)
         return true
     }
 
     /// 用户后悔了：全部忘掉。下次打开会重新提醒一次 —— 但页面**照样放行**，我们从不拦。
     static func forgetAll() {
         cache = []
-        UserDefaults.standard.removeObject(forKey: key)
+        let d = UserDefaults.standard
+        d.removeObject(forKey: key)
+        d.removeObject(forKey: lastHostKey)
+        d.removeObject(forKey: lastAtKey)
     }
 }

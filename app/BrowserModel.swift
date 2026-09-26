@@ -1076,10 +1076,15 @@ final class BrowserModel: NSObject, ObservableObject {
         showToast("已重新扫描")
     }
 
-    func showToast(_ s: String) {
+    /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
+    ///
+    /// ★ 为什么加 seconds（v1.0.88）：证书那条提示有 18 个字，1.8 秒根本读不完，
+    ///   而这时候页面正在加载、用户注意力也在页面上 —— 实测就是"没看到"。
+    ///   凡是要用户读懂一句话的提示，必须给它足够的时间。
+    func showToast(_ s: String, seconds: Double = 1.8) {
         toast = s
         Task {
-            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(max(0.5, seconds) * 1_000_000_000))
             if self.toast == s { self.toast = nil }
         }
     }
@@ -1633,7 +1638,8 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         if firstTime {
             Task { @MainActor in
                 guard self.tab(for: wv) === self.currentTab else { return }
-                self.showToast("这个网站的证书不被信任，已放行 —— 以后不再提示")
+                // 8 秒：这句要读得完（默认 1.8 秒实测会被错过）
+                self.showToast("这个网站的证书不被信任，已放行 —— 以后不再提示", seconds: 8)
             }
         }
     }
