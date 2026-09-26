@@ -47,21 +47,23 @@ struct BookmarksView: View {
             }
             .navigationTitle("收藏 / 历史")
             .navigationBarTitleDisplayMode(.inline)
+            // ★ v1.0.97 修：这里**不能用 `if`** —— `.toolbar { }` 里做条件分支用的是
+            //   `buildIf`，那是 **iOS 16 起**才有的；我们的部署目标是 15.0（run #97 就死在这）。
+            //   所以改成"永远都在，按情况置灰"（.disabled）—— 效果一样，且 iOS 15 能编。
             .toolbar {
-                if !sorting {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button { showPick = true } label: {
-                            Image(systemName: "square.and.arrow.down")
-                        }
-                        .accessibilityLabel("导入书签")
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { showPick = true } label: {
+                        Image(systemName: "square.and.arrow.down")
                     }
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button { showCreate = true } label: {
-                            Image(systemName: "folder.badge.plus")
-                        }
-                        .accessibilityLabel("新建分组")
-                        .disabled(tab != 0)
+                    .accessibilityLabel("导入书签")
+                    .disabled(sorting)
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { showCreate = true } label: {
+                        Image(systemName: "folder.badge.plus")
                     }
+                    .accessibilityLabel("新建分组")
+                    .disabled(tab != 0 || sorting)
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(sorting ? "结束排序" : "排序") {
@@ -69,11 +71,9 @@ struct BookmarksView: View {
                     }
                     .disabled(tab != 0 && !sorting)
                 }
-                if !sorting {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("清空", role: .destructive) { confirmClear = true }
-                            .disabled(currentCount == 0)
-                    }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("清空", role: .destructive) { confirmClear = true }
+                        .disabled(currentCount == 0 || sorting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { isPresented = false }
