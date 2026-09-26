@@ -53,10 +53,35 @@ struct SettingsView: View {
                             .font(.system(size: 12, design: .monospaced))
                             .textSelection(.enabled)
                     }
+                    // ★ v1.0.102：口令可以固定 —— 电脑上存一次书签，以后开着共享点开就能用
+                    Toggle("记住口令（电脑上存一次就不用再复制）", isOn: $fixedTokenOn)
+                        .onChange(of: fixedTokenOn) { on in
+                            if on {
+                                LocalHTTPServer.shared.fixCurrentToken()
+                            } else {
+                                LocalHTTPServer.shared.forgetFixedToken()
+                            }
+                        }
+                    if fixedTokenOn {
+                        Button("换一个口令") {
+                            if downloads.lanOn {
+                                _ = LocalHTTPServer.shared.regenerateToken()
+                                note = "口令换好了。地址已经变了 —— 电脑上那个书签要重新存一次。"
+                            } else {
+                                LocalHTTPServer.shared.forgetFixedToken()
+                                LocalHTTPServer.shared.fixCurrentToken()
+                                note = "换好了，下次开共享就用这串新的。"
+                            }
+                        }
+                    }
                 } header: {
                     Text("局域网共享")
                 } footer: {
-                    Text("手机里的视频通过本机地址给电脑下载。地址带一串口令，用完记得关掉。")
+                    Text("手机里的视频通过本机地址给电脑下载，用完记得关掉。\n"
+                         + "电脑上想存个书签、以后点开就能用 → 打开「记住口令」：地址从此不变"
+                         + "（关掉共享时电脑打不开，重新打开就已经是同一个地址）。\n"
+                         + "代价：固定之后，同一个 Wi-Fi 下曾经拿到过这个地址的人也能一直进 —— "
+                         + "所以默认不开。")
                 }
 
                 Section("浏览数据") {
@@ -197,6 +222,10 @@ struct SettingsView: View {
                     if on { downloads.pip.start() } else { downloads.pip.stop() }
                 })
     }
+
+    /// 固定口令开关（v1.0.102）。用 @AppStorage 直接绑 UserDefaults ——
+    /// LocalHTTPServer 读的是同一个 key，两边天然一致。
+    @AppStorage("vg.fixedTokenOn") private var fixedTokenOn = false
 
     private var shareBinding: Binding<Bool> {
         Binding(get: { downloads.lanOn },

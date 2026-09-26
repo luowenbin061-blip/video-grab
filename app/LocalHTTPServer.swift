@@ -112,7 +112,16 @@ final class LocalHTTPServer {
         }
         if lanEnabled, running, port > 0 { return true }
 
-        if token.isEmpty { token = Self.makeToken() }
+        if token.isEmpty {
+            // ★ v1.0.102：开了「记住口令」就沿用上次那串（找不到才新生成并记住）
+            if fixedTokenOn,
+               let saved = UserDefaults.standard.string(forKey: Self.tokenKey), !saved.isEmpty {
+                token = saved
+            } else {
+                token = Self.makeToken()
+                if fixedTokenOn { UserDefaults.standard.set(token, forKey: Self.tokenKey) }
+            }
+        }
         lanEnabled = true
         closeListener()                 // 换绑地址（127.0.0.1 → 0.0.0.0）必须重新监听
         let reached = start(root: root)
@@ -120,14 +129,54 @@ final class LocalHTTPServer {
         return reached != nil
     }
 
-    /// 关掉共享，退回「只服务本机」。口令一并清掉，下次开又是新的。
+    /// 关掉共享，退回「只服务本机」。
+    /// 口令照旧清掉（下次开又是新的）—— **除非用户开了「记住口令」**，
+    /// 那种情况清了下次地址就变了，等于白记。
     func disableLAN() {
         guard lanEnabled else { return }
         lanEnabled = false
-        token = ""
+        if !fixedTokenOn { token = "" }
         let keep = root
         closeListener()
         if let keep { _ = start(root: keep) }
+    }
+
+    // MARK: - 固定口令（v1.0.102）
+    //
+    // 用户的诉求（原话）：**电脑上存一个书签，手机开了共享直接点开就能用，不用每次复制。**
+    // 原来每次开共享都换一串新口令 → 地址每次都变 → 只能每次重新复制。
+    // 现在：开关打开就把口令记下来（存 UserDefaults），重开 App / 重启手机都不变；
+    // 关掉开关就恢复"每次换新的"。
+    // 代价（必须让用户知道）：固定之后，同一个 Wi-Fi 下**曾经拿到过这个地址的人**
+    // 以后也能一直进 —— 所以默认不开，用户自己决定。
+
+    private static let rememberKey = "vg.fixedTokenOn"
+    private static let tokenKey = "vg.fixedToken"
+
+    /// 用户开了「记住口令」没有（设置页的 @AppStorage 绑的是同一个 key）
+    var fixedTokenOn: Bool { UserDefaults.standard.bool(forKey: Self.rememberKey) }
+
+    /// 把当前这串固定下来（用户刚打开开关）
+    func fixCurrentToken() {
+        if token.isEmpty { token = Self.makeToken() }
+        UserDefaults.standard.set(true, forKey: Self.rememberKey)
+        UserDefaults.standard.set(token, forKey: Self.tokenKey)
+    }
+
+    /// 忘掉固定口令（关掉开关）→ 下次开共享又是新口令
+    func forgetFixedToken() {
+        UserDefaults.standard.set(false, forKey: Self.rememberKey)
+        UserDefaults.standard.removeObject(forKey: Self.tokenKey)
+        if !lanEnabled { token = "" }
+    }
+
+    /// 换一个口令（用户在设置里点）。共享开着也**立刻生效** —— 口令是每个请求现校验的。
+    @discardableResult
+    func regenerateToken() -> String {
+        let t = Self.makeToken()
+        token = t
+        if fixedTokenOn { UserDefaults.standard.set(t, forKey: Self.tokenKey) }
+        return t
     }
 
     /// 16 位十六进制口令（UInt32.random 底层走的是系统的密码学随机源）

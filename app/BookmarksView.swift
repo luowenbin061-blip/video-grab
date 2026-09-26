@@ -3,6 +3,12 @@ import UniformTypeIdentifiers
 
 /// 收藏 / 历史 —— 一个页面两个 tab（需求里就是这么写的）。
 /// 点某一条 → 在浏览器里打开它。
+/// 导出用的小包装（DocumentExporter 要 `.sheet(item:)` 弹出）
+struct ExportDoc: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct BookmarksView: View {
     @ObservedObject var store: BookmarkStore
     @Binding var isPresented: Bool
@@ -27,6 +33,8 @@ struct BookmarksView: View {
     @State private var collapsed: Set<String> = GroupCollapse.load()
     /// 「整理顺序」卡片（v1.0.99 重做：两级顺序拆到两层界面里管）
     @State private var showSort = false
+    /// 导出书签（v1.0.102）—— 给系统的"存到文件"，用户再导进任何浏览器
+    @State private var exportDoc: ExportDoc?
 
     var body: some View {
         NavigationView {
@@ -52,6 +60,14 @@ struct BookmarksView: View {
                         Image(systemName: "square.and.arrow.down")
                     }
                     .accessibilityLabel("导入书签")
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    // ★ v1.0.102：导出跟导入成对放一起 —— 一眼就知道是"书签进出"这一对
+                    Button { exportBookmarks() } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("导出书签")
+                    .disabled(tab != 0 || store.marks.isEmpty)
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button { showCreate = true } label: {
@@ -86,6 +102,15 @@ struct BookmarksView: View {
             .sheet(isPresented: $showPick) {
                 FilePickerBox(onPicked: { files in importBookmarks(files) },
                               types: [.html, .json])
+            }
+            // 导出：生成 .html 交给系统"存到文件"（跟视频的「存文件夹」同一套）
+            .sheet(item: $exportDoc) { d in
+                DocumentExporter(url: d.url, onFinish: { ok in
+                    note = ok
+                        ? "书签已导出。这个 .html 文件在任何浏览器里都能导入。"
+                        : "已取消，没导出。"
+                    exportDoc = nil
+                })
             }
             // v1.0.99：整理顺序（两层界面），替换掉上一版失败的「排序模式」
             .sheet(isPresented: $showSort) {
@@ -127,6 +152,19 @@ struct BookmarksView: View {
                 Text("「一起删掉」的那些会先进回收站（设置 → 回收站 里能恢复）。「只解散」一条都不会丢。")
             }
         }
+    }
+
+    /// 导出全部收藏（含「导入的书签」那些分组）。
+    /// ★ 故意**不含回收站** —— 那本来就是"删掉的"。
+    /// ★ 取舍：HTML 装不下"顺序"，所以导出去再导回来，分组能还原、**拖过的顺序会丢**。
+    private func exportBookmarks() {
+        let all = store.marks
+        guard !all.isEmpty else { note = "还没有收藏，没东西可导。"; return }
+        guard let u = BookmarkExporter.write(marks: all) else {
+            note = "导出文件没生成出来，再试一次。"
+            return
+        }
+        exportDoc = ExportDoc(url: u)
     }
 
     /// 导入书签：解析 → 去重 → 存，然后把结果写在列表上方
