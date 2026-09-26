@@ -22,6 +22,8 @@ struct SettingsView: View {
     @AppStorage("sniffButtonResident") private var sniffResident = false
     /// 已经放行过的网站数（证书不被信任、但按设置一律放行）。进页面时读一次。
     @State private var trustedCount = 0
+    /// 启动主页（v1.0.90）。**留空 = 每次打开只显示空白页**。
+    @AppStorage("homePageURL") private var homePage = ""
 
     var body: some View {
         NavigationView {
@@ -82,6 +84,18 @@ struct SettingsView: View {
                     Text("证书")
                 } footer: {
                     Text("有些网站的加密证书不被系统信任（过期 / 自签 / 身份对不上）。**这类网站我们一律照常打开**，只在第一次提醒你一句，之后不再打扰。\n\n「忘掉」之后，下次打开会重新提醒一次 —— 但页面照样能开，我们不会拦任何网站。")
+                }
+
+                Section {
+                    TextField("留空 = 只显示空白页", text: $homePage)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .keyboardType(.URL)
+                        .font(.system(size: 14))
+                } header: {
+                    Text("启动主页")
+                } footer: {
+                    Text("填了网址：每次打开程序**固定打开它**，不再把上次浏览的网页摆在最前面。\n留空：每次打开只显示空白页。\n\n两种情况**上次的标签都会被恢复**，只是待在后台 —— 从标签网格里点得到。")
                 }
 
                 Section {

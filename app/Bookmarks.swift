@@ -9,6 +9,14 @@ struct Bookmark: Codable, Identifiable, Hashable {
     var title: String
     var addedAt: Date
 
+    /// 书签文件里的文件夹名（v1.0.90 新加）。**手动收藏的条目是 nil** ——
+    /// 靠这个值在收藏页把「导入的书签」单独归一组。
+    ///
+    /// ★ 为什么加字段不会让老收藏读不出来：它是**可选**类型，
+    ///   合成 Codable 对可选字段用的是 decodeIfPresent（缺键就当 nil），
+    ///   不是 decode（缺键直接抛错）。这条规矩见 v1.0.85 的存档容错。
+    var folder: String? = nil
+
     var label: String { title.isEmpty ? url : title }
     var host: String { URL(string: url)?.host ?? "" }
     var timeText: String { Bookmark.fmt.string(from: addedAt) }
@@ -96,6 +104,32 @@ final class BookmarkStore: ObservableObject {
     func clearMarks() {
         marks.removeAll()
         save()
+    }
+
+    // MARK: - 导入（v1.0.90）
+
+    /// 批量导入书签。**按网址去重**（已经存在的算跳过），返回（新增, 跳过）。
+    ///
+    /// 导入的条目带上文件里的文件夹名（`folder`），于是收藏页能把它们
+    /// 单独归一组，不会跟你手动收藏的混在一起。
+    @discardableResult
+    func importMarks(_ entries: [BookmarkImporter.Entry]) -> (added: Int, skipped: Int) {
+        var added = 0
+        var skipped = 0
+        var seen = Set(marks.map { $0.url })
+        var fresh: [Bookmark] = []
+        for e in entries {
+            guard Self.usable(e.url) else { skipped += 1; continue }
+            if seen.contains(e.url) { skipped += 1; continue }
+            seen.insert(e.url)
+            fresh.append(Bookmark(url: e.url, title: e.title,
+                                  addedAt: Date(), folder: e.folder))
+            added += 1
+        }
+        // 刚导完，用户最想看的就是它们 → 放最前面
+        marks.insert(contentsOf: fresh, at: 0)
+        save()
+        return (added, skipped)
     }
 
     // MARK: - 历史

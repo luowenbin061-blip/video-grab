@@ -336,6 +336,7 @@ final class BrowserModel: NSObject, ObservableObject {
             if let why = TabStore.lastError {
                 showToast("上次的标签没能恢复：\(why)")
             }
+            openStartPage()
             return
         }
         tabGroups = p.groups
@@ -373,6 +374,52 @@ final class BrowserModel: NSObject, ObservableObject {
         }
         if let t = currentTab { syncFromTab(t) }
         refreshTabs()
+        openStartPage()
+    }
+
+    /// ★ v1.0.90：启动时前台打开什么。
+    ///
+    /// 用户的要求：**每次打开程序固定加载设置好的主页**；主页没填就**只显示空白页**
+    /// —— 总之**不要**把"上次浏览的那个网页"摆到最前面。
+    /// 而他之前要的"上次标签还在"照旧：那些标签都恢复在**后台**，从网格里点得到。
+    ///
+    /// ★ 关键细节：**先去已有标签里找"就是这一页"的，找到就切过去**，找不到才新建。
+    ///   否则每启动一次就多一个标签，用不了几天就堆到上限 30 —— 那会变成一个新 bug。
+    ///
+    /// ★ 这里只改「当前指向哪个标签」，**不建 WebView** —— 跟 restoreFromDisk 的做法一致，
+    ///   网页是等界面出现时才懒建的（见 activate 的说明）。
+    private func openStartPage() {
+        let home = (UserDefaults.standard.string(forKey: "homePageURL") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if home.isEmpty {
+            // 留空 → 前台是空白页：已有空白标签就切过去，没有才新建
+            if let t = visibleTabs.first(where: { $0.address.isEmpty }) {
+                pointCurrentTabAt(t)
+            } else {
+                _ = newTab()
+            }
+            return
+        }
+
+        var s = home
+        if !s.contains("://") { s = "https://" + s }
+        guard URL(string: s) != nil else { return }   // 写得不成样子 → 保持现状，别把界面搞空白
+        if let t = visibleTabs.first(where: { $0.address == s }) {
+            pointCurrentTabAt(t)
+            return
+        }
+        _ = newTab(load: s)
+    }
+
+    /// 只把"当前标签"指向它（不建 WebView）
+    private func pointCurrentTabAt(_ t: BrowserTab) {
+        guard let i = visibleTabs.firstIndex(where: { $0.id == t.id }) else { return }
+        currentTabIndex = i
+        if tabGroups.indices.contains(currentGroupIndex) {
+            tabGroups[currentGroupIndex].currentTabID = t.id
+        }
+        syncFromTab(t)
     }
 
     // MARK: - 落盘

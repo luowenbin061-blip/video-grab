@@ -85,10 +85,13 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
 /// 「文件」App 多选
 struct FilePickerBox: UIViewControllerRepresentable {
     var onPicked: ([SavedFile]) -> Void
+    /// ★ v1.0.90：放开可选类型（导入书签要 .html / .json）。
+    ///   **默认还是 .movie**，所以原来那几处调用点一行都不用改。
+    var types: [UTType] = [.movie]
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         // asCopy: true —— 拿到的是系统给的临时副本，不用管 security scope
-        let vc = UIDocumentPickerViewController(forOpeningContentTypes: [.movie], asCopy: true)
+        let vc = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         vc.allowsMultipleSelection = true
         vc.delegate = context.coordinator
         return vc

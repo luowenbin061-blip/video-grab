@@ -279,7 +279,8 @@ struct ContentView: View {
                          isPresented: $showSettings)
         }
         .sheet(isPresented: $showToolbox) {
-            ToolboxView(model: model, center: downloads, isPresented: $showToolbox,
+            ToolboxView(model: model, center: downloads, store: store,
+                        isPresented: $showToolbox,
                         onOpenSniff: {
                             showToolbox = false
                             showPanel = true

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// 工具箱 —— 都只作用于当前网页。
 ///
@@ -17,6 +18,8 @@ struct ToolboxView: View {
     let model: BrowserModel
     /// 导入的视频要进下载列表 —— 这是工具箱里第一个不依赖网页的工具
     let center: DownloadCenter
+    /// 导入书签要写进收藏（v1.0.90）
+    var store: BookmarkStore
     @Binding var isPresented: Bool
     /// 打开「嗅探结果」面板 —— 面板在主页那层，所以由那边传进来
     let onOpenSniff: () -> Void
@@ -25,50 +28,34 @@ struct ToolboxView: View {
     @State private var showImportSource = false
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
+    /// 导入书签的文件选择器（v1.0.90）
+    @State private var showBookmarkPicker = false
 
     var body: some View {
         NavigationView {
-            Form {
-                Section {
-                    Button { find() } label: {
-                        item("magnifyingglass", "页内查找", "系统原生查找条，和 Safari 一样")
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
+                                    GridItem(.flexible(), spacing: 12)],
+                          spacing: 12) {
+                    cell("magnifyingglass", "页内查找", .blue) { find() }
+                    cell("antenna.radiowaves.left.and.right", "嗅探结果", .orange,
+                         detail: sniffDetail) { onOpenSniff() }
+                    cell("square.and.arrow.down.on.square", "导入视频", .green) {
+                        showImportSource = true
                     }
-                    Button { translateNotReady() } label: {
-                        item("character.book.closed", "翻译整个网页",
-                             "暂缓：以后再做（要原地翻译，不是跳出去翻）", dim: true)
+                    cell("book.closed.fill", "导入书签", .purple) {
+                        showBookmarkPicker = true
                     }
-                } header: {
-                    Text("当前网页")
-                } footer: {
-                    Text("翻译暂缓 —— 之前那条「跳到百度翻译」是跳出去翻，不是原地翻译，不算数。要做就做「原地把页面文字翻成中文、还能一键切回原文」那种，等以后再说。")
                 }
-
-                Section {
-                    Button { onOpenSniff() } label: {
-                        item("antenna.radiowaves.left.and.right", "嗅探结果",
-                             model.items.isEmpty
-                             ? "这个页面暂时没嗅到地址（一直点着刷新时它会自己补上）"
-                             : "这个页面嗅探到 \(model.items.count) 条地址，点开看/下载")
-                    }
-                } header: {
-                    Text("嗅探")
-                } footer: {
-                    Text("嗅探一直在后台跑（看页面请求、资源加载记录、页面变量、页面里的播放器元素），跟你看不看这个列表无关。")
-                }
-
-                Section {
-                    Button { showImportSource = true } label: {
-                        item("square.and.arrow.down.on.square", "导入视频",
-                             "从相册或「文件」选视频放进下载列表，可多选")
-                    }
-                } header: {
-                    Text("导入")
-                } footer: {
-                    Text("导入的视频和下载的放在一起。系统能播的原样收下；播不了的自动转成 MP4。")
-                }
+                .padding(16)
 
                 if let note {
-                    Section { Text(note).font(.system(size: 13)) }
+                    Text(note)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
                 }
             }
             .navigationTitle("工具箱")
@@ -96,22 +83,67 @@ struct ToolboxView: View {
                     if !files.isEmpty { isPresented = false }
                 }
             }
+            // ★ 导入书签：只认 .html / .json 两种（各家浏览器导出的就是这两种）
+            .sheet(isPresented: $showBookmarkPicker) {
+                FilePickerBox(onPicked: { files in
+                    importBookmarks(files)
+                }, types: [.html, .json])
+            }
         }
     }
 
-    private func item(_ icon: String, _ title: String, _ sub: String,
-                      dim: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 17))
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 15))
-                Text(sub).font(.system(size: 12)).foregroundStyle(.secondary)
+    /// 嗅探那格的副标题：有结果就报条数，没有就说一句实话
+    private var sniffDetail: String {
+        model.items.isEmpty ? "这个页面暂时没嗅到" : "\(model.items.count) 条地址"
+    }
+
+    /// 一个功能格：大图标 + 短标题（**故意不放长说明** —— 一行字最省地方）
+    private func cell(_ icon: String, _ title: String, _ color: Color,
+                      detail: String? = nil,
+                      tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 26))
+                    .foregroundStyle(color)
+                    .frame(height: 30)
+                Text(title)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
-            Spacer()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(Color(.secondarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
         }
-        .foregroundStyle(dim ? Color.secondary : Color.primary)
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
+    /// 导入书签：解析 → 去重 → 写进收藏，然后把结果说出来
+    private func importBookmarks(_ files: [SavedFile]) {
+        guard let f = files.first else { return }
+        guard let data = try? Data(contentsOf: f.url) else {
+            note = "这个文件读不出来。"
+            return
+        }
+        let entries = BookmarkImporter.parse(data)
+        guard !entries.isEmpty else {
+            note = "没从这个文件里读到书签。\n支持各家浏览器导出的「书签 HTML」，以及 Chromium 的书签 JSON。"
+            return
+        }
+        let r = store.importMarks(entries)
+        note = "导入完成：新增 \(r.added) 条"
+            + (r.skipped > 0 ? "，跳过 \(r.skipped) 条（重复或地址无效）" : "")
+            + "。到「收藏 / 历史」里看（导入的单独归一组）。"
     }
 
     // MARK: - 动作
@@ -127,7 +159,4 @@ struct ToolboxView: View {
         }
     }
 
-    private func translateNotReady() {
-        note = "翻译暂缓了。要做就做「原地把页面文字翻成中文、还能一键切回原文」那种 —— 等你说开工再做。"
-    }
 }
