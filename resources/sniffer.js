@@ -444,12 +444,38 @@
         return el.tagName + (c ? '.' + c : '');
       }
 
+      // ★ v1.0.105：长按拿到的地址**不一定能下** —— MSE 播放器的 currentSrc 是
+      //   `blob:` 临时地址（只在页面里有效，网络层取不到内容，下载必然失败）。
+      //   所以顺手从「已经抓到的请求」里挑一个能直接下的（优先 m3u8，其次直链文件）当备选。
+      //   注意：这**不依赖自动扫描**（v1.0.104 起默认关了）—— 靠的是 hook，
+      //   页面发过的请求一直在记，所以这里挑得到。
+      function pickAlt(cur) {
+        try {
+          if (cur && !/^blob:/i.test(cur) && MEDIA_RE.test(cur)) return '';   // 本身就能下
+          var bestHls = '', hlsScore = -1, bestFile = '', fileScore = -1;
+          for (var k in found) {
+            if (!Object.prototype.hasOwnProperty.call(found, k)) continue;
+            var f = found[k];
+            if (!f || !f.url) continue;
+            // 「正在播的那个」优先，其次「最近出现的」
+            var score = (f.last || 0) + (f.playing ? 9e15 : 0);
+            if (f.kind === 'hls') {
+              if (score > hlsScore) { hlsScore = score; bestHls = f.url; }
+            } else if (f.kind === 'file') {
+              if (score > fileScore) { fileScore = score; bestFile = f.url; }
+            }
+          }
+          return bestHls || bestFile;
+        } catch (e) { return ''; }
+      }
+
       function mediaInfo(v, doc, via) {
         var r = v.getBoundingClientRect();
         return {
           hit: 'media',
           via: via,
           url: v.currentSrc || v.src || '',
+          alt: pickAlt(v.currentSrc || v.src || ''),
           poster: v.poster || '',
           title: ((doc && doc.title) || document.title || '').slice(0, 140),
           w: Math.round(r.width),

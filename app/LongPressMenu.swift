@@ -13,6 +13,9 @@ struct LongPressMenuInfo: Identifiable, Equatable {
     var title: String
     /// 域名（预览卡上显示的是这个）
     var host: String
+    /// 需要跟用户说明一句时才有值（例如「已改用抓到的真实地址」）。
+    /// 非空时在标题行下面显示一行小字 —— 平时不占地方。
+    var hint: String? = nil
 }
 
 /// 长按视频弹出来的菜单。
@@ -82,6 +85,18 @@ struct LongPressMenuView: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 48)
+
+            // 有情况才出现（例如「已改用抓到的真实地址」）—— 平时这一行不存在
+            if let hint = info.hint {
+                Text(hint)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+            }
 
             Divider().padding(.leading, 46)
 

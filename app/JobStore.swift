@@ -63,7 +63,20 @@ enum JobStore {
     }
 
     /// 一个文件 / 一个目录（递归）的字节数
+    ///
+    /// ★★ v1.0.105 修的真 bug：原来无论文件还是目录都丢给 `enumerator(at:)` ——
+    ///   而 Apple 文档写得很清楚：**传进去的是文件时，这个枚举器不枚举任何东西**
+    ///   （"If url is a filename, the method returns an enumerator object that
+    ///   enumerates no files—the first call to nextObject() returns nil"）。
+    ///   后果：顶层那些**成品文件**（.mp4 / .ts，正好是占用的大头）一个都没算进去，
+    ///   界面上那个「占用」只反映了临时分片 → 下载完成后分片一清，数字几乎归零。
+    ///   （v1.0.101 我加递归的**本意**是「把分片也算上」，结果反而把成品踢出去了。）
     private static func sizeOfItem(_ u: URL, fm: FileManager) -> Int64 {
+        // 先分清「这是文件还是目录」—— 文件直接读大小，别走枚举器
+        let own = try? u.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        if own?.isRegularFile == true {
+            return Int64(own?.fileSize ?? 0)
+        }
         guard let e = fm.enumerator(at: u,
                                     includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
             return 0

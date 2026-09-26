@@ -1851,12 +1851,29 @@ extension BrowserModel {
 
         let host = wv.url?.host ?? ""
         let title = (d["title"] as? String) ?? ""
+
+        // ★ v1.0.105：长按拿到的不一定是能下的地址 —— MSE 播放器的 currentSrc 是
+        //   `blob:` 临时地址，只在页面里有效，交给下载器必然「拿不到内容」。
+        //   抓请求那一半一直在记（不受自动嗅探开关影响），所以脚本会给一个备选地址。
+        var finalURL = url
+        var hint: String? = nil
+        if !BrowserModel.directlyDownloadable(url) {
+            let alt = (d["alt"] as? String) ?? ""
+            if !alt.isEmpty {
+                finalURL = alt
+                hint = "这个播放器用的是临时地址，已改用抓到的真实地址"
+                out.append("改用备选地址  \(BrowserModel.briefURL(alt))")
+            } else {
+                hint = "这个地址不能直接下载（多半是临时地址），让它播几秒再长按一次"
+                out.append("地址不能直接下，而且暂时没有备选")
+            }
+        }
         out.append("弹菜单  域名=\(host)  标题=\(title.prefix(24))")
         finishLPDebug(out)
 
-        lpMenu = LongPressMenuInfo(point: point, url: url,
+        lpMenu = LongPressMenuInfo(point: point, url: finalURL,
                                    title: title.isEmpty ? pageTitle : title,
-                                   host: host)
+                                   host: host, hint: hint)
     }
 
     /// 诊断日志：只在开关打开时显示，8 秒后自己消失（也能点一下立刻关掉）——
@@ -1870,6 +1887,16 @@ extension BrowserModel {
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             if self.lpDebugStamp == stamp { self.lpDebug = nil }
         }
+    }
+
+    /// 这个地址能直接交给下载器吗？
+    ///
+    /// ★ v1.0.105：`blob:` / `data:` 这类**只在页面里有效**，网络层取不到内容 ——
+    ///   而长按恰好很容易拿到它们（MSE 播放器的 `currentSrc` 就是 `blob:`）。
+    ///   所以换地址之前先问一句。
+    static func directlyDownloadable(_ s: String) -> Bool {
+        guard let u = URL(string: s), let sc = u.scheme?.lowercased() else { return false }
+        return sc == "http" || sc == "https"
     }
 
     /// 地址太长，日志里只留域名 + 尾巴
