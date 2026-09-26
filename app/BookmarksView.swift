@@ -25,8 +25,8 @@ struct BookmarksView: View {
     /// 收起了哪些分组（v1.0.96）。★ 初值直接读盘：收藏卡片每次打开都是**新建的视图**，
     /// @State 会被重置 —— 不存盘的话每次进来都全展开，等于白收。
     @State private var collapsed: Set<String> = GroupCollapse.load()
-    /// 排序模式（v1.0.97）：进去后列表拍平，分组和书签都能长按拖
-    @State private var sorting = false
+    /// 「整理顺序」卡片（v1.0.99 重做：两级顺序拆到两层界面里管）
+    @State private var showSort = false
 
     var body: some View {
         NavigationView {
@@ -39,11 +39,7 @@ struct BookmarksView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
 
-                if tab == 0 {
-                    if sorting { sortList } else { marksList }
-                } else {
-                    historyList
-                }
+                if tab == 0 { marksList } else { historyList }
             }
             .navigationTitle("收藏 / 历史")
             .navigationBarTitleDisplayMode(.inline)
@@ -56,24 +52,24 @@ struct BookmarksView: View {
                         Image(systemName: "square.and.arrow.down")
                     }
                     .accessibilityLabel("导入书签")
-                    .disabled(sorting)
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button { showCreate = true } label: {
                         Image(systemName: "folder.badge.plus")
                     }
                     .accessibilityLabel("新建分组")
-                    .disabled(tab != 0 || sorting)
+                    .disabled(tab != 0)
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(sorting ? "结束排序" : "排序") {
-                        sorting.toggle()
+                    Button { showSort = true } label: {
+                        Image(systemName: "arrow.up.arrow.down")
                     }
-                    .disabled(tab != 0 && !sorting)
+                    .accessibilityLabel("整理顺序")
+                    .disabled(tab != 0)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("清空", role: .destructive) { confirmClear = true }
-                        .disabled(currentCount == 0 || sorting)
+                        .disabled(currentCount == 0)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { isPresented = false }
@@ -90,6 +86,10 @@ struct BookmarksView: View {
             .sheet(isPresented: $showPick) {
                 FilePickerBox(onPicked: { files in importBookmarks(files) },
                               types: [.html, .json])
+            }
+            // v1.0.99：整理顺序（两层界面），替换掉上一版失败的「排序模式」
+            .sheet(isPresented: $showSort) {
+                SortCenterView(store: store, isPresented: $showSort)
             }
             // ── 分组管理（v1.0.94）──
             .sheet(isPresented: $showRename) {
@@ -259,78 +259,6 @@ struct BookmarksView: View {
             Spacer()
             if menu { groupMenu(name) }
         }
-    }
-
-    // MARK: - 排序模式（v1.0.97）
-
-    /// 平铺的一行：要么是分组，要么是书签
-    private struct SortRow: Identifiable {
-        let isGroup: Bool
-        let key: String        // 分组名 / 书签地址
-        let title: String
-        let count: Int         // 只有分组行用
-        var id: String { (isGroup ? "g:" : "m:") + key }
-    }
-
-    /// 拍平：每个分组一行，紧跟它下面的书签行；「我的收藏」放最后一段
-    private var sortRows: [SortRow] {
-        var out: [SortRow] = []
-        for g in store.allGroups {
-            let ms = store.marksIn(g)
-            out.append(SortRow(isGroup: true, key: g, title: g, count: ms.count))
-            for m in ms { out.append(SortRow(isGroup: false, key: m.url, title: m.label, count: 0)) }
-        }
-        let mine = store.marksIn(nil)
-        if !mine.isEmpty {
-            out.append(SortRow(isGroup: true, key: Self.mineKey,
-                               title: "我的收藏", count: mine.count))
-            for m in mine { out.append(SortRow(isGroup: false, key: m.url, title: m.label, count: 0)) }
-        }
-        return out
-    }
-
-    private func moveSortRows(from: IndexSet, to: Int) {
-        var rows = sortRows
-        rows.move(fromOffsets: from, toOffset: to)
-        store.applyFlat(rows.map { (isGroup: $0.isGroup, key: $0.key) })
-    }
-
-    /// 排序模式的列表。
-    /// ★ 为什么必须拍平：**iOS 只允许列表里的"行"被拖动，分区（Section）不行** ——
-    ///   想让分组也能长按拖，就只能把它们放到同一层当行。
-    /// ★ `.environment(\.editMode, .constant(.active))` 让拖动常驻，
-    ///   不用再点一次系统"编辑"；这里也没挂 .onDelete，所以不会冒出一排减号。
-    private var sortList: some View {
-        List {
-            Section {
-                Text("长按任意一行（分组或书签）拖动即可排序。\n书签会归到它上面最近的那个分组里；拖乱了也不会丢东西。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(sortRows) { r in
-                HStack(spacing: 6) {
-                    if r.isGroup {
-                        Image(systemName: "folder")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                        Text(r.title).font(.system(size: 15, weight: .semibold))
-                        Text("\(r.count)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(r.title).font(.system(size: 14))
-                    }
-                    Spacer()
-                    Image(systemName: "line.3.horizontal")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.leading, r.isGroup ? 0 : 18)
-            }
-            .onMove(perform: moveSortRows)
-        }
-        .listStyle(.plain)
-        .environment(\.editMode, .constant(.active))
     }
 
     /// 分组标题右边那个「⋯」

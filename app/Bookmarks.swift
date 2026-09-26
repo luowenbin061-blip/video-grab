@@ -95,9 +95,8 @@ final class BookmarkStore: ObservableObject {
     /// 回收站最多留多少条 —— 别让它自己涨成第二个收藏
     private let trashLimit = 500
 
-    /// 「我的收藏」在**排序列表**里用的哨兵 key（跟真实分组名不会撞）。
-    /// ★ 放在 store 这边而不是 view 那边：applyFlat 要用它判断"这一段是我的收藏"，
-    ///   store 不该反过来依赖界面层的常量。
+    /// 「我的收藏」（未分组）这一路用的**哨兵 key** —— 跟真实分组名不会撞。
+    /// 现在只被「分组展开/收起」的存盘当成 key 用（v1.0.99 起排序不再需要它）。
     static let mineSortKey = "__mine__"
 
     /// 历史最多留这么多条，超了丢最旧的 —— 别让它无限涨
@@ -222,37 +221,35 @@ final class BookmarkStore: ObservableObject {
         return marks.filter { ($0.folder ?? "").isEmpty }
     }
 
-    /// 把「排序模式」拖完的结果落盘。
-    ///
-    /// 入参是一串平铺的行：`isGroup = true` 表示"从这一行开始，下面的书签归它"。
-    /// ★ 为什么用"规范化"而不是死板校验每次拖动：用户在平铺列表里怎么拖都可能
-    ///   （把书签拖到分组行之间、把分组拖到书签下面……）。这里统一按
-    ///   **"每条书签归到它前面最近的那个分组"** 来解释 ——
-    ///   任何拖动都能得到一个确定、可保存的结果，且**不会丢任何一条**。
-    func applyFlat(_ flat: [(isGroup: Bool, key: String)]) {
-        var order: [String] = []                 // 新的分组顺序（不含"我的收藏"）
-        var placement: [String: String] = [:]    // url → 目标分组（空串 = 我的收藏）
-        var urlOrder: [String] = []
-        var current = ""                         // 当前归属（空串 = 我的收藏）
-        for row in flat {
-            if row.isGroup {
-                if row.key == BookmarkStore.mineSortKey {
-                    current = ""
-                } else {
-                    current = row.key
-                    if !order.contains(row.key) { order.append(row.key) }
-                }
-            } else {
-                placement[row.key] = current
-                urlOrder.append(row.key)
-            }
-        }
-        for i in marks.indices {
-            if let p = placement[marks[i].url] { marks[i].folder = p.isEmpty ? nil : p }
-        }
-        let pos = Dictionary(uniqueKeysWithValues: urlOrder.enumerated().map { ($1, $0) })
-        marks.sort { (pos[$0.url] ?? Int.max) < (pos[$1.url] ?? Int.max) }
-        groupOrder = order
+    // MARK: - 排序（v1.0.99 重做：**单维度**移动，一次赋值只发一次刷新）
+    //
+    // ★ 为什么把上一版的 applyFlat 删掉（真机实测失败，五家会诊定位）：
+    //   它一次里既改 marks 又改 groupOrder —— **两次独立赋值 = 两次发布**，
+    //   中间帧「marks 的顺序」和「groupOrder」互相矛盾，界面就会分组跳回原位 / 跑到末尾。
+    //   而且它是把两级顺序混在一次"规范化"里算的，落点语义本身就跟用户直觉相反。
+    //   现在：**每种移动只干一件事、只写一个属性、只发一次刷新。**
+
+    /// 只排**分组顺序**（调用方保证入参是一串分组名）
+    func setGroupOrder(_ names: [String]) {
+        groupOrder = names          // 一次赋值 = 一次刷新
+        save()
+    }
+
+    /// 只排**某一组内部**的顺序。其它组的条目**一动不动**。
+    /// - `urls`：这一组按新顺序排好的地址
+    /// - `group`：nil = 未分组（「我的收藏」）
+    func setMarkOrder(_ urls: [String], inGroup group: String?) {
+        let key = group ?? ""
+        let slots = marks.indices.filter { (marks[$0].folder ?? "") == key }
+        guard slots.count == urls.count, !slots.isEmpty else { return }
+        let pos = Dictionary(uniqueKeysWithValues: urls.enumerated().map { ($1, $0) })
+        // 把这些"坑位"里的条目按新顺序重新填回去 —— 其它位置完全不动
+        let members = slots.sorted {
+            (pos[marks[$0].url] ?? Int.max) < (pos[marks[$1].url] ?? Int.max)
+        }.map { marks[$0] }
+        var fresh = marks
+        for (k, idx) in slots.enumerated() { fresh[idx] = members[k] }
+        marks = fresh               // 一次赋值 = 一次刷新
         save()
     }
 
