@@ -44,6 +44,39 @@ enum ThumbLoader {
         }
     }
 
+    /// ★ v1.0.111：本地文件（下好的图片）也走同一套降采样 —— 缩略图和大图都用它。
+    /// 为什么不用 `UIImage(contentsOfFile:)`：那是**整张解码**，一张 4000×3000 的图
+    /// 直接吃掉约 48MB，列表里几张就够把 App 顶到被系统杀。
+    /// 这里用 CGImageSourceCreateWithURL，只解到要的尺寸。
+    static func loadLocal(_ url: URL, maxPx: CGFloat = 160) async -> UIImage? {
+        let key = "file:\(url.path)|\(Int(maxPx))" as NSString
+        if let img = cache.object(forKey: key) { return img }
+        // 解码放到后台队列 —— 一行图几十毫秒，放在主线程上滚动就会一顿一顿的
+        let img: UIImage? = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: downsampleFile(url, maxPx: maxPx))
+            }
+        }
+        guard let img else { return nil }
+        let cost = Int(img.size.width * img.size.height * 4)
+        cache.setObject(img, forKey: key, cost: cost)
+        return img
+    }
+
+    /// 从**文件 URL** 解出指定尺寸的位图（不整张读进内存）
+    private static func downsampleFile(_ url: URL, maxPx: CGFloat) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, srcOpts) else { return nil }
+        let opts = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPx * UIScreen.main.scale
+        ] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
     /// 只解出缩略图尺寸的位图（原图整张不进内存）
     private static func downsample(_ data: Data, maxPx: CGFloat) -> UIImage? {
         let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary

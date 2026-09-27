@@ -172,6 +172,12 @@ struct JobRecord: Codable {
     var resolution: String?
     var phaseText: String
     var notes: [String]
+    /// ★ v1.0.111：建卡时就定下来的类别（"video"/"image"/"audio"/"doc"）。
+    ///   为什么必须有：`DownloadJob.mediaKind` 原来**只看成品文件名的扩展名**，
+    ///   而下载中的任务还没有成品（outputName 是 nil）→ 一律被算成「文件」，
+    ///   下载完 / 重启后才靠扩展名变回「视频」—— 用户看到的就是"归类自己会跳"。
+    ///   可选类型：老记录里没这个键 → nil → 上层退回按扩展名判，不会读不出记录。
+    var kind: String?
 }
 
 extension JobRecord {

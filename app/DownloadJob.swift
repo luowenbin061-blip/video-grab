@@ -57,6 +57,12 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// 每一步的诊断记录
     @Published var notes: [String]
 
+    /// ★ v1.0.111：这条任务**是什么类别**，在**建卡那一刻就定下来**（并落盘）。
+    ///   以前只靠成品文件名的扩展名判 —— 下载中的任务还没有成品（outputName 是 nil）
+    ///   → 一律落到「文件」，下载完 / 重启后才变回「视频」。这就是用户看到的
+    ///   「下载时归到文件、重启后又归到视频」。
+    var kindHint: MediaKind?
+
     /// 磁盘上的文件不在了（被系统清理或被用户删掉）
     @Published var fileMissing = false
     /// 存相册成功过
@@ -198,13 +204,15 @@ final class DownloadJob: ObservableObject, Identifiable {
     // MARK: - 构造
 
     init(title: String, sourceURL: String,
-         referrer: String = "", ua: String = "", cookie: String = "") {
+         referrer: String = "", ua: String = "", cookie: String = "",
+         kind: MediaKind? = nil) {
         id = UUID()
         self.title = title
         self.sourceURL = sourceURL
         self.referrer = referrer
         self.ua = ua
         self.cookie = cookie
+        kindHint = kind
         createdAt = Date()
         phase = "排队中"
         finished = false
@@ -240,6 +248,8 @@ final class DownloadJob: ObservableObject, Identifiable {
         duration = record.duration
         resolution = record.resolution
         notes = record.notes
+        // ★ v1.0.111：类别跟着记录回来（老记录没这个键 → nil → 退回按扩展名判）
+        kindHint = record.kind.flatMap { MediaKind(key: $0) }
 
         // 上次没下完 / 用户暂停过
         //
@@ -286,7 +296,8 @@ final class DownloadJob: ObservableObject, Identifiable {
                   duration: duration,
                   resolution: resolution,
                   phaseText: phase,
-                  notes: notes)
+                  notes: notes,
+                  kind: kindHint?.key)
     }
 
     // MARK: - 控制
@@ -350,10 +361,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         return JobStore.file(named: n)
     }
 
-    /// ★ v1.0.109：成品是什么类别 —— 从**扩展名**推断。
-    ///   文件名是我们自己按类型起的（见 preferExtension），所以扩展名是可信的；
-    ///   这样不用给 JobRecord 加字段（那玩意的字段顺序和构造点实参顺序强绑定，
-    ///   动它风险大于收益 —— 上一次核过 18 个字段的顺序）。
+    /// 成品是什么类别。
+    /// ★ v1.0.111：**两级判定** —— 先看成品文件名的扩展名（最准），
+    ///   还没有成品（下载中 / 刚建卡）就用建卡时记下的 `kindHint`，
+    ///   两级都没有（老记录 + 后缀认不出）才落到「文件」。
+    ///   以前只有第一级，于是下载中一律被算成「文件」。
     enum MediaKind: CaseIterable {
         case video, image, audio, doc
 
@@ -373,15 +385,68 @@ final class DownloadJob: ObservableObject, Identifiable {
             case .doc: return "doc"
             }
         }
+        /// 落盘用的键
+        var key: String {
+            switch self {
+            case .video: return "video"
+            case .image: return "image"
+            case .audio: return "audio"
+            case .doc: return "doc"
+            }
+        }
+        init?(key: String) {
+            switch key {
+            case "video": self = .video
+            case "image": self = .image
+            case "audio": self = .audio
+            case "doc": self = .doc
+            default: return nil
+            }
+        }
     }
 
     var mediaKind: MediaKind {
-        let e = (outputName as NSString?)?.pathExtension.lowercased() ?? ""
-        if ["mp4", "m4v", "mov", "ts", "webm", "mkv", "flv", "avi", "3gp"].contains(e) { return .video }
-        if ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tiff", "svg"].contains(e) { return .image }
-        if ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"].contains(e) { return .audio }
+        // ① 成品文件名认得出类型 → 就是它（文件名是我们自己按类型起的）
+        if let k = Self.kind(fromExtension: (outputName as NSString?)?.pathExtension ?? "") {
+            return k
+        }
+        // ② 还没成品 → 用建卡时记下的类别（会落盘，重启也还在）
+        if let k = kindHint { return k }
+        // ③ 老记录且后缀认不出 → 「文件」（保持老行为）
         return .doc
     }
+
+    /// 扩展名 → 四类。认不出返回 nil（**不要**在这里兜底成 .doc ——
+    /// 兜底会把"还没成品"和"真的认不出"混成一件事，上面就分不出来了）。
+    static func kind(fromExtension ext: String) -> MediaKind? {
+        switch ext.lowercased() {
+        case "mp4", "m4v", "mov", "ts", "webm", "mkv", "flv", "avi", "3gp":
+            return .video
+        case "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tiff", "svg":
+            return .image
+        case "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus":
+            return .audio
+        case "pdf", "zip", "rar", "7z", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+             "txt", "epub", "apk", "bin":
+            return .doc
+        default:
+            return nil
+        }
+    }
+
+    /// 嗅探条目上的 kind（"hls"/"file"/"image"/"audio"/"doc"/"segment"…）→ 我们的四类。
+    /// 认不出的返回 nil（让上层退回"按扩展名判"）。
+    static func kind(fromSniff kind: String) -> MediaKind? {
+        switch kind {
+        case "image": return .image
+        case "audio": return .audio
+        case "doc": return .doc
+        // 视频那一族：hls 清单、直链文件、DASH、blob、以及 .ts 分片
+        case "hls", "file", "dash", "blob", "segment": return .video
+        default: return nil
+        }
+    }
+
 
     /// 能不能存相册：**只有图片和视频**可以（相册不收音频/文档）。
     /// 视频还要求 mp4Ready —— 相册不认 .ts。
@@ -920,7 +985,8 @@ final class DownloadJob: ObservableObject, Identifiable {
         // 反斜杠转义是个坑（\.\w 会直接编译不过）
         let name = (originalName as NSString).deletingPathExtension
         let j = DownloadJob(title: name.isEmpty ? "导入的视频" : name,
-                            sourceURL: "local://import")
+                            sourceURL: "local://import",
+                            kind: .video)
         j.phase = "正在导入…"
         return j
     }

@@ -18,9 +18,11 @@ final class DownloadCenter: ObservableObject {
 
     @discardableResult
     func add(title: String, url: String,
-             referrer: String = "", ua: String = "", cookie: String = "") -> DownloadJob {
+             referrer: String = "", ua: String = "", cookie: String = "",
+             kind: DownloadJob.MediaKind? = nil) -> DownloadJob {
         let job = DownloadJob(title: title, sourceURL: url,
-                              referrer: referrer, ua: ua, cookie: cookie)
+                              referrer: referrer, ua: ua, cookie: cookie,
+                              kind: kind)
         job.onUpdate = { [weak self] in self?.save() }
         jobs.insert(job, at: 0)
         save()
@@ -372,7 +374,8 @@ struct ContentView: View {
                               url: u,
                               referrer: hit?.referrer ?? "",
                               ua: hit?.ua ?? "",
-                              cookie: hit?.cookie ?? "")
+                              cookie: hit?.cookie ?? "",
+                              kind: .video)
                 model.showToast("已加入下载")
             }
             // ★ v1.0.106：长按下载 —— 上下文**由长按自己带回来**（探测时从页面直接取的），
@@ -383,7 +386,8 @@ struct ContentView: View {
                               url: m.url,
                               referrer: m.referrer,
                               ua: m.ua,
-                              cookie: m.cookie)
+                              cookie: m.cookie,
+                              kind: .video)
                 model.showToast("已加入下载")
             }
         }
@@ -1066,7 +1070,8 @@ struct SniffPanel: View {
                                   url: item.url,
                                   referrer: item.referrer,
                                   ua: item.ua,
-                                  cookie: item.cookie)
+                                  cookie: item.cookie,
+                                  kind: DownloadJob.kind(fromSniff: item.kind))
                     isPresented = false
                 } label: {
                     Label("开始下载", systemImage: "arrow.down.circle.fill")
@@ -1098,19 +1103,51 @@ struct SniffPanel: View {
 
 // MARK: - 下载列表
 
+/// 下载页顶部的四个分类按钮。
+/// ★ v1.0.111：用户要的是「顶部四个分类按钮」，不是一长条按类型分段的列表。
+/// 四个按钮固定就是这四个（视频 / 图片 / 文件 / 其他）：
+///   · 「文件」= 文档那一类（PDF、压缩包、bin 这些）
+///   · 「其他」= 音频，以及类别认不出来的（老记录）
+enum DownloadFilter: String, CaseIterable, Identifiable {
+    case video, image, doc, other
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .video: return "视频"
+        case .image: return "图片"
+        case .doc: return "文件"
+        case .other: return "其他"
+        }
+    }
+
+    func matches(_ k: DownloadJob.MediaKind) -> Bool {
+        switch self {
+        case .video: return k == .video
+        case .image: return k == .image
+        case .doc: return k == .doc
+        case .other: return k == .audio
+        }
+    }
+}
+
 struct DownloadList: View {
     @ObservedObject var center: DownloadCenter
     @Binding var isPresented: Bool
 
     @State private var query = ""
+    /// ★ v1.0.111：顶部四个分类按钮当前选中的那个（默认「视频」）。
+    @State private var filter: DownloadFilter = .video
 
-    /// 搜索过滤（按标题或原始地址）。
+    /// 搜索过滤（按标题或原始地址）+ 分类过滤。
     /// ★ 过滤后左滑删除必须**按对象**删、不能按下标删 —— 过滤后的下标跟
     ///   center.jobs 的下标不是一回事，按下标删会删错人。
     private var shownJobs: [DownloadJob] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return center.jobs }
-        return center.jobs.filter {
+        let base = center.jobs.filter { filter.matches($0.mediaKind) }
+        guard !q.isEmpty else { return base }
+        return base.filter {
             $0.title.lowercased().contains(q) || $0.sourceURL.lowercased().contains(q)
         }
     }
@@ -1131,44 +1168,62 @@ struct DownloadList: View {
                             .multilineTextAlignment(.center)
                     }
                 } else {
-                    List {
-                        Section {
-                            storageBar
+                    VStack(spacing: 0) {
+                        // ★ v1.0.111：顶部四个分类按钮（视频 / 图片 / 文件 / 其他）。
+                        //   以前是列表里按类型分成四段长条 —— 任务一多，想找某一类
+                        //   得一路往下滚；现在点一下只看这一类。
+                        Picker("分类", selection: $filter) {
+                            ForEach(DownloadFilter.allCases) { f in
+                                Text(f.label).tag(f)
+                            }
                         }
-                        // ★ v1.0.110：按类型分段（视频 / 图片 / 音频 / 文件）——
-                        //   以前全堆一段，图片和视频混着，找东西费劲。
-                        ForEach(DownloadJob.MediaKind.allCases, id: \.self) { kind in
-                            let list = shownJobs.filter { $0.mediaKind == kind }
-                            if !list.isEmpty {
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
+
+                        List {
+                            Section {
+                                storageBar
+                            }
+                            if shownJobs.isEmpty {
                                 Section {
-                                    ForEach(list) { job in
+                                    Text(query.isEmpty
+                                         ? "「\(filter.label)」这个分类下还没有东西"
+                                         : "这一类里没搜到")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Section {
+                                    ForEach(shownJobs) { job in
                                         JobRow(job: job, pip: center.pip)
                                     }
                                     .onDelete { idx in
                                         // ★ 按**对象**删：过滤后的下标和 center.jobs 不是一回事
                                         let victims = idx.compactMap {
-                                            list.indices.contains($0) ? list[$0] : nil
+                                            shownJobs.indices.contains($0) ? shownJobs[$0] : nil
                                         }
                                         for j in victims { center.remove(j) }
                                     }
                                 } header: {
-                                    Text("\(kind.label) · \(list.count) 个")
+                                    Text("\(filter.label) · \(shownJobs.count) 个")
+                                }
+                            }
+                            Section {
+                            } footer: {
+                                HStack {
+                                    Text(query.isEmpty
+                                         ? "共 \(center.jobs.count) 个任务"
+                                         : "筛出 \(shownJobs.count) 个 · 共 \(center.jobs.count) 个")
+                                    Spacer()
+                                    Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
                                 }
                             }
                         }
-                        Section {
-                        } footer: {
-                            HStack {
-                                Text(query.isEmpty
-                                     ? "共 \(center.jobs.count) 个任务"
-                                     : "筛出 \(shownJobs.count) 个 · 共 \(center.jobs.count) 个")
-                                Spacer()
-                                Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
-                            }
-                        }
+                        .listStyle(.insetGrouped)
+                        .searchable(text: $query, prompt: "搜标题或地址")
                     }
-                    .listStyle(.insetGrouped)
-                    .searchable(text: $query, prompt: "搜标题或地址")
                 }
             }
             .navigationTitle("下载")
@@ -1231,6 +1286,8 @@ struct JobRow: View {
     let pip: PiPProgress
     @State private var playSheet: SheetURL?
     @State private var exportSheet: SheetURL?
+    /// ★ v1.0.111：图片的「查看」入口（下好的图片点开看大图）
+    @State private var viewSheet: SheetURL?
     @State private var showLog = false
     /// 缩略图（转码成功后抽的那一帧）。读盘一次就存下来，
     /// 不放在 body 里每次重算都读 —— 列表滚动时会很难看。
@@ -1305,9 +1362,11 @@ struct JobRow: View {
                 Label("文件已经不在了（可能被系统清理或删掉）", systemImage: "xmark.octagon")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.red)
-            } else if job.finished && !job.mp4Ready && job.mediaKind == .video {
+            } else if job.finished && job.failed == nil && !job.mp4Ready && job.mediaKind == .video {
                 // ★ v1.0.110：加 `mediaKind == .video` —— 图片/音频/文档本来就不转码，
                 //   以前图片下载成功也会挂这条黄字（"MP4 没转出来"），纯误报。
+                // ★ v1.0.111：再加 `job.failed == nil` —— 类别改由建卡时记下的 kind 判定后，
+                //   "失败且一个产物都没产出"的视频任务也会算成 .video，别在红字下面再挂一条黄字。
                 Label("MP4 没转出来 · 原因在「过程记录」里", systemImage: "info.circle.fill")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.orange)
@@ -1380,6 +1439,21 @@ struct JobRow: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
+                    } else if job.mediaKind == .image {
+                        // ★ v1.0.111：图片没得"播"，给「查看」—— 点开看大图。
+                        //   以前图片下完在列表里只有一行字，想确认下的是哪张图都没辙。
+                        Button {
+                            if let u = job.exportURL() {
+                                viewSheet = SheetURL(url: u)
+                            } else {
+                                job.show("文件不在了")
+                            }
+                        } label: {
+                            Label("查看", systemImage: "photo")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
 
                     Button {
@@ -1471,20 +1545,29 @@ struct JobRow: View {
                 job.show(ok ? "已保存到你选的位置" : "已取消")
             })
         }
+        // ★ v1.0.111：图片查看器（跟播放器一样用 fullScreenCover，铺满整块屏）
+        .fullScreenCover(item: $viewSheet) { s in
+            ImageViewerSheet(url: s.url, title: job.title)
+        }
     }
 
     /// 左侧缩略图（16:9）。
-    /// 图是转码成功后抽的一帧；抽不到（比如原样 .ts 没能转成 mp4）就显示占位图标 ——
-    /// 列表照样能用，只是少了「一眼认出是哪个片子」这点便利。
+    /// · 视频：转码成功后抽的那一帧（`thumbName`）
+    /// · 图片（★ v1.0.111）：**直接用下好的那张图本身**当缩略图 ——
+    ///   以前只有视频抽帧这一条路，图片一律是占位图标（用户报的"下完了没缩略图"）。
+    ///   走 ThumbLoader 的降采样，不把原图整张解码进内存。
+    /// · 抽不到 / 还没下完：显示占位图标（按类别选图标，图片不再是"胶片"）
     private var thumb: some View {
-        ZStack {
+        // 触发重新取图的钥匙：产物名 / 类别 / 抽帧名，任意一个变了就重取一次
+        let key = "\(job.thumbName ?? "-")|\(job.mediaKind.key)|\(job.outputName ?? "-")"
+        return ZStack {
             Color(.tertiarySystemFill)
             if let img = thumbImage {
                 Image(uiImage: img)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
-                Image(systemName: job.isActive ? "arrow.down.circle" : "film")
+                Image(systemName: job.isActive ? "arrow.down.circle" : job.mediaKind.icon)
                     .font(.system(size: 18))
                     .foregroundStyle(.tertiary)
             }
@@ -1495,12 +1578,14 @@ struct JobRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
-        // thumbName 从 nil 变成文件名（图落盘了）时才去读一次
-        .task(id: job.thumbName) {
+        .task(id: key) {
+            thumbImage = nil
             if let u = job.thumbURL {
                 thumbImage = UIImage(contentsOfFile: u.path)
-            } else {
-                thumbImage = nil
+                return
+            }
+            if job.mediaKind == .image, let f = job.exportURL() {
+                thumbImage = await ThumbLoader.loadLocal(f)
             }
         }
     }
@@ -1511,6 +1596,89 @@ struct JobRow: View {
             Text(text).font(.system(size: 11).monospacedDigit())
         }
         .foregroundStyle(.secondary)
+    }
+}
+
+/// 图片查看器（★ v1.0.111）。
+/// 为什么必须降采样：一张 4000×3000 的图整张解码约 48MB，
+/// 而查看器正好是最容易吃到整图的地方 —— 一律只解到目标尺寸（ThumbLoader.loadLocal）。
+/// 手势：双指缩放、双击放大/还原，右上角「完成」关掉。
+struct ImageViewerSheet: View {
+    let url: URL
+    let title: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var img: UIImage?
+    @State private var failed = false
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let img {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { v in
+                                scale = min(max(lastScale * v, 1), 6)
+                            }
+                            .onEnded { _ in lastScale = scale }
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            scale = scale > 1 ? 1 : 2.5
+                            lastScale = scale
+                        }
+                    }
+            } else if failed {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 34))
+                    Text("这张图读不出来了")
+                        .font(.system(size: 13))
+                }
+                .foregroundStyle(.white.opacity(0.7))
+            } else {
+                ProgressView().tint(.white)
+            }
+
+            VStack {
+                HStack(spacing: 12) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("完成") { dismiss() }
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+                Spacer()
+
+                if img != nil {
+                    Text(scale > 1 ? "双指缩放 · 双击还原" : "双指缩放 · 双击放大")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .padding(.bottom, 16)
+                }
+            }
+        }
+        .task {
+            // 1600px 够看清细节，又不至于把内存顶上去
+            if let got = await ThumbLoader.loadLocal(url, maxPx: 1600) {
+                img = got
+            } else {
+                failed = true
+            }
+        }
     }
 }
 
