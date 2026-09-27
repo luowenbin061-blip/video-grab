@@ -1341,7 +1341,13 @@ struct JobRow: View {
             }
 
             if job.isActive {
-                ProgressView(value: job.overall)
+                // ★ v1.0.114：进度是按"段"上报的，总长未知时（服务器没给 Content-Length）
+                //   原来会钉在 0% 像卡住 —— 换成不确定态的转圈条；总长已知就按真实比例走。
+                if job.total > 0 {
+                    ProgressView(value: job.overall)
+                } else {
+                    ProgressView()
+                }
             }
 
             HStack(spacing: 5) {

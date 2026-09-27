@@ -167,7 +167,11 @@ final class DownloadJob: ObservableObject, Identifiable {
     var overall: Double {
         switch stage {
         case .prepare:  return 0
-        case .download: return progress * 0.85
+        case .download:
+            // ★ v1.0.114：非视频（图片 / 音频 / 文档）**下载完就是成品**，没有拼接和转码，
+            //   所以下载阶段就该按 100% 算。原来一律乘 0.85，于是这类文件下到 85%
+            //   就跳"完成"，看着像出了问题。视频保持 0.85（后面还有拼接 + 转码）。
+            return mediaKind == .video ? progress * 0.85 : progress
         case .join:     return 0.85 + progress * 0.07
         case .convert:  return 0.92 + convertProgress * 0.08
         case .finished: return 1
@@ -599,14 +603,22 @@ final class DownloadJob: ObservableObject, Identifiable {
                 guard let self else { return }
                 self.stage = .download
                 self.bytesDone = got
-                self.done = Int(got / 262144)
-                self.total = tot > 0 ? Int(tot / 262144) : 0
+                // ★ v1.0.114：向上取整 + 至少 1 —— 小文件（不到 256KB）原来算出来
+                //   total = 0 → progress 恒为 0 → 进度条不动（看着像卡住）。
+                self.done = max(1, Int((got + 262143) / 262144))
+                self.total = tot > 0 ? max(1, Int((tot + 262143) / 262144)) : 0
                 var msg = "下载文件 \(Self.mb(got))MB"
                 if tot > 0 { msg += " / \(Self.mb(tot))MB" }
                 self.phase = msg
                 self.markSpeedSample()
             }
         }
+
+        // ★ v1.0.114：真正开拉之前先给一句状态 —— 否则"探测完 → 下完"之间
+        //   界面一直是上一句文案，短文件看着像"什么都没发生就完成了"。
+        phase = probe.contentLength > 0
+            ? "正在下载…（共 \(Self.mb(probe.contentLength))MB）"
+            : "正在下载…"
 
         let got = try await fd.run(url: src)
         if Task.isCancelled { paused = true; onUpdate?(); return }

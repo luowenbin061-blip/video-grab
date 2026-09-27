@@ -76,7 +76,19 @@ struct FileDownloader {
         }
 
         let total = options.expectedLength
-        let chunk: Int64 = 16 * 1024 * 1024
+        // ★ v1.0.114：段长**自适应**。
+        //   原来是死写 16MB —— 而进度是**每段回调一次**，于是小于 16MB 的文件
+        //   全程只有一次回调（就在结束时）→ 界面上看不到进度、也来不及算速度，
+        //   用户看到的就是"一点就直接下好了"（用户实测报的就是这个）。
+        //   现在：段长 = 总长的 1/10，夹在 1MB ~ 16MB；总长未知时用 1MB。
+        //   效果：任何大小的文件都有 ≥10 次进度回调，同时请求数不会爆
+        //   （1GB 也就 63 段，跟原来一样量级）。
+        let chunk: Int64
+        if total > 0 {
+            chunk = min(max(total / 10, 1 * 1024 * 1024), 16 * 1024 * 1024)
+        } else {
+            chunk = 1 * 1024 * 1024
+        }
 
         if options.acceptsRange {
             while true {
