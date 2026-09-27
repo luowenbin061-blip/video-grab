@@ -504,6 +504,13 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     // MARK: - 小工具
 
+    /// ★ v1.0.112：兜底 User-Agent。
+    /// 嗅探 / 长按下载都带真实 UA；**网页自己触发的文件下载**（附件、点下载按钮）
+    /// 是从导航回调里接过来的，可能拿不到 UA —— 这一路绝不能发空 UA，
+    /// 有的服务器看到空 UA 直接 400/403。与 HLS 那条 fallbackUA 保持同一串。
+    static let defaultUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+        + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+
     static func mb(_ bytes: Int64) -> String {
         String(format: "%.1f", Double(bytes) / 1024.0 / 1024.0)
     }
@@ -568,7 +575,7 @@ final class DownloadJob: ObservableObject, Identifiable {
         let outURL = JobStore.file(named: baseName + "." + ext)
 
         var fopt = FileDownloader.Options(
-            userAgent: ua,
+            userAgent: ua.isEmpty ? Self.defaultUA : ua,
             referer: referer,
             cookie: cookie,
             outputURL: outURL,

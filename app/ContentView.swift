@@ -390,6 +390,18 @@ struct ContentView: View {
                               kind: .video)
                 model.showToast("已加入下载")
             }
+            // ★ v1.0.112：**网页自己触发的文件下载**（点页面的下载按钮 / 附件链接 / `download` 属性）。
+            //   以前这类请求在 WKWebView 里等于"什么都不发生"（它不实现下载）；
+            //   现在接进下载中心：进度、暂停、分类、存文件夹全都复用，最后进「下载页 → 文件」。
+            model.onFileDownload = { r in
+                let ext = (r.name as NSString).pathExtension
+                downloads.add(title: r.name.isEmpty ? "下载的文件" : r.name,
+                              url: r.url,
+                              referrer: r.referrer,
+                              ua: r.ua,
+                              cookie: r.cookie,
+                              kind: DownloadJob.kind(fromExtension: ext) ?? .doc)
+            }
         }
     }
 

@@ -116,6 +116,21 @@ struct SniffGroup: Identifiable {
     let total: Int          // 组内变体条数
 }
 
+/// ★ v1.0.112：**网页自己触发的文件下载**（点页面的下载按钮 / 附件链接）。
+/// 为什么需要它：WKWebView **默认根本不实现"下载"** —— 碰到不能显示的内容
+/// （`Content-Disposition: attachment` 的 exe / zip / dmg…）它既不下也不提示，
+/// 用户看到的就是"点了没反应"（用户实测 workdaddy.dev 的下载按钮就是这个）。
+/// 所以得由导航回调里认出这类请求，转给我们自己的下载器。
+struct FileDownloadRequest {
+    var url: String
+    /// 服务器建议的文件名（没有就空串，界面会兜底）
+    var name: String
+    /// 发出这次请求的页面地址（防盗链校验的是这个，不是 document.referrer）
+    var referrer: String
+    var ua: String
+    var cookie: String
+}
+
 /// 浏览器 + 嗅探结果的中枢。
 @MainActor
 final class BrowserModel: NSObject, ObservableObject {
@@ -178,6 +193,11 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 那条路在「自动嗅探默认关」之后基本是空的（拿不到 → 防盗链站必失败）。
     /// 没人接这个新回调时，`downloadFromLongPressMenu` 会退回老回调。
     var onLongPressDownload: ((LongPressMenuInfo) -> Void)?
+    /// ★ v1.0.112：**网页自己触发的文件下载**（点页面的下载按钮 / 附件链接 / 带 download 属性的链接）。
+    /// 不接这个回调时，这类请求的结局是"什么都不发生"（WKWebView 不实现下载）——
+    /// 正是用户报的「点了页面里的下载也没反馈」。接线后：取消原导航 + 交给我们自己的下载器，
+    /// 进度 / 暂停 / 分类 / 存文件夹 全部复用。
+    var onFileDownload: ((FileDownloadRequest) -> Void)?
     @Published var toast: String?
     @Published var mseSeen = false
     @Published var hint: String?
@@ -1515,6 +1535,105 @@ extension BrowserModel: WKScriptMessageHandler {
 
 extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
+    // MARK: - ★ v1.0.112：网页自己触发的「下载文件」
+
+    /// 判定一个地址像不像"要下载的文件"（打包/安装包这类**显示不了**的类型）。
+    /// 为什么不收 pdf / 图片 / 视频：那些 WKWebView **能**显示，用户点它多半是想看内容。
+    static func looksLikeFileDownload(_ url: String) -> Bool {
+        guard let u = URL(string: url) else { return false }
+        let e = u.pathExtension.lowercased()
+        return ["exe", "msi", "zip", "rar", "7z", "tar", "gz", "xz", "dmg", "pkg",
+                "apk", "ipa", "deb", "rpm", "iso", "bin", "jar", "whl", "crx", "msix"].contains(e)
+    }
+
+    /// 导航**响应**阶段：服务器回了「这是给你下载的」（`Content-Disposition: attachment`）
+    /// 或者回了个 WebKit 显示不了的类型 → 取消导航，把地址交给下载中心。
+    ///
+    /// ★ 为什么必须自己接：WKWebView **默认不实现下载** —— 遇到这类响应
+    ///   它既不下、也不报错，用户看到的就是「点了没反应」（用户实测 workdaddy.dev 即此）。
+    nonisolated func webView(_ wv: WKWebView,
+                             decidePolicyFor resp: WKNavigationResponse,
+                             decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        let r = resp.response
+        let mime = (r.mimeType ?? "").lowercased()
+        // HLS / DASH 清单不截胡：视频那条线有自己的入口（长按 / 嗅探面板），
+        // 清单地址直接导航时保持原行为（交给 WebKit）
+        if mime.contains("mpegurl") || mime.contains("dash+xml") {
+            decisionHandler(.allow)
+            return
+        }
+        let disposition = (r as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
+        let isAttachment = disposition.contains("attachment")
+        // ★ 只接管「明说了是附件」或「确实显示不了」的；
+        //   正常网页、图片、PDF、能播的视频一律放行（.allow）
+        guard resp.isForMainFrame, isAttachment || !resp.canShowMIMEType else {
+            decisionHandler(.allow)
+            return
+        }
+        let url = r.url?.absoluteString ?? ""
+        let name = r.suggestedFilename ?? ""
+        decisionHandler(.cancel)
+        Task { @MainActor in
+            self.handOffDownload(wv: wv, url: url, name: name)
+        }
+    }
+
+    /// 导航**动作**阶段：链接带 `download` 属性（含 JS 的 `a.download` + `click()`）——
+    /// 此时 WebKit 只是在 action 上标了 `shouldPerformDownload`，**不会替我们落盘**。
+    nonisolated func webView(_ wv: WKWebView,
+                             decidePolicyFor action: WKNavigationAction,
+                             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard action.shouldPerformDownload else {
+            decisionHandler(.allow)
+            return
+        }
+        let url = action.request.url
+        let s = url?.absoluteString ?? ""
+        // blob: / data: 是**页面里临时生成**的，URLSession 根本抓不到 →
+        // 这一版给一句明确提示：下不了也要让用户知道为什么，别静悄悄没反应
+        if s.hasPrefix("blob:") || s.hasPrefix("data:") {
+            decisionHandler(.cancel)
+            Task { @MainActor in
+                self.showToast("这个是网页临时生成的文件（blob），当前版本还下不了")
+            }
+            return
+        }
+        decisionHandler(.cancel)
+        Task { @MainActor in
+            self.handOffDownload(wv: wv, url: s, name: url?.lastPathComponent ?? "")
+        }
+    }
+
+    /// 把一次「网页要下载」的请求交给上层（ContentView 接到下载中心）。
+    /// 上下文在这里补齐 —— 对齐 v1.0.106 的教训：
+    /// **Referer 用当前页面地址**（防盗链校验的是"从哪个页面发的"），不是 `document.referrer`。
+    private func handOffDownload(wv: WKWebView, url: String, name: String) {
+        guard !url.isEmpty else { return }
+        let page = tab(for: wv)?.address ?? wv.url?.absoluteString ?? ""
+        let referrer = (page.isEmpty || page == "about:blank") ? "" : page
+        let ua = wv.customUserAgent ?? ""
+        // Cookie 走 WebKit 自己的仓（**含 HttpOnly** —— document.cookie 拿不到那些）
+        let host = URL(string: url)?.host ?? ""
+        wv.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+            let line = cookies.filter { c in
+                let d = c.domain.hasPrefix(".") ? String(c.domain.dropFirst()) : c.domain
+                return !host.isEmpty && !d.isEmpty && (host == d || host.hasSuffix("." + d))
+            }
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
+            Task { @MainActor in
+                guard let cb = self.onFileDownload else {
+                    self.showToast("这个文件没接上保存通道，先没下")
+                    return
+                }
+                cb(FileDownloadRequest(url: url, name: name, referrer: referrer,
+                                       ua: ua, cookie: line))
+                self.showToast("已加入下载")
+            }
+        }
+    }
+
     /// 长按链接的原生菜单 —— WebKit 只对「链接」弹这个（JS 已把视频盖成链接）。
     /// 媒体地址 → 只给「Download」（对齐 Stay）；普通链接 → 系统默认菜单。
     nonisolated func webView(_ webView: WKWebView,
@@ -1862,6 +1981,15 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                              for action: WKNavigationAction,
                              windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard let url = action.request.url else { return nil }
+        // ★ v1.0.112：这个"新窗口"其实是要下文件 → 不开标签，直接交给下载器。
+        //   不这么做的话：新标签会去加载附件 → 被响应阶段取消 → **白留一个空标签**。
+        if action.shouldPerformDownload || Self.looksLikeFileDownload(url.absoluteString) {
+            Task { @MainActor in
+                self.handOffDownload(wv: wv, url: url.absoluteString,
+                                     name: url.lastPathComponent)
+            }
+            return nil
+        }
         let byTap = action.navigationType == .linkActivated
         Task { @MainActor in
             guard byTap else { return }        // 脚本自己弹的：不理会（同 Safari）
