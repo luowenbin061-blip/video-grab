@@ -38,6 +38,8 @@ struct ToolboxView: View {
     @State private var showBackupOptions = false
     /// 从备份恢复：选那个 json 文件
     @State private var showRestorePicker = false
+    /// 备份好了 → 直接弹**文件夹选择器**（用户要的是"存到哪儿"，不是再点一次分享面板）
+    @State private var backupSheet: SheetURL?
 
     // ★ v1.0.119：这两个开关直接读 UserDefaults（@AppStorage）——
     //   这样"已开/已关"的字样会跟着状态自己变，不用把整个 BrowserModel 订阅进来。
@@ -133,6 +135,12 @@ struct ToolboxView: View {
             }
             .sheet(isPresented: $showRestorePicker) {
                 FilePickerBox(onPicked: { files in doRestore(files) }, types: [.json])
+            }
+            // ★ v1.0.131：备份包好了 → 直接让你选文件夹存出去（跟「存文件夹」同一个选择器）
+            .sheet(item: $backupSheet) { s in
+                DocumentExporter(url: s.url, onFinish: { ok in
+                    note = ok ? "备份已保存到你选的位置（App 内还留了最近一份）" : "已取消保存。"
+                })
             }
             .sheet(isPresented: $showPhotoPicker) {
                 PhotoPickerBox { files in
@@ -240,18 +248,27 @@ struct ToolboxView: View {
         }
     }
 
-    /// ★ v1.0.127 备份：生成 JSON → 落盘 → 抬系统分享面板（存文件 / 发微信都走它）
+    /// ★ v1.0.127 备份 / v1.0.131 改：生成 JSON → **直接弹文件夹选择器**让你挑存哪儿。
+    ///   上一版走的是系统分享面板（还得在里面点一次"存储到文件"才能选目录）——
+    ///   用户的原话是"为什么没让我选文件夹"，那就一步到位，跟「存文件夹」一个手感。
     private func doBackup() {
         do {
             let d = try DataBackup.exportData()
             let f = DateFormatter()
             f.dateFormat = "yyyyMMdd-HHmmss"
+            // 顺手把上一次留在 App 里的备份清掉（它只当"最近一份"，不该越攒越多）
+            if let old = try? FileManager.default.contentsOfDirectory(atPath: JobStore.dir.path) {
+                for n in old where n.hasPrefix("VideoGrab备份-") && n.hasSuffix(".json") {
+                    try? FileManager.default.removeItem(
+                        at: JobStore.file(named: n))
+                }
+            }
             let u = JobStore.file(named: "VideoGrab备份-\(f.string(from: Date())).json")
             try d.write(to: u, options: .atomic)
             isPresented = false
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 350_000_000)
-                shareItem = SheetURL(url: u)
+                backupSheet = SheetURL(url: u)
             }
         } catch {
             note = "备份失败：\(error.localizedDescription)"
