@@ -70,6 +70,11 @@ struct ToolboxView: View {
                         longShot()
                     }
                     cell("square.and.arrow.up", "分享本页", .blue) { share() }
+
+                    // ★ v1.0.122：导出 PDF —— 跟「截长图」不是一回事（见 PagePDF.swift 顶部注释）：
+                    //   那条是位图拼接，这条是 WebKit 自己排版的**矢量** PDF，一次成型。
+                    cell("doc.richtext", "导出 PDF", .red,
+                         detail: "矢量的，字能选中") { exportPDF() }
                 }
                 .padding(16)
 
@@ -208,6 +213,16 @@ struct ToolboxView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
             model.captureLongShot()
+        }
+    }
+
+    /// ★ v1.0.122：导出 PDF —— 同样先收起卡片（渲染要网页视图在前台）。
+    /// 结果同样由主界面弹分享面板（见 BrowserModel.pagePDFFile）
+    private func exportPDF() {
+        isPresented = false
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            model.exportPagePDF()
         }
     }
 

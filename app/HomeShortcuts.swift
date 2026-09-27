@@ -25,7 +25,7 @@ struct HomeItem: Codable, Identifiable, Equatable {
 /// ★ rawValue 会被写进存档，**改名字等于让老存档认不出来** —— 只加不改。
 enum HomeFeature: String, CaseIterable, Identifiable {
     case sniff, downloads, bookmarks, toolbox, settings, tabs, copyURL
-    case desktopMode, noImage, longShot, share
+    case desktopMode, noImage, longShot, pagePDF, share
 
     var id: String { rawValue }
 
@@ -41,6 +41,7 @@ enum HomeFeature: String, CaseIterable, Identifiable {
         case .desktopMode: return "桌面模式"
         case .noImage:     return "无图模式"
         case .longShot:    return "截长图"
+        case .pagePDF:     return "导出 PDF"
         case .share:       return "分享"
         }
     }
@@ -58,6 +59,7 @@ enum HomeFeature: String, CaseIterable, Identifiable {
         case .desktopMode: return "desktopcomputer"
         case .noImage:     return "eye.slash"
         case .longShot:    return "photo.on.rectangle.angled"
+        case .pagePDF:     return "doc.richtext"
         case .share:       return "square.and.arrow.up"
         }
     }

@@ -1466,6 +1466,66 @@ final class BrowserModel: NSObject, ObservableObject {
         showToast(msg)
     }
 
+    /// 导出 PDF 的结果文件（非空 → 界面弹系统分享面板；收起后由界面清掉）
+    @Published var pagePDFFile: URL?
+
+    /// ★ v1.0.122：正在导出 PDF —— 防重入（跟截长图同一个理由：中途再点会互相打架）
+    private var exportingPDF = false
+
+    /// 把当前整页导出成**矢量** PDF。
+    /// 跟截长图是两条独立的路：这条走 WebKit 自己的排版渲染器，
+    /// 输出矢量（文字可选中/可搜索）、一次成型（没接缝、固定栏不重复）。
+    func exportPagePDF() {
+        guard !exportingPDF else {
+            showToast("上一份还在导出，稍等一下")
+            return
+        }
+        guard let wv = currentTab?.webView else {
+            showToast("现在没有打开的网页")
+            return
+        }
+        exportingPDF = true
+        showToast("正在导出 PDF，页面越长越慢…")
+        PagePDF.capture(wv) { [weak self] result in
+            guard let self else { return }
+            self.exportingPDF = false
+            switch result {
+            case .success(let out):
+                self.finishPagePDF(out)
+            case .failure(let e):
+                self.showToast(e.localizedDescription)
+            }
+        }
+    }
+
+    private func finishPagePDF(_ out: PagePDF.Output) {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let u = JobStore.file(named: "\(Self.pdfName(from: pageTitle))-\(f.string(from: Date())).pdf")
+        do {
+            try out.data.write(to: u, options: .atomic)
+        } catch {
+            showToast("PDF 存不下来（磁盘可能满了）")
+            return
+        }
+        pagePDFFile = u                    // 界面收到就弹分享面板（存文件 / 发微信都走它）
+        var msg = "PDF 已生成 \(out.widthPts)×\(out.heightPts) 点 · \(max(1, out.data.count / 1024)) KB"
+        if out.pages > 1 { msg += " · \(out.pages) 页" }
+        if out.veryLong { msg += "\n页面很长，是一整页的大 PDF（有些阅读器会缩得很小）" }
+        showToast(msg)
+    }
+
+    /// 网页标题 → 能当文件名用的短名（去掉路径分隔符这类；太长就截断）
+    static func pdfName(from title: String) -> String {
+        var n = title
+        for bad in ["/", "\\", ":", "*", "?", "\"", "<", ">", "|", "\n", "\r", "\t"] {
+            n = n.replacingOccurrences(of: bad, with: "_")
+        }
+        n = n.trimmingCharacters(in: .whitespacesAndNewlines)
+        if n.count > 40 { n = String(n.prefix(40)) }
+        return n.isEmpty ? "网页" : n
+    }
+
     // MARK: - 从 JS 收到的数据
 
     /// 这个地址像不像媒体 —— 决定系统长按菜单里给不给 Download。

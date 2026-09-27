@@ -319,6 +319,12 @@ struct ContentView: View {
             shareURL = SheetURL(url: u)
             model.longShotFile = nil          // 用完就清，免得下次进来又弹
         }
+        // ★ v1.0.122：PDF 导好了 → 同样立刻抬分享面板（存文件 / 发微信都从这里走）
+        .onChange(of: model.pagePDFFile) { u in
+            guard let u else { return }
+            shareURL = SheetURL(url: u)
+            model.pagePDFFile = nil
+        }
         // 长按诊断（设置里打开才出现）：显示这一步卡在哪，12 秒自己消失
         // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
         .overlay(alignment: .bottom) {
@@ -713,8 +719,9 @@ struct ContentView: View {
         case .copyURL:     copyCurrentURL()
         case .desktopMode: model.toggleDesktopUA()
         case .noImage:     model.toggleNoImage()
-        case .longShot:    model.captureLongShot()
-        case .share:       shareCurrentPage()
+            case .longShot:    model.captureLongShot()
+            case .pagePDF:     model.exportPagePDF()
+            case .share:       shareCurrentPage()
         }
     }
 
