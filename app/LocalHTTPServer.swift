@@ -462,7 +462,7 @@ final class LocalHTTPServer {
         if let body = LivePreview.playlistBody(forPath: path, root: root) {
             sendBody(fd, status: 200, reason: "OK",
                      contentType: "application/vnd.apple.mpegurl",
-                     body: Data(body.utf8))
+                     body: Data(body.utf8), isHead: isHead)
             return
         }
 
@@ -557,14 +557,15 @@ final class LocalHTTPServer {
 
     /// ★ v1.0.127：发一段带指定 Content-Type 的内容（边下边播的清单要它）
     private func sendBody(_ fd: Int32, status: Int, reason: String,
-                          contentType: String, body: Data) {
+                          contentType: String, body: Data, isHead: Bool = false) {
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Cache-Control: no-store\r\n"      // 清单每次都要最新，绝不缓存
         head += "Connection: close\r\n\r\n"
         guard writeAll(fd, Data(head.utf8)) else { return }
-        _ = writeAll(fd, body)
+        // ★ v1.0.130：播放器有时会先 HEAD 一下清单 —— HEAD 不能带 body，只回头部
+        if !isHead { _ = writeAll(fd, body) }
     }
 
     private func sendForbiddenPage(_ fd: Int32) {
@@ -659,6 +660,9 @@ final class LocalHTTPServer {
         switch ext.lowercased() {
         case "m3u8": return "application/vnd.apple.mpegurl"
         case "ts": return "video/mp2t"
+        // ★ v1.0.130：边下边播的分片在磁盘上叫 `seg_xxxxxx.part`，
+        //   它们其实就是 TS 分片 —— 不给对类型的话播放器拿到 octet-stream，会不肯播。
+        case "part": return "video/mp2t"
         case "m4s": return "video/iso.segment"
         case "mp4", "m4v": return "video/mp4"
         default: return "application/octet-stream"

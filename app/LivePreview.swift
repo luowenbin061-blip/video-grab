@@ -16,8 +16,12 @@ import Foundation
 ///
 /// ══ 为什么清单必须"现场生成" ══
 /// 每下完一个分片，这份清单就该长一条。若写成静态文件，播放器第二次来要还是老内容，
-/// 播完当前的就停了。所以路径走 `__live/<任务id>.m3u8`，本地服务每次 GET 现算一遍
-/// （见 `LocalHTTPServer` 里那条路由）。
+/// 播完当前的就停了。所以清单路径是 `parts_<任务id>/live.m3u8` —— **和分片同目录**，
+/// 本地服务每次 GET 现算一遍（见 `LocalHTTPServer` 里那条路由）。
+///
+/// ★★ v1.0.130 修的一个真 bug：v1.0.129 把清单放在一个自编的假目录 `__live/` 下，
+///   结果真机一直转圈 —— 因为清单里的分片地址是**相对清单位置**解析的，
+///   播放器跑去请求假目录下的分片，404。清单一进分片目录，这个问题自然消失。
 ///
 /// ══ 一个已知的不精确 ══
 /// `#EXTINF` 的时长写的是固定值 —— 原始分片时长在下载器那边的清单对象里，
@@ -28,13 +32,23 @@ import Foundation
 ///   （只读磁盘，不碰 UI），标了主线程隔离就调不了。目录由调用方传进来，不依赖任何单例。
 enum LivePreview {
 
-    /// 清单的"假目录名"。磁盘上**并不存在**这个目录 ——
-    /// 本地服务一看到这个前缀就现场生成内容，不会去文件系统找。
-    static let routePrefix = "__live"
-
-    /// 相对 root 的清单路径（形如 `__live/<uuid>.m3u8`）
+    /// 相对 root 的清单路径：**就放在分片目录里**（`parts_<id>/live.m3u8`）。
+    ///
+    /// ★★ 为什么不自己编一个目录（v1.0.129 就是那么干的，结果真机一直转圈）：
+    ///   HLS 清单里的分片地址是**相对于清单自己的位置**解析的。清单放在分片同目录时，
+    ///   里面直接写 `seg_000001.part` 就是对的；放在别的目录（哪怕只是一个假目录名），
+    ///   播放器就会去请求那个目录下的分片 → 404 → 一直转圈。
     static func relativePath(taskID: UUID) -> String {
-        "\(routePrefix)/\(taskID.uuidString).m3u8"
+        "\(partsDirName(taskID: taskID))/live.m3u8"
+    }
+
+    /// 从路径里认出"这是不是我们的边下边播清单"；是就返回任务 id
+    static func taskID(fromPlaylistPath path: String) -> UUID? {
+        let suffix = "/live.m3u8"
+        guard path.hasSuffix(suffix) else { return nil }
+        let dir = String(path.dropLast(suffix.count))
+        guard dir.hasPrefix("parts_") else { return nil }
+        return UUID(uuidString: String(dir.dropFirst("parts_".count)))
     }
 
     /// 分片目录名（**必须与 Downloader 里那个保持一致**：`parts_<任务id>`）
@@ -57,26 +71,42 @@ enum LivePreview {
         return out
     }
 
-    /// 现在能不能边下边播（三条判据都要过）
-    static func canPlay(taskID: UUID, root: URL) -> Bool {
+    /// 分片够不够开这个入口（界面用它决定**按钮出不出现**）。
+    /// 只要求"有 ≥2 个从头连续的分片" —— 格式问题放到点击后再解释，
+    /// 不然用户看到的只是"按钮莫名不见了"，反而像功能坏了。
+    static func hasEnoughParts(taskID: UUID, root: URL) -> Bool {
+        contiguousParts(taskID: taskID, root: root).count >= 2
+    }
+
+    /// 现在能不能真的播。**不能播就返回原因**（写进提示 / 过程记录），
+    /// 返回 nil 表示可以播。
+    static func blockReason(taskID: UUID, root: URL) -> String? {
+        let dir = root.appendingPathComponent(partsDirName(taskID: taskID))
+        guard FileManager.default.fileExists(atPath: dir.path) else {
+            return "还没开始下载分片"
+        }
         let parts = contiguousParts(taskID: taskID, root: root)
-        // 只有 1 片看不出什么，两片起才有点意义
-        guard parts.count >= 2 else { return false }
+        if parts.isEmpty { return "还没开始下载分片" }
+        if parts.count < 2 { return "已下载的分片还不够（\(parts.count) 个）" }
         // 首字节必须是 TS 的同步字节 0x47 ——
-        // 加密分片（AES-128 密文）和 fMP4 分片都不是，播出来只会是黑的，不如不给入口。
-        let first = root.appendingPathComponent(partsDirName(taskID: taskID))
-            .appendingPathComponent(parts[0])
-        guard let h = try? FileHandle(forReadingFrom: first) else { return false }
+        // 加密分片（AES-128 密文）和 fMP4 分片（.m4s）都不是，播出来只会是黑的。
+        let first = dir.appendingPathComponent(parts[0])
+        guard let h = try? FileHandle(forReadingFrom: first) else { return "分片读不出来" }
         defer { try? h.close() }
-        return h.readData(ofLength: 1).first == 0x47
+        if h.readData(ofLength: 1).first != 0x47 {
+            return "这条流的格式不支持（分片不是 TS —— 多半是 fMP4 或加密流）"
+        }
+        return nil
+    }
+
+    /// 兼容旧调用：能播就是 true
+    static func canPlay(taskID: UUID, root: URL) -> Bool {
+        blockReason(taskID: taskID, root: root) == nil
     }
 
     /// 现场生成清单内容。路径不是 `__live/...` 或算不出来 → nil（让本地服务按普通文件处理）
     static func playlistBody(forPath path: String, root: URL) -> String? {
-        guard path.hasPrefix(routePrefix + "/") else { return nil }
-        let tail = String(path.dropFirst(routePrefix.count + 1))
-        let idStr = tail.replacingOccurrences(of: ".m3u8", with: "")
-        guard let id = UUID(uuidString: idStr) else { return nil }
+        guard let id = taskID(fromPlaylistPath: path) else { return nil }
         let parts = contiguousParts(taskID: id, root: root)
         guard !parts.isEmpty else { return nil }
 

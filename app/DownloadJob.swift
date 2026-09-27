@@ -368,10 +368,22 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// 拖不到还没下的地方（那些分片还不存在）。加密流 / 分片太少时返回 nil，
     /// 界面据此决定给不给这个入口（而不是给一个点了黑屏的按钮）。
     func livePreviewURL() -> URL? {
-        guard isActive, mediaKind == .video else { return nil }
+        guard livePreviewReady else { return nil }
         guard LivePreview.canPlay(taskID: id, root: JobStore.dir) else { return nil }
         guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
         return LocalHTTPServer.shared.url(LivePreview.relativePath(taskID: id))
+    }
+
+    /// ★ 界面用它决定"边下边播"这个按钮出不出现：只要有 ≥2 个连续分片就出。
+    /// （格式不支持的情况**放到点击之后**用一句话解释 —— 否则用户只看到"按钮莫名不见了"。）
+    var livePreviewReady: Bool {
+        isActive && mediaKind == .video
+            && LivePreview.hasEnoughParts(taskID: id, root: JobStore.dir)
+    }
+
+    /// ★ 现在点不了的原因（一句话，给用户看）
+    func livePreviewBlockReason() -> String? {
+        LivePreview.blockReason(taskID: id, root: JobStore.dir)
     }
 
     /// 能导出的文件（优先 mp4）

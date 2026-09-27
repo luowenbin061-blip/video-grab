@@ -138,40 +138,6 @@ struct PlayerSheet: View {
         }
     }
 
-    /// ★ v1.0.127 倍速：右上角一颗小胶囊显示当前档位，点开选 0.5 / 1 / 1.5 / 2。
-    ///   为什么不做"四颗常驻按钮"：界面越少越好 —— 它跟系统控件一起淡出，
-    ///   点一下屏幕（控件出现）才看得到。
-    private var ratePill: some View {
-        VStack {
-            HStack {
-                Spacer()
-                Menu {
-                    ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { r in
-                        Button(rateText(r)) { box.setRate(Float(r)) }
-                    }
-                } label: {
-                    Text(rateText(Double(box.rate)))
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-            }
-            .padding(.trailing, 16)
-            .padding(.top, 14)
-            Spacer()
-        }
-        .opacity(shownAlpha)
-        .allowsHitTesting(shownAlpha > 0.5)
-    }
-
-    /// 倍速的显示文字：整数不带小数点（1x / 2x），小数保留（0.5x / 1.5x）
-    private func rateText(_ r: Double) -> String {
-        r == r.rounded() ? "\(Int(r))x" : "\(r)x"
-    }
-
     /// 我们这两个图标最终显示到什么程度（0 = 完全不见，1 = 完全显示）
     private var shownAlpha: CGFloat {
         // 滑动 / 拖进度条期间强制收起 —— 用户明确要求"调进度时按钮不许出现"
@@ -406,9 +372,7 @@ struct PlayerSheet: View {
             if box.didResume {
                 resumePill
             }
-
-            // ★ v1.0.127 倍速：右上角那颗小胶囊（跟系统控件一起淡出，平时完全不占地方）
-            ratePill
+            
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
@@ -477,10 +441,6 @@ final class PlayerBox: ObservableObject {
     private var autoOriented = false
     /// 当前在不在播 —— 界面靠它决定"要不要自动隐藏控件"（暂停时不隐藏）
     @Published var isPlaying = false
-    /// ★ v1.0.127 倍速：用户选的档位（0.5 / 1 / 1.5 / 2）。
-    ///   为什么单独存一份：系统的 `play()` 会把速率打回 1.0（见 setRate 的注释），
-    ///   得留个"用户想要几倍"的原始意图，轮询时好掰回来。
-    @Published var rate: Float = 1.0
     private var stateTask: Task<Void, Never>?
 
     private var failObs: NSObjectProtocol?
@@ -598,16 +558,6 @@ final class PlayerBox: ObservableObject {
 
     /// 盯着"在不在播"。轮询而不是 KVO —— 理由和其他地方一样（KVO 回调不在主线程，
     /// 要往主线程跳就得在闭包里再套并发闭包，这条线踩过坑）。250ms 一次，几乎不要钱。
-    /// ★ v1.0.127 倍速：切换播放速率。
-    ///   ★ 经典坑：**AVPlayer 的 play() 就等于"把 rate 设成 1.0"** ——
-    ///     所以不能"先 play() 再设倍速"，那样会被立刻重置回 1 倍。
-    ///     rate 设成非 0 值本身就会开始播放，这就是正确姿势。
-    ///     暂停状态下只记档位（不偷偷开始播放），等下次播放由轮询补上。
-    func setRate(_ r: Float) {
-        rate = r
-        if player.timeControlStatus != .paused { player.rate = r }
-    }
-
     private func startStateWatch() {
         stateTask?.cancel()
         let target = self               // 绑成 let：嵌套并发闭包里引用 weak var 会编译不过
@@ -615,11 +565,6 @@ final class PlayerBox: ObservableObject {
             while !Task.isCancelled {
                 let playing = (target.player.timeControlStatus == .playing)
                 if target.isPlaying != playing { target.isPlaying = playing }
-                // ★ v1.0.127 倍速纠偏：用户选了 2 倍、之后又按了系统那个播放键 →
-                //   系统会把速率打回 1.0，这里 250ms 内掰回来，保持他选的档位。
-                if playing, target.rate != 1.0, target.player.rate != target.rate {
-                    target.player.rate = target.rate
-                }
                 // ★ v1.0.115 续看：正在播就顺手记一下位置。
                 //   remember() 里自己做了 0.5 秒的粒度门槛 + 落盘节流，这里每 0.25 秒调一次不心疼。
                 if playing { target.remember(target.player.currentTime().seconds) }

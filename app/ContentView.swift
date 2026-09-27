@@ -1844,10 +1844,16 @@ struct JobRow: View {
                     .buttonStyle(.bordered)
 
                     // ★ v1.0.127 边下边播：下载中也能先看几段（复用上面那个播放器）。
-                    //   只在"真的有连续分片、且不是加密流"的时候才出现。
-                    if let u = job.livePreviewURL() {
+                    //   v1.0.130：按钮的**出现条件放宽**成"有 ≥2 个连续分片" ——
+                    //   格式不支持（fMP4/加密流）放到点击后用一句话解释，
+                    //   不然用户只会看到"按钮莫名不见了"，像功能坏了。
+                    if job.livePreviewReady {
                         Button {
-                            playSheet = SheetURL(url: u)
+                            if let u = job.livePreviewURL() {
+                                playSheet = SheetURL(url: u)
+                            } else {
+                                job.show("这条现在播不了：" + (job.livePreviewBlockReason() ?? "原因不明"))
+                            }
                         } label: {
                             Label("边下边播", systemImage: "play.circle")
                                 .font(.system(size: 12.5, weight: .medium))
