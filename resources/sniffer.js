@@ -70,8 +70,29 @@
     return 'other';
   }
 
+  // ★ v1.0.110：URL 清洗 —— 必须在**入库前**做，否则后面全错。
+  //
+  //   踩到的坑（实测）：`el.getAttribute('src')` 返回的是 **HTML 原文**，
+  //   里面可能带未解码的实体 `&amp;`。这种地址发给服务器 = 路径不存在 → 404，
+  //   而 CDN（openresty 那类）返回的是 404 + text/html，
+  //   看起来像"页面不存在"，根本看不出是 URL 被写坏了。
+  //   浏览器自己的 property（`.src` / `.currentSrc`）是**解码过**的，所以优先用它们；
+  //   凡是从 attribute 拿的，一律先过这道清洗。
+  //   顺带清掉零宽字符（有些站从编辑器粘贴会带进来，肉眼看不见但会让 URL 失效）。
+  function cleanURL(u) {
+    if (typeof u !== 'string') return '';
+    return u
+      .replace(/&amp;/gi, '&')
+      .replace(/&#0*38;/g, '&')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#0*39;/g, "'")
+      .replace(/[\u200b-\u200d\ufeff]/g, '')
+      .trim();
+  }
+
   function add(url, src) {
     if (!url || typeof url !== 'string') return;
+    url = cleanURL(url);
     url = url.trim();
     if (!url) return;
     if (/^(data|javascript|about|mailto):/i.test(url)) return;
@@ -99,10 +120,13 @@
       return;
     }
 
-    // 相对路径补全成绝对地址
+    // 相对路径补全成绝对地址。
+    // ★ v1.0.110：**绝对地址也过一遍 URL()** —— 它会顺手把空格这类非法字符编码掉
+    //（有些站把带空格的图片名直接写进 HTML，原样发出去必然 404）。
+    // 对已经编码好的 URL，URL() 是幂等的，不会二次编码 %XX。
     var abs = url;
     try {
-      if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) abs = new URL(url, location.href).href;
+      abs = new URL(url, location.href).href;
     } catch (e) {}
 
     store[key] = {
@@ -112,7 +136,16 @@
       src: src,
       page: (function () { try { return location.href; } catch (e) { return ''; } })(),
       // 页面上下文：下载分片、取 AES key 时都要带上（防盗链校验 Referer / 登录态靠 Cookie）
-      ref: (function () { try { return document.referrer || ''; } catch (e) { return ''; } })(),
+      //
+      // ★ v1.0.110：Referer 改成「**当前页面地址**优先，document.referrer 兜底」。
+      //   原来只用 document.referrer —— 那是"我是从哪个页面**点进来**的"：
+      //     直接输网址 / 从书签打开 / 刷新 / 站内跳转 → 它一律是**空的**。
+      //   防盗链的图床/CDN 收到空 Referer 直接拒（openresty 那类常回 **404** 而不是 403，
+      //   所以看起来像"地址不存在"，完全看不出是防盗链）。
+      //   v1.0.106 修长按下载时已经这么改过（ctxFor），这里把嗅探这条路补齐。
+      ref: (function () {
+        try { return location.href || document.referrer || ''; } catch (e) { return ''; }
+      })(),
       ua: (function () { try { return navigator.userAgent || ''; } catch (e) { return ''; } })(),
       ck: (function () { try { return document.cookie || ''; } catch (e) { return ''; } })(),
       first: nowMs(),
@@ -435,20 +468,35 @@
         var w = 0, h = 0;
         try { w = el.naturalWidth || 0; h = el.naturalHeight || 0; } catch (e) {}
         if (w > 0 && h > 0 && (w <= 2 || h <= 2)) continue;   // 追踪像素
+        // ★ v1.0.110：地址来源分三级，**优先用浏览器解码过的 property**
+        //   （`.currentSrc` / `.src`）—— 它们不会带 HTML 实体。
         var u = '';
         try { if (el.currentSrc) u = el.currentSrc; } catch (e) {}
         try { if (!u && el.src) u = el.src; } catch (e) {}
-        if (!u) { try { u = el.getAttribute('data-src') || ''; } catch (e) {} }
+        if (!u) {
+          // 懒加载图（property 还没值）：只能读 attribute，交给 add() 里的 cleanURL 兜着
+          try {
+            u = el.getAttribute('data-src')
+             || el.getAttribute('data-original')
+             || el.getAttribute('data-lazy-src')
+             || el.getAttribute('data-echo') || '';
+          } catch (e) {}
+        }
         if (u) add(u, 'img');
-        // srcset 最后一项通常是最大那张（页面显示的多半是缩略图）
-        try {
-          var ss = el.getAttribute && el.getAttribute('srcset');
-          if (ss) {
-            var parts = ss.split(',');
-            var biggest = parts[parts.length - 1].trim().split(' ')[0];
-            if (biggest) add(biggest, 'img-srcset');
-          }
-        } catch (e) {}
+
+        // srcset：**只在上面都拿不到时**才用（它以前是 404 的头号来源 ——
+        // getAttribute 会带 HTML 实体，而且手工 split 容易把描述符切进 URL）。
+        // 用 property `el.srcset`（值同样可能带实体，但 add() 会清洗）。
+        if (!u) {
+          try {
+            var ss = el.srcset || '';
+            if (ss) {
+              var parts = ss.split(',');
+              var last = parts[parts.length - 1].trim().split(/\s+/)[0];
+              if (last) add(last, 'img-srcset');
+            }
+          } catch (e) {}
+        }
       }
     } catch (e) {}
   }

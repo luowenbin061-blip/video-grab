@@ -354,7 +354,7 @@ final class DownloadJob: ObservableObject, Identifiable {
     ///   文件名是我们自己按类型起的（见 preferExtension），所以扩展名是可信的；
     ///   这样不用给 JobRecord 加字段（那玩意的字段顺序和构造点实参顺序强绑定，
     ///   动它风险大于收益 —— 上一次核过 18 个字段的顺序）。
-    enum MediaKind {
+    enum MediaKind: CaseIterable {
         case video, image, audio, doc
 
         var label: String {
@@ -453,6 +453,15 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// 给下载下来的文件起什么后缀。
     /// ★ v1.0.109：不再"什么都不认识就 .mp4" —— 图片/音频/文档都要有自己的后缀，
     ///   否则一张图会被存成 xxx.mp4，后面按扩展名判类型也全错。
+    /// 过程记录里显示的短地址 —— 太长的 URL 会把记录挤爆，但头尾最关键
+    /// （尾部的 query 常常是鉴权参数，所以要留尾巴）。
+    static func short(_ s: String, max: Int = 110) -> String {
+        if s.count <= max { return s }
+        let head = s.prefix(70)
+        let tail = s.suffix(28)
+        return "\(head)……\(tail)"
+    }
+
     static func preferExtension(url: URL, contentType: String,
                                 media: SourceProbe.MediaClass = .video) -> String {
         let ext = url.pathExtension.lowercased()
@@ -502,6 +511,15 @@ final class DownloadJob: ObservableObject, Identifiable {
             expectedLength: probe.contentLength,
             acceptsRange: probe.acceptsRange)
         fopt.timeout = 30
+
+        // ★ v1.0.110：把"实际要请求的地址 + 有没有带 Referer/Cookie"写进过程记录。
+        //   上一次 404 排查的教训：记录里只有 HTTP 状态，**看不出请求的是哪个地址**，
+        //   所以定不了案。现在一眼能看出是不是地址被写坏了（比如带 &amp;）、
+        //   或者上下文是空的（防盗链）。
+        let refOK = (referer?.isEmpty == false) ? "有" : "无"
+        let ckOK = (cookie?.isEmpty == false) ? "有" : "无"
+        notes.append("· 请求：\(Self.short(src.absoluteString))")
+        notes.append("· 上下文：Referer \(refOK) · Cookie \(ckOK)")
 
         var fd = FileDownloader(options: fopt)
         fd.onProgress = { [weak self] got, tot in

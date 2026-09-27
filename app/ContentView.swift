@@ -747,17 +747,32 @@ struct SniffPanel: View {
     /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
     @State private var tab = 0
 
-    private var visibleGroups: [SniffGroup] {
-        showAll ? model.groups : Array(model.groups.prefix(8))
+    /// ★ v1.0.110：视图页的两段 —— 视频在前、图片在后。
+    ///   图片走的是**独立通道**（独立 60 条上限），所以两段互不挤占。
+    private var videoGroups: [SniffGroup] {
+        model.groups.filter { ["hls", "file", "dash", "blob"].contains($0.best.kind) }
+    }
+    /// 「其他」页：音频 / 文档 / HLS 分片（分片是"线索"不是成品，也归这儿）
+    private var otherGroups: [SniffGroup] {
+        model.groups.filter { ["audio", "doc", "segment"].contains($0.best.kind) }
+    }
+    private var visibleVideoGroups: [SniffGroup] {
+        showAll ? videoGroups : Array(videoGroups.prefix(8))
+    }
+    private var visibleImageGroups: [SniffGroup] {
+        showAll ? model.imageGroups : Array(model.imageGroups.prefix(8))
+    }
+    private var visibleOtherGroups: [SniffGroup] {
+        showAll ? otherGroups : Array(otherGroups.prefix(8))
     }
 
     var body: some View {
         NavigationView {
             Group {
-                // ★ v1.0.109：图片是**另一条通道**（不混进视频列表，也不挤占它的 60 条上限）
+                // ★ v1.0.110：视图页 = 视频段 + 图片段（下面是原来的 List，未动结构）
                 if tab == 1 {
-                    imageArea
-                } else if model.groups.isEmpty {
+                    otherArea
+                } else if videoGroups.isEmpty && model.imageGroups.isEmpty {
                     emptyState
                 } else {
                     List {
@@ -783,28 +798,49 @@ struct SniffPanel: View {
                                     .foregroundStyle(.orange)
                             }
                         }
-                        Section {
-                            ForEach(visibleGroups) { g in
-                                row(g.best, variants: g.total)
-                            }
-                            if model.groups.count > visibleGroups.count {
-                                Button {
-                                    showAll = true
-                                } label: {
-                                    Text("显示全部 \(model.groups.count) 组（还有 \(model.groups.count - visibleGroups.count) 组没列出）")
-                                        .font(.system(size: 13))
-                                        .frame(maxWidth: .infinity)
+                        if !videoGroups.isEmpty {
+                            Section {
+                                ForEach(visibleVideoGroups) { g in
+                                    row(g.best, variants: g.total)
+                                }
+                                if videoGroups.count > visibleVideoGroups.count {
+                                    Button {
+                                        showAll = true
+                                    } label: {
+                                        Text("显示全部 \(videoGroups.count) 组（还有 \(videoGroups.count - visibleVideoGroups.count) 组没列出）")
+                                            .font(.system(size: 13))
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                }
+                            } header: {
+                                HStack {
+                                    Text(videoGroups.count == model.items.count
+                                         ? "视频 · 共 \(videoGroups.count) 条 · 点一条开始下载"
+                                         : "视频 · 共 \(videoGroups.count) 个（合并了 \(model.items.count) 条近似地址）")
+                                    Spacer()
+                                    if !model.updatedText.isEmpty {
+                                        Text("更新于 \(model.updatedText)")
+                                    }
                                 }
                             }
-                        } header: {
-                            HStack {
-                                Text(model.groups.count == model.items.count
-                                     ? "共 \(model.groups.count) 条 · 点一条开始下载"
-                                     : "共 \(model.groups.count) 个视频（合并了 \(model.items.count) 条近似地址）")
-                                Spacer()
-                                if !model.updatedText.isEmpty {
-                                    Text("更新于 \(model.updatedText)")
+                        }
+                        // ★ v1.0.110：图片段 —— 带缩略图，一眼能认出要下哪张
+                        if !model.imageGroups.isEmpty {
+                            Section {
+                                ForEach(visibleImageGroups) { g in
+                                    row(g.best, variants: g.total, thumb: true)
                                 }
+                                if model.imageGroups.count > visibleImageGroups.count {
+                                    Button {
+                                        showAll = true
+                                    } label: {
+                                        Text("显示全部 \(model.imageGroups.count) 张（还有 \(model.imageGroups.count - visibleImageGroups.count) 张没列出）")
+                                            .font(.system(size: 13))
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                }
+                            } header: {
+                                Text("图片 · 共 \(model.imageGroups.count) 张 · 点一张开始下载")
                             }
                         }
                     }
@@ -815,9 +851,11 @@ struct SniffPanel: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
+                    // ★ v1.0.110：改成「视图 / 其他」—— 视图里是视频+图片（能看的），
+                    //   其他里是音频/文档/分片。用户要的分类方式。
                     Picker("", selection: $tab) {
-                        Text("视频").tag(0)
-                        Text("图片").tag(1)
+                        Text("视图").tag(0)
+                        Text("其他").tag(1)
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 168)
@@ -838,10 +876,15 @@ struct SniffPanel: View {
         .navigationViewStyle(.stack)
         // ★ v1.0.104：打开面板就扫一次。自动扫描默认关了 —— 那么「用户打开
         //   这个面板」本身就是「现在需要嗅探」的信号，代他扫一下最省事。
-        .onAppear { model.scanQuietly() }
-        // ★ v1.0.109：切到「图片」才去扫当前页面的图（平时一张都不收，省开销）
+        .onAppear {
+            model.scanQuietly()
+            // ★ v1.0.110：打开面板就顺手扫一次图片 —— 图片段现在就在「视图」页里，
+            //   不打开的话那一段永远是空的（以前图片是独立页签，点它才扫）。
+            model.loadImages()
+        }
+        // 切到「其他」就不用收图片了（省跨进程开销），切回来再打开
         .onChange(of: tab) { t in
-            if t == 1 { model.loadImages() } else { model.stopImages() }
+            if t == 0 { model.loadImages() } else { model.stopImages() }
         }
         .safeAreaInset(edge: .bottom) {
             if let p = picked {
@@ -857,16 +900,15 @@ struct SniffPanel: View {
         }
     }
 
-    /// 图片 tab（v1.0.109）。图片与视频是两个独立列表 ——
-    /// 视频那条有 60 条上限，图片混进去会把视频顶掉，所以干脆分通道。
+    /// 「其他」页（v1.0.110）：音频 / 文档 / HLS 分片。
     @ViewBuilder
-    private var imageArea: some View {
-        if model.imageGroups.isEmpty {
+    private var otherArea: some View {
+        if otherGroups.isEmpty {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("这一页还没抓到图片")
+                    Text("没有音频、文档或分片")
                         .font(.headline)
-                    Text("已经扫过当前页面了。图片是单独一条通道，平时不抓 —— 让图片在页面上显示出来（往下翻一翻），再点右上角「⋯ → 重新扫描」。")
+                    Text("这一页只抓到视频和图片。音频（mp3/m4a…）、文档（pdf/zip/doc…）和 HLS 分片（.ts）会出现在这里。")
                         .font(.system(size: 13.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -877,11 +919,20 @@ struct SniffPanel: View {
         } else {
             List {
                 Section {
-                    ForEach(model.imageGroups) { g in
+                    ForEach(visibleOtherGroups) { g in
                         row(g.best, variants: g.total)
                     }
+                    if otherGroups.count > visibleOtherGroups.count {
+                        Button {
+                            showAll = true
+                        } label: {
+                            Text("显示全部 \(otherGroups.count) 条（还有 \(otherGroups.count - visibleOtherGroups.count) 条没列出）")
+                                .font(.system(size: 13))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
                 } header: {
-                    Text("共 \(model.imageGroups.count) 张 · 点一张开始下载")
+                    Text("其他 · 共 \(otherGroups.count) 条 · 点一条开始下载")
                 }
             }
             .listStyle(.insetGrouped)
@@ -917,10 +968,16 @@ struct SniffPanel: View {
         "如果只有 BLOB，说明地址藏在脚本里 —— 先让视频播一会儿再刷一次。"
     ]
 
-    private func row(_ item: SniffItem, variants: Int) -> some View {
+    /// 一行嗅探结果。
+    /// `thumb: true` 时左边带缩略图 —— **只有图片需要**：
+    /// 图片看文件名根本认不出是哪张，视频看文件名就够
+    ///（而且给视频截一帧得真去下载，成本完全不是一回事）。
+    private func row(_ item: SniffItem, variants: Int, thumb: Bool = false) -> some View {
         Button {
             picked = item
         } label: {
+            HStack(alignment: .top, spacing: 10) {
+            if thumb { ThumbView(item: item) }
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 7) {
                     Text(item.badge)
@@ -983,6 +1040,7 @@ struct SniffPanel: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+            }
             }
             .padding(.vertical, 3)
         }
@@ -1077,16 +1135,28 @@ struct DownloadList: View {
                         Section {
                             storageBar
                         }
-                        Section {
-                            ForEach(shownJobs) { job in
-                                JobRow(job: job, pip: center.pip)
-                            }
-                            .onDelete { idx in
-                                let victims = idx.compactMap {
-                                    shownJobs.indices.contains($0) ? shownJobs[$0] : nil
+                        // ★ v1.0.110：按类型分段（视频 / 图片 / 音频 / 文件）——
+                        //   以前全堆一段，图片和视频混着，找东西费劲。
+                        ForEach(DownloadJob.MediaKind.allCases, id: \.self) { kind in
+                            let list = shownJobs.filter { $0.mediaKind == kind }
+                            if !list.isEmpty {
+                                Section {
+                                    ForEach(list) { job in
+                                        JobRow(job: job, pip: center.pip)
+                                    }
+                                    .onDelete { idx in
+                                        // ★ 按**对象**删：过滤后的下标和 center.jobs 不是一回事
+                                        let victims = idx.compactMap {
+                                            list.indices.contains($0) ? list[$0] : nil
+                                        }
+                                        for j in victims { center.remove(j) }
+                                    }
+                                } header: {
+                                    Text("\(kind.label) · \(list.count) 个")
                                 }
-                                for j in victims { center.remove(j) }
                             }
+                        }
+                        Section {
                         } footer: {
                             HStack {
                                 Text(query.isEmpty
@@ -1235,7 +1305,9 @@ struct JobRow: View {
                 Label("文件已经不在了（可能被系统清理或删掉）", systemImage: "xmark.octagon")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.red)
-            } else if job.finished && !job.mp4Ready {
+            } else if job.finished && !job.mp4Ready && job.mediaKind == .video {
+                // ★ v1.0.110：加 `mediaKind == .video` —— 图片/音频/文档本来就不转码，
+                //   以前图片下载成功也会挂这条黄字（"MP4 没转出来"），纯误报。
                 Label("MP4 没转出来 · 原因在「过程记录」里", systemImage: "info.circle.fill")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.orange)
