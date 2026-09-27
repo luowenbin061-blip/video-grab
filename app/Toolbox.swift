@@ -235,17 +235,16 @@ struct ToolboxView: View {
         }
     }
 
-    /// ★ v1.0.119：分享本页 —— 同样先收起卡片，避免两层 sheet 抢动画
+    /// ★ v1.0.119 分享本页 / ★ v1.0.132 修：**不要先关工具箱**。
+    /// 原因跟备份那次一模一样：`isPresented = false` 会把工具箱这个 View 一起销毁，
+    /// 挂在上面的分享面板就没人响应了（现象是"点了没反应"）。
+    /// 分享不需要"网页视图在最前面"，直接弹就行 —— 「从备份恢复」一直是这么干的，没问题。
     private func share() {
         guard let s = model.currentURL, let u = URL(string: s) else {
             note = "还没打开网页，没得分享。"
             return
         }
-        isPresented = false
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            shareItem = SheetURL(url: u)
-        }
+        shareItem = SheetURL(url: u)
     }
 
     /// ★ v1.0.127 备份 / v1.0.131 改：生成 JSON → **直接弹文件夹选择器**让你挑存哪儿。
@@ -265,11 +264,13 @@ struct ToolboxView: View {
             }
             let u = JobStore.file(named: "VideoGrab备份-\(f.string(from: Date())).json")
             try d.write(to: u, options: .atomic)
-            isPresented = false
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                backupSheet = SheetURL(url: u)
-            }
+            // ★★ v1.0.132 这里踩过一个坑，别再改回去：
+            //   我原来先写 `isPresented = false`（把工具箱这个 sheet 关掉），350ms 后再设 backupSheet ——
+            //   **工具箱这个 View 已经随 sheet 关闭被销毁了**，挂在上面的 .sheet(item:) 根本没人响应
+            //   → 用户看到的就是"点了备份，压根没弹选择器"。
+            //   对比：下载页的「存文件夹」要关掉外层是因为要"网页视图在最前面"；备份是纯文件操作，不需要关。
+            //   （「从备份恢复」一直能弹，就是因为它没关自己。）
+            backupSheet = SheetURL(url: u)
         } catch {
             note = "备份失败：\(error.localizedDescription)"
         }
