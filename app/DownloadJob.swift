@@ -227,7 +227,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         ua = record.ua ?? ""
         cookie = ""
         phase = record.phaseText
-        finished = true
+        // ★ v1.0.107：这里原来无条件写 `finished = true`（本意是"别让它在后台自己跑起来"），
+        //   但它把**没下完**的任务也标成了"完成" —— 列表上按钮的判据跟着一起错：
+        //   既然"已完成"，就不给「继续/重试」；于是任务卡在那儿，只能删。
+        //   现在忠实还原记录。开始下载本来就要显式调 start()，跟这个标志无关。
+        finished = record.finished
         failed = record.failed
         outputName = record.outputName
         mp4Ready = record.mp4Ready
@@ -237,16 +241,18 @@ final class DownloadJob: ObservableObject, Identifiable {
         resolution = record.resolution
         notes = record.notes
 
-        // 上次是下到一半被关掉的
+        // 上次没下完 / 用户暂停过
         //
-        // ★ v1.0.89 改：以前这里写 `failed = "上次运行中被中断（没下完）"` ——
-        //   而列表的红字判据正是 `failed != nil`（ContentView.swift:1114）→
-        //   **每次崩溃/被杀后台之后重启，任务都顶着一条假的"失败"红字**，
-        //   用户以为下载失败了。其实它只是被中断、分片还在、可以直接继续。
-        //   现在只标 paused（按钮自动变「继续」），不给 failed —— 不再谎报失败。
-        if !record.finished, record.failed == nil {
-            phase = "已中断（分片还在，可直接继续）"
-            paused = true
+        // ★ v1.0.89：不再谎报 failed（以前会写"上次运行中被中断"→ 列表一条假红字）。
+        // ★ v1.0.107：现在**按落盘的 paused 还原**，不再靠"猜"：
+        //     新记录：用户点过暂停 → paused = true；被系统中断 → 也是 true
+        //     老记录（没这个键）→ 按老逻辑兜底：没完成又没失败 = 可继续
+        //   恢复出来的任务一律**保持暂停**，等你点「继续」—— 重启不会偷偷跑流量。
+        paused = record.paused ?? (!record.finished && record.failed == nil)
+        if paused {
+            phase = (record.paused == true)
+                ? "已暂停（分片还在，点「继续」接着下）"
+                : "已中断（分片还在，点「继续」接着下）"
         }
         let t = Self.thumbName(for: record.id)
         thumbName = JobStore.exists(named: t) ? t : nil
@@ -272,6 +278,7 @@ final class DownloadJob: ObservableObject, Identifiable {
                   finishedAt: finished ? Date() : nil,
                   finished: finished,
                   failed: failed,
+                  paused: paused,
                   outputName: outputName,
                   mp4Ready: mp4Ready,
                   playlistName: playlistName,

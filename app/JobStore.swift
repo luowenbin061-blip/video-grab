@@ -157,6 +157,11 @@ struct JobRecord: Codable {
     var finishedAt: Date?
     var finished: Bool
     var failed: String?
+    /// ★ v1.0.107：用户点过「暂停」（或被系统中断）→ 落盘。
+    /// 以前这个状态**不存**，重启后只能靠「没完成 + 没失败」去猜，于是
+    /// 「没下完」的任务可能既不算进行中、也不算暂停/失败 → 三个按钮一个都不显示。
+    /// 可选类型：老记录里没有这个键 → 解出来是 nil → 上层按老逻辑兜底，不会读不出记录。
+    var paused: Bool?
     /// 能直接播的那个产物（转成功是 .mp4，没转成是 .ts）
     var outputName: String?
     var mp4Ready: Bool

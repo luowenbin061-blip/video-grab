@@ -73,18 +73,11 @@ struct TabGridView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                Button {
-                    showingGroups = true
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(model.currentGroup?.displayName ?? "标签页")
-                            .font(.system(size: 16, weight: .medium))
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("切换标签页组")
+                // ★ v1.0.107：这里原来是个按钮（点它进「标签页组」）。
+                //   按用户要求，切换/管理的入口挪到**底栏中间那行字**上了 —— 这里只留显示。
+                Text(model.currentGroup?.displayName ?? "标签页")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.primary)
             }
 
             Spacer()
@@ -328,8 +321,54 @@ struct TabGridView: View {
 
             Spacer()
 
-            Text("\(model.tabCount) 个标签页")
-                .font(.system(size: 15, weight: .medium))
+            // ★ v1.0.107：这行从**纯文字**变成菜单入口 ——
+            //   点它：关闭所有标签页 / 切换标签页组 / 管理标签页组。
+            //   （以前"切换组"只有左上角那一个入口，现在挪到这儿，用户习惯的地方）
+            Menu {
+                Button(role: .destructive) {
+                    model.closeAllTabs()
+                } label: {
+                    Label("关闭所有标签页", systemImage: "xmark.square")
+                }
+                .disabled(model.tabCount == 0)
+
+                Divider()
+
+                Section("标签页组") {
+                    // ★ 用 ForEach(model.tabGroups)（TabGroup 是 Identifiable）——
+                    //   别用 Array(enumerated())：那个元素是**元组**，Swift 的 key path
+                    //   不支持元组元素（v1.0.93 踩过）
+                    ForEach(model.tabGroups) { g in
+                        Button {
+                            if let i = model.tabGroups.firstIndex(where: { $0.id == g.id }) {
+                                model.switchGroup(i)
+                            }
+                        } label: {
+                            if g.id == model.currentGroup?.id {
+                                Label(g.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(g.displayName)
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button {
+                    showingGroups = true
+                } label: {
+                    Label("管理标签页组…", systemImage: "square.on.square")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("\(model.tabCount) 个标签页")
+                        .font(.system(size: 15, weight: .medium))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .accessibilityLabel("标签页选项")
 
             Spacer()
 

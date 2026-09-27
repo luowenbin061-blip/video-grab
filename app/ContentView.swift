@@ -1200,7 +1200,10 @@ struct JobRow: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-            } else if job.paused || job.failed != nil {
+            } else if !job.finished {
+                // ★ v1.0.107：判据从「paused 或 failed」改成「**只要没完成**」——
+                //   以前恢复出来的任务可能三个标志都不满足（既没完成也没失败），
+                //   于是「继续/重试」一个都不显示，用户只能删任务。
                 Button {
                     job.resumeDownload()
                 } label: {

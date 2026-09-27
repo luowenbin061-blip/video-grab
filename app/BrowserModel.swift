@@ -878,6 +878,18 @@ final class BrowserModel: NSObject, ObservableObject {
         closeTab(i)
     }
 
+    /// 关掉**当前组**里的全部标签。
+    ///
+    /// `closeTab` 自带保护：只剩一个时它不真关，而是把那个清回空白页 ——
+    /// 所以"全关"之后会**留下一个干净的新标签**，跟桌面浏览器的行为一致
+    /// （不是"什么也不剩"，那样子用户面对空界面反而懵）。
+    func closeAllTabs() {
+        while tabCount > 1 {
+            closeTab(0)
+        }
+        closeTab(0)          // 最后一个 → 清回空白页
+    }
+
     /// 档案 → 界面状态（单向）。
     ///
     /// ★ v1.0.82 起**不再需要「把界面状态存回档案」那一步**（原来的 stash）：
