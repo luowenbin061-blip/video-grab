@@ -98,8 +98,13 @@ struct PlayerSheet: View {
         self.url = url
         self.title = title
         self.pip = pip
-        self.progressKey = key.isEmpty ? url.lastPathComponent : key
-        _box = StateObject(wrappedValue: PlayerBox(url: url, resumeKey: self.progressKey))
+        // ★ 先用一个局部变量算出来再分别赋值：
+        //   `StateObject(wrappedValue:)` 收的是 **@escaping autoclosure**，
+        //   在它里面读 `self.progressKey` 会让编译器报
+        //   `escaping autoclosure captures mutating 'self' parameter`（run #116 就挂在这）。
+        let resolvedKey = key.isEmpty ? url.lastPathComponent : key
+        self.progressKey = resolvedKey
+        _box = StateObject(wrappedValue: PlayerBox(url: url, resumeKey: resolvedKey))
     }
 
     /// ★ v1.0.115：续看提示（顶部那颗小药丸）。
