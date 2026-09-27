@@ -105,10 +105,15 @@ chk('B15 lpHeaders 助手存在', 'private func lpHeaders(' in cvc)
 chk('B16 lpHeaders 带 Referer/UA/Cookie',
     '"Referer"' in cvc and '"User-Agent"' in cvc and '"Cookie"' in cvc)
 chk('B17 地址先经 sanitize 再进播放器',
-    'M3U8.sanitizeURLString(m.url)' in cvc)
+    'M3U8Playlist.sanitizeURLString(m.url)' in cvc)
 chk('B18 播不出来时有提示（不静默黑屏）',
     '播不了' in cv or '读不懂' in cv)
 chk('B19 键固定成 "lp"（不污染任务续看）', 'key: "lp"' in cvc)
+# ★ run #134 挂在这：写成 M3U8.sanitizeURLString，而本工程真名是 M3U8Playlist。
+#   括号配平查不出来（两边都合法），所以单列一条断言，把这个雷钉死。
+chk('B20 没有写成裸 M3U8.（真名是 M3U8Playlist）',
+    not re.search(r'\bM3U8\.(?!Playlist)', cvc),
+    'M3U8. 出现在代码里' if re.search(r'\bM3U8\.(?!Playlist)', cvc) else '')
 
 print()
 print('=== C. v1.0.133 能力未被回退 ===')

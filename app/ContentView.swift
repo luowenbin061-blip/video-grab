@@ -351,7 +351,7 @@ struct ContentView: View {
         // "具体错误 + 地址"，另有 60 秒超时兜底。所以这里**不需要另加提示**，
         // 但要保证异常地址能进到那一层：URL 实在拼不出来时给一句 toast，别静默什么都不发生。
         .fullScreenCover(item: $lpPlay) { m in
-            let raw = M3U8.sanitizeURLString(m.url)
+            let raw = M3U8Playlist.sanitizeURLString(m.url)
             if let u = URL(string: raw) {
                 PlayerSheet(url: u,
                             title: m.title.isEmpty ? "视频" : m.title,
