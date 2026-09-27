@@ -196,6 +196,10 @@ struct ContentView: View {
     /// ★ v1.0.118：长按菜单里点「选择清晰度」→ 拿着那条视频的地址弹挑档卡片
     ///   （嗅探面板那条路本来就能挑档，用户要的是长按这条路也能）
     @State private var pickQuality: LongPressMenuInfo?
+    /// ★ v1.0.119 首页快捷入口（单例：存档 + 图标缓存都在它手里）
+    @ObservedObject private var homeStore = HomeStore.shared
+    /// ★ v1.0.119 系统分享面板：要分享的东西（当前网址 / 下载好的文件 / 截出来的长图）
+    @State private var shareURL: SheetURL?
     /// 地址栏是否正在被编辑 —— 正在打字时，页面导航不能覆盖他输入的内容
     @FocusState private var urlFocused: Bool
 
@@ -213,6 +217,14 @@ struct ContentView: View {
                     // 少了这个 .id，SwiftUI 会复用旧视图，画面还是上一个标签的。
                     .id(model.currentTabIndex)
                     .ignoresSafeArea(edges: .bottom)
+
+                // ★ v1.0.119 首页：新标签（地址还空着）时，用快捷入口盖住那片空白。
+                //   打开任何网页后 showHomePage 立刻变 false → 自动让位，不用手动关。
+                if model.showHomePage {
+                    HomePageView(store: homeStore,
+                                 onOpenURL: { model.load($0) },
+                                 onFeature: { handleHomeFeature($0) })
+                }
 
                 // 「打不开这个网页」→ 整页盖一层（对齐 Safari：告诉你原因 + 给个重试）。
                 // 只对**主文档**加载失败显示；点停止 / 页面自己跳转那种"取消"已经在
@@ -296,6 +308,16 @@ struct ContentView: View {
                               kind: .video)
                 model.showToast(v == nil ? "已加入下载（自动选档）" : "已加入下载")
             }
+        }
+        // ★ v1.0.119：系统分享面板（当前网页 / 拼好的长图 / 下载好的文件都走它）
+        .sheet(item: $shareURL) { s in
+            ActivityView(items: [s.url])
+        }
+        // ★ v1.0.119：长图拼好了 → 立刻把分享面板抬起来（里面就能"存储图像"或发微信）
+        .onChange(of: model.longShotFile) { u in
+            guard let u else { return }
+            shareURL = SheetURL(url: u)
+            model.longShotFile = nil          // 用完就清，免得下次进来又弹
         }
         // 长按诊断（设置里打开才出现）：显示这一步卡在哪，12 秒自己消失
         // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
@@ -575,6 +597,8 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
                 menuCell("link", "复制URL") { copyCurrentURL() }
+                // ★ v1.0.119：系统分享面板（发给微信 / 存到别处）
+                menuCell("square.and.arrow.up", "分享") { shareCurrentPage() }
                 // 徽标改成一直都显示 —— 只有一个标签时也让你知道开着一个
                 // （点开就是 Safari 式网格：缩略图 + ✕ + 底部新建/完成）
                 menuCell("square.on.square", "标签页",
@@ -665,6 +689,33 @@ struct ContentView: View {
             return
         }
         model.copy(s)          // 已有实现：写剪贴板 + 弹提示
+    }
+
+    /// ★ v1.0.119：分享当前网页 —— 走**系统分享面板**（发给微信 / 存到文件 / AirDrop 都用它）
+    private func shareCurrentPage() {
+        guard let s = model.currentURL, let u = URL(string: s) else {
+            model.showToast("还没打开网页")
+            return
+        }
+        shareURL = SheetURL(url: u)
+    }
+
+    /// ★ v1.0.119：首页上的功能格子 → 接到各自动作。
+    /// 跟底栏「≡」卡片里那套**完全一致** —— 同一个功能只有一份实现，首页只是多一个入口。
+    private func handleHomeFeature(_ f: HomeFeature) {
+        switch f {
+        case .sniff:       showPanel = true
+        case .downloads:   showDownloads = true
+        case .bookmarks:   showBookmarks = true
+        case .toolbox:     showToolbox = true
+        case .settings:    showSettings = true
+        case .tabs:        showTabs = true
+        case .copyURL:     copyCurrentURL()
+        case .desktopMode: model.toggleDesktopUA()
+        case .noImage:     model.toggleNoImage()
+        case .longShot:    model.captureLongShot()
+        case .share:       shareCurrentPage()
+        }
     }
 
     /// 收藏 / 取消收藏当前页（同一个入口，看当前状态决定）
@@ -1486,6 +1537,8 @@ struct JobRow: View {
     @ObservedObject private var watch = WatchProgress.shared
     @State private var playSheet: SheetURL?
     @State private var exportSheet: SheetURL?
+    /// ★ v1.0.119：分享这个文件（系统分享面板）
+    @State private var shareSheet: SheetURL?
     /// ★ v1.0.111：图片的「查看」入口（下好的图片点开看大图）
     @State private var viewSheet: SheetURL?
     @State private var showLog = false
@@ -1661,7 +1714,9 @@ struct JobRow: View {
                     } label: {
                         Label(job.savedToPhotos ? "已存相册" : "存相册",
                               systemImage: job.savedToPhotos ? "checkmark.circle.fill" : "photo.on.rectangle")
-                            .font(.system(size: 12.5))
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
@@ -1675,7 +1730,26 @@ struct JobRow: View {
                         }
                     } label: {
                         Label("存文件夹", systemImage: "folder")
-                            .font(.system(size: 12.5))
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    // ★ v1.0.119：分享（系统分享面板）—— 跟"存文件夹"并排，
+                    //   两者不冲突：存文件夹是直接选位置，分享是发给别的 App / 存到文件。
+                    Button {
+                        if let u = job.exportURL() {
+                            shareSheet = SheetURL(url: u)
+                        } else {
+                            job.show("文件不在了")
+                        }
+                    } label: {
+                        Label("分享", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
@@ -1748,6 +1822,10 @@ struct JobRow: View {
             DocumentExporter(url: s.url, onFinish: { ok in
                 job.show(ok ? "已保存到你选的位置" : "已取消")
             })
+        }
+        // ★ v1.0.119：分享这个文件（系统面板里能"存储到文件"、发微信、AirDrop）
+        .sheet(item: $shareSheet) { s in
+            ActivityView(items: [s.url])
         }
         // ★ v1.0.111：图片查看器（跟播放器一样用 fullScreenCover，铺满整块屏）
         .fullScreenCover(item: $viewSheet) { s in

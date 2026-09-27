@@ -30,6 +30,13 @@ struct ToolboxView: View {
     @State private var showFilePicker = false
     /// 导入书签的文件选择器（v1.0.90）
     @State private var showBookmarkPicker = false
+    /// ★ v1.0.119：分享本页
+    @State private var shareItem: SheetURL?
+
+    // ★ v1.0.119：这两个开关直接读 UserDefaults（@AppStorage）——
+    //   这样"已开/已关"的字样会跟着状态自己变，不用把整个 BrowserModel 订阅进来。
+    @AppStorage("desktopUA") private var desktopUA = false
+    @AppStorage("noImageMode") private var noImage = false
 
     var body: some View {
         NavigationView {
@@ -46,6 +53,23 @@ struct ToolboxView: View {
                     cell("book.closed.fill", "导入书签", .purple) {
                         showBookmarkPicker = true
                     }
+
+                    // ★ v1.0.119 新增四格
+                    // 说明：桌面模式 / 无图模式都是「开关」——副标题直接写当前状态，
+                    // 点一下切换（不是进二级页面）。
+                    cell("desktopcomputer", "桌面模式", .indigo,
+                         detail: desktopUA ? "已开 · 点一下关" : "已关 · 点一下开") {
+                        model.toggleDesktopUA()
+                    }
+                    cell("eye.slash", "无图模式", .gray,
+                         detail: noImage ? "已开 · 不下载图片" : "已关 · 点一下开") {
+                        model.toggleNoImage()
+                    }
+                    cell("photo.on.rectangle.angled", "截长图", .teal,
+                         detail: "整页拼成一张") {
+                        longShot()
+                    }
+                    cell("square.and.arrow.up", "分享本页", .blue) { share() }
                 }
                 .padding(16)
 
@@ -88,6 +112,10 @@ struct ToolboxView: View {
                 FilePickerBox(onPicked: { files in
                     importBookmarks(files)
                 }, types: [.html, .json])
+            }
+            // ★ v1.0.119：分享本页（系统分享面板）
+            .sheet(item: $shareItem) { s in
+                ActivityView(items: [s.url])
             }
         }
     }
@@ -157,6 +185,29 @@ struct ToolboxView: View {
             if let why = model.presentFind() {
                 model.showToast(why)          // 起不来说明真实原因，不再一律甩锅系统版本
             }
+        }
+    }
+
+    /// ★ v1.0.119：分享本页 —— 同样先收起卡片，避免两层 sheet 抢动画
+    private func share() {
+        guard let s = model.currentURL, let u = URL(string: s) else {
+            note = "还没打开网页，没得分享。"
+            return
+        }
+        isPresented = false
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            shareItem = SheetURL(url: u)
+        }
+    }
+
+    /// ★ v1.0.119：截长图 —— 收起卡片后再动（截图要整个网页视图在最前面）。
+    /// 结果由主界面弹分享面板（见 BrowserModel.longShotFile → ContentView.onChange）
+    private func longShot() {
+        isPresented = false
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            model.captureLongShot()
         }
     }
 

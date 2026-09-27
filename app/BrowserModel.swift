@@ -565,6 +565,14 @@ final class BrowserModel: NSObject, ObservableObject {
         // 靠 WKScriptMessage.webView 认领是哪个标签（见 didReceive）。
         ucc.add(self, contentWorld: world, name: "vgSniff")
 
+        // ★ v1.0.119 无图模式：在网络层把图片请求拦掉（真省流量）。
+        //   注意只能拿到**已经编译好**的规则 —— 编译是异步的，启动时已经预热过了
+        //   （见 VideoGrabApp 里的 NoImageMode.warmUp()），所以这里基本都能拿到；
+        //   万一还没好，这一次加载先不拦，下次就好（不至于为了它把建标签卡住）。
+        if NoImageMode.isOn, let rule = NoImageMode.readyRuleList {
+            ucc.add(rule)
+        }
+
         let wv = WKWebView(frame: .zero, configuration: cfg)
         // 工具箱的「页内查找」：iOS 16 起 WKWebView 自带系统的 UIFindInteraction，
         // 但**默认是关的** —— 不打开这个开关，wv.findInteraction 就是 nil。
@@ -589,9 +597,12 @@ final class BrowserModel: NSObject, ObservableObject {
         longPress.cancelsTouchesInView = false
         longPress.delegate = self
         wv.addGestureRecognizer(longPress)
-        // 有些站会检测「是不是 App 内置浏览器」，用桌面 UA 降低被拒概率
-        wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+        // UA：默认是**移动版 Safari** —— 有些站会检测"是不是 App 内置浏览器"，
+        // 用 Safari 的串能降低被拒概率。
+        // ★ v1.0.119：加了「桌面模式」开关 —— 打开就用 Mac Safari 的串。
+        //   对嗅探有实际好处：有些站的手机版是私有播放器（抓不到地址），
+        //   桌面版反而吐标准 HLS；还有些站只在桌面 UA 下才给高清晰度。
+        wv.customUserAgent = Self.userAgent(desktop: desktopUAOn)
         return wv
     }
 
@@ -832,7 +843,13 @@ final class BrowserModel: NSObject, ObservableObject {
         tabs.append(tab)
         tabGroups[currentGroupIndex].tabIDs.append(tab.id)
         switchTo(tabCount - 1)
-        if let url, !url.isEmpty { load(url) }
+        if let url, !url.isEmpty {
+            load(url)
+        } else if let home = Self.homePageURL {
+            // ★ v1.0.119：设置里填了主页 → 新标签也直接开它
+            //   （没填就是空白标签 → 界面显示「首页快捷入口」，见 showHomePage）
+            load(home)
+        }
         return tab
     }
 
@@ -1310,6 +1327,119 @@ final class BrowserModel: NSObject, ObservableObject {
             return nil
         }
         return "页内查找要 iOS 16 以上"
+    }
+
+    // MARK: - ★ v1.0.119 首页 / 桌面模式 / 无图模式 / 截长图
+
+    /// 该不该显示「首页快捷入口」。
+    /// 条件 = 当前标签**还没打开任何网页**（地址还是空的）而且不在加载 —— 也就是新建的空白标签。
+    /// · 设置里填了「主页地址」时不会走到这儿：那种情况新标签直接开那个网址（见 openStartPage）。
+    /// · 打开任何网页后地址就不空了 → 首页自动消失，不需要额外记"首页开着/关着"这种状态。
+    var showHomePage: Bool {
+        guard !isLoading else { return false }
+        // ★ 设置里填了「主页地址」→ 新标签是直接开那个网址的，不显示快捷入口
+        //   （用户明确要的规则：设了主页就按主页走）
+        guard Self.homePageURL == nil else { return false }
+        guard let t = currentTab else { return true }
+        return t.address.isEmpty
+    }
+
+    /// 设置里的「主页地址」（规范化后的整串；没设、或写得不合法 = nil）
+    /// 跟 openStartPage 用的是同一套规则：不带协议就补 https://
+    static var homePageURL: String? {
+        var s = (UserDefaults.standard.string(forKey: "homePageURL") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if !s.contains("://") { s = "https://" + s }
+        return URL(string: s) == nil ? nil : s
+    }
+
+    /// 桌面模式是否打开（建 WebView 时也读它）
+    var desktopUAOn: Bool { UserDefaults.standard.bool(forKey: Self.desktopUAKey) }
+    static let desktopUAKey = "desktopUA"
+
+    /// 移动版 Safari（默认 UA）
+    static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+        + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    /// 桌面版 Safari（Mac）
+    static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
+
+    static func userAgent(desktop: Bool) -> String { desktop ? desktopUA : mobileUA }
+
+    /// 切「桌面模式」：所有活着的 WebView 都换 UA（**必须重载才生效**）
+    func toggleDesktopUA() {
+        let on = !desktopUAOn
+        UserDefaults.standard.set(on, forKey: Self.desktopUAKey)
+        let ua = Self.userAgent(desktop: on)
+        for t in tabs where t.webView != nil { t.webView?.customUserAgent = ua }
+        currentTab?.webView?.reload()
+        objectWillChange.send()          // 工具箱/首页上的"开/关"字样要立刻跟着变
+        showToast(on ? "桌面模式：已按电脑版加载" : "桌面模式：回到手机版")
+    }
+
+    /// 切「无图模式」：图片请求在网络层被拦掉（**必须重载才生效**）
+    func toggleNoImage() {
+        let on = !NoImageMode.isOn
+        UserDefaults.standard.set(on, forKey: NoImageMode.key)
+        if on {
+            // 规则可能还在编译（首次）→ 编译好再挂，然后重载
+            NoImageMode.ruleList { [weak self] list in
+                guard let self, list != nil else { return }
+                for t in self.tabs {
+                    if let wv = t.webView { NoImageMode.apply(to: wv, on: true) }
+                }
+                self.currentTab?.webView?.reload()
+                self.showToast("无图模式已开：图片不再下载")
+            }
+            showToast("正在准备拦截规则…")
+        } else {
+            for t in tabs {
+                if let wv = t.webView { NoImageMode.apply(to: wv, on: false) }
+            }
+            currentTab?.webView?.reload()
+            showToast("无图模式已关")
+        }
+        objectWillChange.send()
+    }
+
+    /// 截长图的结果文件（非空 → 界面弹系统分享面板；收起后由界面清掉）
+    @Published var longShotFile: URL?
+
+    /// 把当前整页拼成一张长图
+    func captureLongShot() {
+        guard let wv = currentTab?.webView else {
+            showToast("现在没有打开的网页")
+            return
+        }
+        showToast("正在拼长图，页面越长越慢…")
+        LongShot.capture(wv) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let img):
+                self.finishLongShot(img)
+            case .failure(let e):
+                self.showToast(e.localizedDescription)
+            }
+        }
+    }
+
+    private func finishLongShot(_ img: UIImage) {
+        guard let data = img.pngData() else {
+            showToast("长图生成失败（转不出图片数据）")
+            return
+        }
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let u = JobStore.file(named: "长图-\(f.string(from: Date())).png")
+        do {
+            try data.write(to: u, options: .atomic)
+        } catch {
+            showToast("长图存不下来（磁盘可能满了）")
+            return
+        }
+        longShotFile = u                    // 界面收到就弹分享面板（里面能存相册/发微信）
+        showToast("长图已生成 \(Int(img.size.width))×\(Int(img.size.height))")
     }
 
     // MARK: - 从 JS 收到的数据
