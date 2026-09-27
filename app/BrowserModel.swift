@@ -1470,19 +1470,25 @@ final class BrowserModel: NSObject, ObservableObject {
         showToast(head + "\n正在转图片…")
         let data = out.data
         let jpgURL = JobStore.file(named: "\(base)-\(stamp).jpg")
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // ★ 跨队列只传 let：`var` 被并发闭包捕获在 Swift 6 里是**错误**
+        //   （run #125 的日志里为此报了两条警告，这里收干净）。
+        DispatchQueue.global(qos: .userInitiated).async {
             let img = PagePDF.rasterize(data)
             let jpg = img?.jpegData(compressionQuality: 0.9)
-            var ok = false
-            if let jpg { ok = (try? jpg.write(to: jpgURL, options: .atomic)) != nil }
+            let wrote: Bool
+            if let jpg { wrote = (try? jpg.write(to: jpgURL, options: .atomic)) != nil }
+            else { wrote = false }
             let px = Int(((img?.size.width ?? 0) * (img?.scale ?? 1)).rounded())
             let py = Int(((img?.size.height ?? 0) * (img?.scale ?? 1)).rounded())
             let kb = jpg.map { max(1, $0.count / 1024) } ?? 0
-            let tail = ok ? "\n图片 \(px)×\(py) 像素 · \(kb) KB"
-                          : "\n图片没转出来（页面太大或太复杂），PDF 是好的"
-            DispatchQueue.main.async {
+            let tail = wrote ? "\n图片 \(px)×\(py) 像素 · \(kb) KB"
+                             : "\n图片没转出来（页面太大或太复杂），PDF 是好的"
+            let urls = wrote ? [pdfURL, jpgURL] : [pdfURL]
+            // ★ weak self 只挂在内层（主队列）这一层 —— 挂在外层同样会触发
+            //   "captured var 'self'" 警告，而且外层的活根本不需要 self。
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.pagePDFResult = ok ? [pdfURL, jpgURL] : [pdfURL]
+                self.pagePDFResult = urls
                 self.showToast(head + tail)
             }
         }
