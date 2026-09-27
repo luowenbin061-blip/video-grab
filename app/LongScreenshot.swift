@@ -4,24 +4,33 @@ import WebKit
 /// 网页「截长图」—— 把整页（含滚动部分）拼成一张图。
 ///
 /// ══ 为什么要自己拼 ══
-/// iOS 15 / 16 **没有**"整页截图"的现成 API（17 才有 `WKWebView` 相关能力），
-/// 所以只能：**逐屏滚动 + 每屏截一张 + 拼起来**。
+/// iOS 15 / 16 **没有**"整页截图"的现成 API（17 才有），只能：
+/// **逐屏滚动 + 每屏截一张 + 拼起来**。
+///
+/// ══ 画质（★ v1.0.120 修的就是这个）══
+/// 第一版糊，是因为拼接时把输出倍率设成了 **1** ——
+/// 而 `takeSnapshot` 每屏给的图是**屏幕倍率**（iPhone 上 3x，1170×2532 像素），
+/// 按 1x 输出 = **分辨率砍到三分之一**（390 宽），所以又小又糊。
+/// 现在：
+///   · 画布直接按**屏幕倍率**建，逐屏原样画进去 → 输出跟屏幕一样清晰；
+///   · 只在**总像素真的过大**时才等比降采样（上限 28MP ≈ 112MB 位图，是"还能稳住"的量级），
+///     并设下限（低于 `minScale` 宁可不截，也不给一张糊图）。
+///
+/// ══ 内存：边截边画，不攒一叠图 ══
+/// 10 屏的 3x 截图每张就十几 MB，全攒着再拼（第一版做法）峰值能到两三百 MB，容易被系统杀掉。
+/// 现在自己开一个位图上下文，**每截一屏就画进去**，峰值 ≈ 画布 + 一张截图。
+/// 用 `CGContext` 而不是 `UIGraphicsBeginImageContext`：截图是**异步多步**的，
+/// 全局绘图栈容易被别的东西插进来；自己拿着上下文更稳（也不用担心忘关栈）。
 ///
 /// ══ 两个必须处理的坑 ══
-/// 1. **顶部/底部那条固定栏会重复出现**（每屏都画一次）。
-///    做法：截图前用 JS 把所有 `position: fixed / sticky` 的元素**临时改成 absolute**，
-///    截完再改回去（`pinFixed` / `unpinFixed`）。不这么做，拼出来就是"导航条隔一屏来一条"。
-/// 2. **超长页面会把内存打爆**。两道闸：
-///    · 总高超过 `maxPoints` → **直接报错**（明确告诉用户），不给半张残缺图；
-///    · 拼图按像素上限自动降采样（40MP 封顶）。
+/// 1. **固定栏重复出现**：截图前用 JS 把 `position: fixed / sticky` 临时改 absolute，
+///    截完改回去（`pinJS` / `unpinJS`）。
+/// 2. **最后一屏会被系统"夹住"**：滚到底时 `contentOffset` 到不了理论值，
+///    所以每屏都读**实际** offset 来定位；否则拼接处会出现重复或错位的一段。
 ///
 /// ══ 已知局限（如实写在这里，别让用户以为是 bug）══
-/// · 懒加载的图片：滚动过程中才开始下载，可能来不及渲染就被截了 → 图上有空白块。
-///   缓解：每屏之间留 0.15 秒。想彻底解决得"先滚到底预热一遍再回来截"，这一版不做。
-/// · 视差/动画元素：截图时处于什么状态就是什么状态，可能不是最好看的那一帧。
-///
-/// ★ 全程**回调式**（不用 async/await）：这类"连续多步 + 每步都依赖 UI"
-///   的流程，用回调推进比 async 好读，也绕开了并发隔离那堆坑（项目里已踩过两次）。
+/// · 懒加载的图片：滚动过程中才开始下载，可能来不及渲染 → 图上有空白块；
+/// · 视差/动画元素：截到的是当下那一帧。
 @MainActor
 enum LongShot {
 
@@ -33,18 +42,22 @@ enum LongShot {
         var errorDescription: String? {
             switch self {
             case .noPage:          return "现在没有打开的网页。"
-            case .tooLong(let h):  return "这个页面太长了（约 \(Int(h)) 点高），超出能拼的上限。"
+            case .tooLong(let h):  return "这个页面太长了（约 \(Int(h)) 点高），再拼就糊得没法看了。"
             case .failed:          return "网页截图没成功，稍后再试一次。"
             }
         }
     }
 
-    /// 允许拼的最大高度（点）。12000 点已经很长（约 10 屏），再高不只是慢，是会爆内存。
+    /// 允许拼的最大高度（点）。12000 点约 14 屏，再高就不只是慢的问题了。
     static let maxPoints: Double = 12000
-    /// 最多截多少屏（兜底，防止极端页面把循环拖死）
+    /// 输出像素上限（约 28MP ≈ 112MB 位图）
+    private static let maxPixels: Double = 28_000_000
+    /// 输出倍率下限：低于这个就明确报错，不给糊图
+    private static let minScale: Double = 1.2
+    /// 最多截多少屏（兜底）
     private static let maxShots = 40
-    /// 每屏之间的等待：给重排 + 懒加载图留下时间
-    private static let settle: Double = 0.15
+    /// 每屏之间的等待：给重排 + 懒加载图留时间
+    private static let settle: Double = 0.16
 
     private static let sizeJS = """
     (function(){
@@ -89,7 +102,7 @@ enum LongShot {
     })()
     """
 
-    /// 截当前网页 → 回调给整页长图。
+    /// 截当前网页 → 回调给整页长图
     static func capture(_ wv: WKWebView, done: @escaping (Result<UIImage, Error>) -> Void) {
         let scroll = wv.scrollView
         let savedOffset = scroll.contentOffset
@@ -110,70 +123,98 @@ enum LongShot {
                 return
             }
 
-            // 钉住固定元素 → 逐屏截 → 恢复 → 拼接（每一步都保证能回到原状）
+            // 输出倍率：跟屏幕一致（3x）；总像素超上限才等比降
+            let base = Double(wv.window?.screen.scale ?? UIScreen.main.scale)
+            let rawPixels = width * total * base * base
+            let outScale = rawPixels > maxPixels ? base * sqrt(maxPixels / rawPixels) : base
+            guard outScale >= minScale else {
+                done(.failure(ShotError.tooLong(total)))
+                return
+            }
+
             wv.evaluateJavaScript(pinJS) { _, _ in
-                scroll.setZoomScale(1, animated: false)     // 缩放状态下截图尺寸会乱
-                shoot(wv, total: total, viewport: viewport, width: width, shots: []) { shots in
-                    wv.evaluateJavaScript(unpinJS) { _, _ in
-                        scroll.setZoomScale(savedZoom, animated: false)
-                        scroll.setContentOffset(savedOffset, animated: false)
-                        if let img = stitch(shots, total: total) {
-                            done(.success(img))
-                        } else {
-                            done(.failure(ShotError.failed))
-                        }
+                scroll.setZoomScale(1, animated: false)      // 缩放状态下截图尺寸会乱
+                let pxW = max(1, Int((width * outScale).rounded()))
+                let pxH = max(1, Int((total * outScale).rounded()))
+                guard let ctx = CGContext(data: nil, width: pxW, height: pxH,
+                                          bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+                    restore(wv, offset: savedOffset, zoom: savedZoom)
+                    done(.failure(ShotError.failed))
+                    return
+                }
+                // 不透明底：先铺白，避免没画到的区域是黑的
+                ctx.setFillColor(UIColor.white.cgColor)
+                ctx.fill(CGRect(x: 0, y: 0, width: pxW, height: pxH))
+
+                shoot(ctx: ctx, wv: wv, total: total, viewport: viewport, width: width,
+                      index: 0) { ok in
+                    restore(wv, offset: savedOffset, zoom: savedZoom)
+                    guard ok, let cg = ctx.makeImage() else {
+                        done(.failure(ShotError.failed))
+                        return
                     }
+                    done(.success(UIImage(cgImage: cg,
+                                          scale: CGFloat(outScale),
+                                          orientation: .up)))
                 }
             }
         }
     }
 
-    /// 逐屏截图。递归推进（每屏都要等上一屏拍完才能滚下一屏）。
-    private static func shoot(_ wv: WKWebView, total: Double, viewport: Double, width: Double,
-                              shots: [UIImage], done: @escaping ([UIImage]) -> Void) {
-        let y = Double(shots.count) * viewport
-        if y >= total || shots.count >= maxShots {
-            done(shots)
-            return
+    /// 恢复现场：把钉住的 fixed 元素改回去 + 缩放和滚动位置还原
+    private static func restore(_ wv: WKWebView, offset: CGPoint, zoom: CGFloat) {
+        wv.evaluateJavaScript(unpinJS) { _, _ in
+            wv.scrollView.setZoomScale(zoom, animated: false)
+            wv.scrollView.setContentOffset(offset, animated: false)
         }
-        wv.scrollView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+    }
+
+    /// 逐屏截图并**直接画进位图上下文**（不攒图，省内存）。
+    /// ★ 每一屏都用**实际** contentOffset 定位 —— 最后一屏会被系统夹住，
+    ///   若按 `index * viewport` 画，拼接处就会重复一段。
+    private static func shoot(ctx: CGContext, wv: WKWebView, total: Double, viewport: Double,
+                              width: Double, index: Int, done: @escaping (Bool) -> Void) {
+        if index >= maxShots { done(true); return }
+        let targetY = Double(index) * viewport
+        if targetY >= total - 1 { done(true); return }
+
+        wv.scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
 
         // 滚完立刻截会拿到"上一屏"的画面 —— 等它重排一帧
         DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
-            let cfg = WKSnapshotConfiguration()
-            cfg.rect = CGRect(x: 0, y: 0, width: width, height: min(viewport, total - y))
-            wv.takeSnapshot(with: cfg) { img, _ in
-                var next = shots
-                if let img { next.append(img) }
-                shoot(wv, total: total, viewport: viewport, width: width, shots: next, done: done)
+            let actualY = Double(wv.scrollView.contentOffset.y)
+            wv.takeSnapshot(with: WKSnapshotConfiguration()) { img, _ in
+                guard let img, let cg = img.cgImage else {
+                    done(false)
+                    return
+                }
+                // 这一屏实际有多少内容（到底了就少于一个视口）
+                let avail = max(1, min(Double(img.size.height), total - actualY))
+                let piece = crop(cg, toHeight: avail, ofHeight: Double(img.size.height))
+                // CGContext 的 y 轴向上：这一屏的左下角 = total - actualY - avail
+                let yCG = CGFloat(total - actualY - avail)
+                ctx.draw(piece, in: CGRect(x: 0, y: yCG, width: width, height: avail))
+
+                if actualY + viewport >= total - 1 {      // 已经到底
+                    done(true)
+                } else {
+                    shoot(ctx: ctx, wv: wv, total: total, viewport: viewport, width: width,
+                          index: index + 1, done: done)
+                }
             }
         }
     }
 
-    /// 把一叠截图按顺序竖着拼起来。
-    /// 像素上限 40MP：超了按比例降采样（宁可分辨率低一点，也不能被系统杀掉）。
-    private static func stitch(_ shots: [UIImage], total: Double) -> UIImage? {
-        guard let first = shots.first else { return nil }
-        let w = first.size.width
-        let rawH = shots.reduce(CGFloat(0)) { $0 + $1.size.height }
-        let size = CGSize(width: w, height: min(rawH, CGFloat(total)))
-        guard size.width > 1, size.height > 1 else { return nil }
-
-        let maxPixels: CGFloat = 40_000_000
-        let px = size.width * size.height
-        let scale: CGFloat = px > maxPixels ? max(0.3, sqrt(maxPixels / px)) : 1
-
-        let fmt = UIGraphicsImageRendererFormat.default()
-        fmt.scale = scale
-        fmt.opaque = true
-        let renderer = UIGraphicsImageRenderer(size: size, format: fmt)
-        return renderer.image { _ in
-            var y: CGFloat = 0
-            for s in shots {
-                if y >= size.height { break }
-                s.draw(in: CGRect(x: 0, y: y, width: w, height: s.size.height))
-                y += s.size.height
-            }
-        }
+    /// 把一张截图的位图裁到指定高度（点）。
+    /// 最后一屏内容不足一个视口时，不裁就会在拼图底部多出一条空白。
+    private static func crop(_ cg: CGImage, toHeight h: Double, ofHeight full: Double) -> CGImage {
+        guard full - h > 0.5 else { return cg }
+        let ratio = max(0.001, h / full)
+        let rect = CGRect(x: 0, y: 0,
+                          width: Double(cg.width),
+                          height: max(1, (Double(cg.height) * ratio).rounded()))
+        return cg.cropping(to: rect) ?? cg
     }
 }

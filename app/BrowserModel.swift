@@ -468,11 +468,11 @@ final class BrowserModel: NSObject, ObservableObject {
     /// ★ 这里只改「当前指向哪个标签」，**不建 WebView** —— 跟 restoreFromDisk 的做法一致，
     ///   网页是等界面出现时才懒建的（见 activate 的说明）。
     private func openStartPage() {
-        let home = (UserDefaults.standard.string(forKey: "homePageURL") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if home.isEmpty {
-            // 留空 → 前台是空白页：已有空白标签就切过去，没有才新建
+        // ★ v1.0.120：跟 `homePageURL` 共用同一套规范化规则（缺协议补 https://）——
+        //   以前两处各写一遍，容易出现"改一处漏一处"。
+        //   ★ 注意「主页」只在**程序启动进页面**时用这一次；新建标签不走这里（见 newTab）。
+        guard let s = Self.homePageURL else {
+            // 没设（或写得不成样子）→ 前台是空白页：已有空白标签就切过去，没有才新建
             if let t = visibleTabs.first(where: { $0.address.isEmpty }) {
                 pointCurrentTabAt(t)
             } else {
@@ -481,9 +481,6 @@ final class BrowserModel: NSObject, ObservableObject {
             return
         }
 
-        var s = home
-        if !s.contains("://") { s = "https://" + s }
-        guard URL(string: s) != nil else { return }   // 写得不成样子 → 保持现状，别把界面搞空白
         if let t = visibleTabs.first(where: { $0.address == s }) {
             pointCurrentTabAt(t)
             return
@@ -843,13 +840,10 @@ final class BrowserModel: NSObject, ObservableObject {
         tabs.append(tab)
         tabGroups[currentGroupIndex].tabIDs.append(tab.id)
         switchTo(tabCount - 1)
-        if let url, !url.isEmpty {
-            load(url)
-        } else if let home = Self.homePageURL {
-            // ★ v1.0.119：设置里填了主页 → 新标签也直接开它
-            //   （没填就是空白标签 → 界面显示「首页快捷入口」，见 showHomePage）
-            load(home)
-        }
+        // ★ v1.0.120：**新建标签不再自动开主页**（上一版加错了，用户明确纠正）——
+        //   主页只在「程序启动进页面」时加载一次（见 openStartPage）；
+        //   新建标签一律是空白标签 → 界面显示「首页快捷入口」。
+        if let url, !url.isEmpty { load(url) }
         return tab
     }
 
@@ -1337,9 +1331,10 @@ final class BrowserModel: NSObject, ObservableObject {
     /// · 打开任何网页后地址就不空了 → 首页自动消失，不需要额外记"首页开着/关着"这种状态。
     var showHomePage: Bool {
         guard !isLoading else { return false }
-        // ★ 设置里填了「主页地址」→ 新标签是直接开那个网址的，不显示快捷入口
-        //   （用户明确要的规则：设了主页就按主页走）
-        guard Self.homePageURL == nil else { return false }
+        // ★ v1.0.120：**不管设置里有没有填主页，新建的标签都显示首页**。
+        //   用户把两个概念明确分开了（我上一版理解错了）：
+        //     · **主页** = 设置里填的那个地址 → 只在**程序启动进页面**时加载一次（见 openStartPage）
+        //     · **首页** = 这个快捷入口页 → **新建标签**进来就是它
         guard let t = currentTab else { return true }
         return t.address.isEmpty
     }
@@ -1406,15 +1401,25 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 截长图的结果文件（非空 → 界面弹系统分享面板；收起后由界面清掉）
     @Published var longShotFile: URL?
 
+    /// ★ v1.0.120：正在截长图 —— 防重入。
+    /// 截图过程要滚页面、还要占着绘图上下文，中途再点一次会互相打架（图会花）。
+    private var shooting = false
+
     /// 把当前整页拼成一张长图
     func captureLongShot() {
+        guard !shooting else {
+            showToast("上一张还在拼，稍等一下")
+            return
+        }
         guard let wv = currentTab?.webView else {
             showToast("现在没有打开的网页")
             return
         }
+        shooting = true
         showToast("正在拼长图，页面越长越慢…")
         LongShot.capture(wv) { [weak self] result in
             guard let self else { return }
+            self.shooting = false
             switch result {
             case .success(let img):
                 self.finishLongShot(img)
@@ -1425,13 +1430,16 @@ final class BrowserModel: NSObject, ObservableObject {
     }
 
     private func finishLongShot(_ img: UIImage) {
-        guard let data = img.pngData() else {
+        // ★ v1.0.120：改存 **JPEG（质量 0.95）**，不再存 PNG。
+        //   3 倍分辨率拼出来动辄两三千万像素，PNG 会有几十 MB ——
+        //   存相册、发微信都很吃力；JPEG 0.95 肉眼看不出差别、体积只有几分之一。
+        guard let data = img.jpegData(compressionQuality: 0.95) else {
             showToast("长图生成失败（转不出图片数据）")
             return
         }
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
-        let u = JobStore.file(named: "长图-\(f.string(from: Date())).png")
+        let u = JobStore.file(named: "长图-\(f.string(from: Date())).jpg")
         do {
             try data.write(to: u, options: .atomic)
         } catch {
@@ -1439,7 +1447,10 @@ final class BrowserModel: NSObject, ObservableObject {
             return
         }
         longShotFile = u                    // 界面收到就弹分享面板（里面能存相册/发微信）
-        showToast("长图已生成 \(Int(img.size.width))×\(Int(img.size.height))")
+        // 报**实际像素**（不是点）—— 用户一眼能看出清晰度有没有真的提上去
+        let px = Int((img.size.width * img.scale).rounded())
+        let py = Int((img.size.height * img.scale).rounded())
+        showToast("长图已生成 \(px)×\(py) 像素 · \(data.count / 1024 / 1024) MB")
     }
 
     // MARK: - 从 JS 收到的数据
