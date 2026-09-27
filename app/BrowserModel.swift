@@ -1477,6 +1477,72 @@ final class BrowserModel: NSObject, ObservableObject {
         return groups
     }
 
+    // MARK: - ★ v1.0.115 挑清晰度（懒解析）
+
+    /// 某个条目（键 = `SniffItem.url`）**懒解析**出来的可选清晰度。
+    /// 为什么不在嗅探时就解析：一个页面几十条嗅探事件，全解析等于把"浏览"的成本放大几十倍；
+    /// 而且页面还在播时 token / CDN 调度未稳，早解析容易拿到过期地址。
+    /// （这一条四家 AI 独立给出同一个结论。）
+    @Published var variantChoices: [String: [M3U8Playlist.Variant]] = [:]
+    /// 用户为某条选定的清晰度（没有键 = 自动，也就是现在这套：挑带宽最高的）
+    @Published var variantPicked: [String: M3U8Playlist.Variant] = [:]
+    /// 正在读清单的条目（界面转圈用）
+    @Published var variantLoading: Set<String> = []
+    /// 读清单失败的原因（界面一句话，绝不静默）
+    @Published var variantError: [String: String] = [:]
+
+    /// 候选怎么显示：**有分辨率才写分辨率**；只有码率就写码率。
+    /// ★ 刻意**不猜**"1080P"：HEVC 低码率的可能是高清、AVC 高码率的可能只有 720P，
+    ///   猜错比不标更糟（四家里三家都点了这一条）。带宽给的是"哪个大"的量级感。
+    static func variantLabel(_ v: M3U8Playlist.Variant) -> String {
+        if let r = v.resolution, !r.isEmpty {
+            let parts = r.lowercased().split(separator: "x")
+            if parts.count == 2, let h = Int(parts[1]), h > 0 { return "\(h)P" }
+            return r
+        }
+        if let b = v.bandwidth, b > 0 {
+            return String(format: "约 %.1f Mbps", Double(b) / 1_000_000)
+        }
+        return "线路"
+    }
+
+    /// 读一次这个清单，看看有哪些清晰度可选（用户点「清晰度」标签时才调）。
+    /// 自己带 Referer/UA/Cookie —— 读清单和下载分片一样要过防盗链。
+    func loadVariants(for item: SniffItem) {
+        let key = item.url
+        guard !variantLoading.contains(key), let u = URL(string: key) else { return }
+        variantError[key] = nil
+        variantLoading.insert(key)
+
+        var req = URLRequest(url: u, timeoutInterval: 20)
+        if !item.ua.isEmpty { req.setValue(item.ua, forHTTPHeaderField: "User-Agent") }
+        if !item.referrer.isEmpty { req.setValue(item.referrer, forHTTPHeaderField: "Referer") }
+        if !item.cookie.isEmpty { req.setValue(item.cookie, forHTTPHeaderField: "Cookie") }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        cfg.urlCache = nil
+
+        URLSession(configuration: cfg).dataTask(with: req) { [weak self] data, resp, err in
+            let text = data.flatMap { String(data: $0, encoding: .utf8) }
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            Task { @MainActor in
+                guard let self else { return }
+                self.variantLoading.remove(key)
+                guard let text, code == 0 || (200...299).contains(code) else {
+                    self.variantError[key] = "读不到清单（\(err?.localizedDescription ?? "HTTP \(code)")）"
+                    return
+                }
+                let pl = M3U8Playlist.parse(text: text, baseURL: u)
+                if pl.variants.isEmpty {
+                    self.variantError[key] = "这条不是多清晰度清单（只有一档，直接下就行）"
+                } else {
+                    // 带宽从大到小 —— 用户一眼看到的是"最高的那条多大"
+                    self.variantChoices[key] = pl.variants.sorted { ($0.bandwidth ?? 0) > ($1.bandwidth ?? 0) }
+                }
+            }
+        }.resume()
+    }
+
     private static func date(fromMs v: Any?) -> Date? {
         if let n = v as? Double { return Date(timeIntervalSince1970: n / 1000) }
         if let n = v as? Int { return Date(timeIntervalSince1970: Double(n) / 1000) }

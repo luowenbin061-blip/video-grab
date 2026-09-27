@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>VideoGrab v1.0.113 · 五家 AI 会诊报告（2026-09-27）</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1e24; --line:#2c313a; --fg:#e6e9ef; --dim:#9aa4b2;
+    --red:#ff6b6b; --amber:#ffb057; --green:#5ad48b; --blue:#6cb6ff; --violet:#b98cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:34px 30px 70px}
+  h1{font-size:23px;margin:0 0 6px}
+  h2{font-size:18px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .meta{color:var(--dim);font-size:13.5px;margin-bottom:8px}
+  table{width:100%;border-collapse:collapse;margin:10px 0 6px;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;vertical-align:top;text-align:left}
+  th{background:#20242b;color:var(--dim);font-weight:600;white-space:nowrap}
+  td code{background:#22262e;padding:1px 5px;border-radius:4px;font-size:12.5px;color:#d8e2f0}
+  .p0{color:var(--red);font-weight:700}
+  .p1{color:var(--amber);font-weight:700}
+  .p2{color:var(--blue);font-weight:700}
+  .p3{color:var(--dim);font-weight:700}
+  .ok{color:var(--green)}
+  .no{color:var(--red)}
+  .half{color:var(--amber)}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:14px 0}
+  .box h3{margin:0 0 8px;font-size:15px}
+  ul{margin:6px 0 6px 20px;padding:0}
+  li{margin:3px 0}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);color:var(--dim);margin-left:6px}
+  .foot{color:var(--dim);font-size:12.5px;margin-top:26px;border-top:1px solid var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+
+<h1>VideoGrab v1.0.113 · 五家 AI 会诊报告</h1>
+<div class="meta">
+2026-09-27 · 同一份简报并行发给 5 家（DeepSeek / 通义千问 / MiniMax / MiMo / 豆包），
+回收后<strong>逐条对源码核实</strong>（每条约 1～2 处 <code>文件:行</code> 证据）。
+</div>
+<div class="meta">
+有效回答 4 家（豆包<strong>第 6 次回显</strong>：整段把简报抄回来、零建议 → 已弃用，不重试）；共收到 47 条建议。
+</div>
+
+<h2>先看结论</h2>
+<div class="box">
+<h3>如果只做 3 条（我按"踩坑概率 × 修复成本"排的）</h3>
+<ul>
+<li><span class="p0">P0-1</span> <strong>崩溃与卡死的"现场留证"</strong>：现在只有"主线程最长失联时间"这一个数字，
+<strong>没有任何崩溃捕获</strong>（全项目搜不到异常钩子/崩溃日志）→ 悬案永远只能等下一次。<span class="tag">三家独立命中</span></li>
+<li><span class="p0">P0-2</span> <strong>JS→原生桥的信任边界</strong>：任何被注入的页面都能直接触发"下载"（含往本地 WebDAV 读写），
+没有任何来源校验或频率/大小上限 → 被挂马的页面可以刷满你的磁盘、或把本地服务当跳板。<span class="tag">本次最有价值的新发现</span></li>
+<li><span class="p1">P1-3</span> <strong>全局下载调度 + 网络感知</strong>：分片并发写死 4、没有全局上限、没有"同域名限制"、
+没有"蜂窝/低电量不自动下" → 多任务互相抢带宽、发热、更容易失败。<span class="tag">三家独立命中</span></li>
+</ul>
+</div>
+
+<div class="box">
+<h3>统计</h3>
+<ul>
+<li>成立（确实没做，值得做）：<strong>11 条</strong></li>
+<li>被推翻（AI 说没做，源码里其实有）：<strong>11 条</strong> —— 这轮 AI 的"虚报率"约 1/4，跟上次实测（30 条里 15 条错）同一个规律</li>
+<li>部分成立 / 需实测：<strong>8 条</strong></li>
+</ul>
+</div>
+
+<h2>表 A · 成立（确实缺，按优先级）</h2>
+<table>
+<tr><th>优先级</th><th>建议</th><th>类别</th><th>现状与证据</th><th>怎么改 / 代价</th></tr>
+
+<tr>
+<td class="p0">P0</td>
+<td><strong>卡死悬案：从"只记时长"升级到"当场留证"</strong><br>
+<span class="tag">通义 + MiniMax + DeepSeek 三家</span></td>
+<td>稳定性</td>
+<td>现在命中的是"事后一个数字"：过程记录里有"主线程最长失联"，但<strong>失联超阈值时不会主动抓现场</strong>；
+全项目搜 <code>crash.log</code> / <code>NSSetUncaughtExceptionHandler</code> / <code>callStackSymbols</code> <strong>零命中</strong> ——
+也就是说崩溃类问题现在连日志都没有。</td>
+<td>心跳（已有）加一条：<strong>失联 &gt;5s 就异步 dump</strong>（任务阶段 + 内存 footprint + 主线程栈 + 正在写的文件偏移），
+原子写盘；再补一个 <code>NSSetUncaughtExceptionHandler</code> + signal handler 写本地崩溃文件。
+代价：dump 本身要用低优先级线程、信号安全写法，别把卡死变成卡更久。</td>
+</tr>
+
+<tr>
+<td class="p0">P0</td>
+<td><strong>JS→原生桥加信任边界</strong><br>
+<span class="tag">MiMo（独特）+ DeepSeek 部分</span></td>
+<td>数据安全</td>
+<td><code>sniffer.js</code> 通过 <code>vgSniff</code> 上报（<code>BrowserModel.swift:566</code> 注册），
+原生侧接上就建任务（网页触发下载 <code>onFileDownload</code>）。<strong>没有来源校验、没有频率/单任务大小上限</strong>。
+本地 WebDAV 又是带口令的 http 服务 → 一个页面既能刷盘，也能拿这个服务当内网跳板。</td>
+<td>① 原生只接受"元数据 + 白名单字段"；② 网页触发的下载要求<strong>最近有真实用户手势</strong>（时间窗）；
+③ 加"每分钟最多 N 个任务 / 单文件最大 X GB"的闸门；④ 本地服务对 loopback 来源也校验口令。
+代价：极少数站点需要"自动下载"，可白名单。</td>
+</tr>
+
+<tr>
+<td class="p1">P1</td>
+<td><strong>全局下载调度 + 网络感知</strong><br>
+<span class="tag">三家独立命中</span></td>
+<td>性能 / 成功率</td>
+<td>并发写死：<code>DownloadJob.swift:695 concurrency: 4</code>；<strong>没有全局上限、没有按域名限制</strong>；
+全项目搜 <code>NWPathMonitor</code> / <code>isExpensive</code> / 低电量 <strong>零命中</strong> → 蜂窝下也会照跑。</td>
+<td>加一个调度器：全局最大连接（6 左右）、同域名 2～3、失败指数退避 + 抖动；
+蜂窝/低电量时<strong>不自动开始</strong>（要下给用户点一下）。
+代价：理想网络下速度略降；调度逻辑要压测。</td>
+</tr>
+
+<tr>
+<td class="p1">P1</td>
+<td><strong>HLS 的 fMP4（<code>EXT-X-MAP</code>）落到下载链</strong><br>
+<span class="tag">DeepSeek + MiMo</span></td>
+<td>下载成功率</td>
+<td><code>M3U8.swift:40/57/106</code> 已经<strong>解析</strong>了 <code>EXT-X-MAP</code>（fMP4 的初始化段），
+但下载/拼接走的是自写 TS 那条路 —— 遇到 fMP4 源（越来越多站点用）有产出坏文件或静默截断的风险。</td>
+<td>下载链先做"能力判定"：<strong>识别不了就明确报错</strong>（"这个流是 fMP4，暂不支持"），
+别产出坏 MP4；有余力再补 init 段 + fMP4 拼接。代价：报错会显得"能力变少"，但比给坏文件强。</td>
+</tr>
+
+<tr>
+<td class="p1">P1</td>
+<td><strong>PiP 保活失效后的降级与提示</strong><br>
+<span class="tag">DeepSeek + MiniMax</span></td>
+<td>稳定性</td>
+<td>保活全靠画中画小窗：被用户划掉、被系统回收、音频会话被别家抢占时，
+<strong>下载任务这条没有明确的"停 + 告诉用户"</strong>（v1.0.104 只处理了"划掉小窗 → 关共享"）。</td>
+<td>监听 PiP 结束（<code>pictureInPictureControllerDidStopPictureInPicture</code> 已用过）→
+主动暂停任务 + 本地通知；可考虑 remux 阶段申请 <code>BGProcessingTask</code> 兜底（不确定在 TrollStore 环境是否稳定）。</td>
+</tr>
+
+<tr>
+<td class="p2">P2</td>
+<td><strong>POST 表单触发的下载</strong><br>
+<span class="tag">DeepSeek（独特）</span></td>
+<td>下载成功率</td>
+<td>全项目搜 <code>httpBody</code> 零命中：<code>WKNavigationResponse</code> 只能拿到响应，拿不到 POST body →
+站内"表单导出 / 提交式下载"这类会失败。</td>
+<td>short 期：这类情况给明确提示（别静默）；长期：JS 侧 hook form/fetch，把 method + body 摘要上报，原生用 URLSession 重放。
+代价：body 可能很大 + 安全边界要重新想。</td>
+</tr>
+
+<tr>
+<td class="p2">P2</td>
+<td><strong>播放前探测 + 失败可解释</strong><br>
+<span class="tag">DeepSeek</span></td>
+<td>交互可用性</td>
+<td>FFmpeg/ffprobe 符号是链进来的（<code>Hook.m</code>），但只在取时长/分辨率时用；
+AVPlayer 播不了时界面只给一句"播不了"，没有"为什么 / 我能不能先转码"。</td>
+<td>播放前用 ffprobe 探一次（容器/编码/音轨），不支持就提示并给"转 MP4 后再播"的按钮；字幕单独列一档（现在没有）。</td>
+</tr>
+
+<tr>
+<td class="p2">P2</td>
+<td><strong>局域网服务的 keep-alive</strong><br>
+<span class="tag">MiniMax（说对了一半）</span></td>
+<td>稳定性 / 播放</td>
+<td>Range / HEAD / 206 其实<strong>都有</strong>（见下表 B），但<strong>没有 keep-alive</strong>：
+本地服务每个请求都要重连，AVPlayer 频繁 seek 时收益明显。</td>
+<td>加 <code>Connection: keep-alive</code> + 循环内复用连接；顺手给 socket 加读写超时。
+代价：连接生命周期管理，别把线程占住。</td>
+</tr>
+
+<tr>
+<td class="p2">P2</td>
+<td><strong>落盘格式加版本号</strong><br>
+<span class="tag">通义 + MiniMax</span></td>
+<td>数据安全</td>
+<td>原子写其实<strong>早就有</strong>（见下表 B），但<strong>没有 schemaVersion</strong>：
+现在靠"加可选字段 + 读不到就兜底"来兼容（JobRecord 的 <code>paused</code> / <code>kind</code> 就是这么加的）。
+字段一多，这种"靠约定"的做法迟早出乱子。</td>
+<td>给每个 JSON 落盘文件顶层加 <code>version</code>，读时做一次性迁移。代价：小，收益长期。</td>
+</tr>
+
+<tr>
+<td class="p2">P2</td>
+<td><strong>任务查重</strong><br>
+<span class="tag">我补的（AI 没提）</span></td>
+<td>交互可用性</td>
+<td>书签有去重（<code>Bookmarks.swift:313</code>），但<strong>下载任务没有</strong>：
+同一个地址连点两次就建两条任务、下一份重复文件。</td>
+<td>建任务前比一次 <code>sourceURL</code>（已存在就提示"已经在下了/已下过"）。代价：一行判断。</td>
+</tr>
+
+<tr>
+<td class="p3">P3</td>
+<td><strong>DASH / blob 两条已知盲区</strong></td>
+<td>下载成功率</td>
+<td>已知未做：DASH（<code>mpd</code>）完全不支持；<code>blob:</code> 只给提示。
+（注意：<code>blob</code> 播放的视频其实<strong>已经能救</strong> —— v1.0.105 的 <code>pickAlt</code> 会从 hook 记录里找可下的真实地址；
+真正没做的是"blob 本身就是下载目标"这类，如站点导出功能。）</td>
+<td>DASH 是"最小可用版本"级别的活（非 DRM 才有意义）；blob 可做"页面内分片转 base64 回传"，
+但内存与成功率都不划算 —— 我倾向<strong>先明确报错，不做</strong>。</td>
+</tr>
+</table>
+
+<h2>表 B · 被推翻（AI 说"没做"，源码里其实有）</h2>
+<table>
+<tr><th>AI 的说法</th><th>源码事实（证据）</th></tr>
+<tr><td>sniffer.js 是 <code>didFinish</code> 之后用 evaluateJavaScript 注入（MiniMax）</td>
+<td class="ok">用 <code>WKUserScript</code> 在 <strong>document-start</strong> 注入、且<strong>每个 frame</strong>都注入：
+<code>BrowserModel.swift:557</code> + <code>sniffer.js:3</code> 注释明写 <code>forMainFrameOnly=false</code></td></tr>
+<tr><td>多标签不释放 WebView、后台标签一直占内存（三家都提）</td>
+<td class="ok">有活跃上限 + 回收：<code>BrowserModel.swift:632 / 727 / 730</code>（<code>TabLimits.maxLive</code> + <code>trimLive()</code>，超出把标签"睡着"）</td></tr>
+<tr><td>渲染进程被系统回收后没有恢复</td>
+<td class="ok"><code>webViewWebContentProcessDidTerminate</code> 有实现，还带"崩太多次就认输"机制：<code>BrowserModel.swift:1706</code></td></tr>
+<tr><td>LocalHTTPServer 没实现 Range / HEAD（通义、MiniMax）</td>
+<td class="ok">Range 完整：<code>LocalHTTPServer.swift:508</code>（206）+ <code>:511</code>（Accept-Ranges）+ <code>:513</code>（Content-Range）；
+HEAD 也在允许列表：<code>:388</code></td></tr>
+<tr><td>局域网共享没鉴权 / 路径穿越没防</td>
+<td class="ok">有口令：<code>ContentView.swift:1701-1712</code>；防穿越是<strong>规范化后前缀校验</strong>：<code>LocalHTTPServer.swift:441-446</code> 与 <code>:953-957</code>
+（<code>standardizedFileURL</code> + <code>hasPrefix(root)</code>）</td></tr>
+<tr><td>JSON 落盘不是原子写、会被写坏（通义、MiMo）</td>
+<td class="ok"><code>options: .atomic</code> 遍布：<code>Bookmarks.swift:415</code>、<code>Downloader.swift:269</code>、
+<code>DownloadJob.swift:917 / 960</code>、<code>JobStore.swift:141</code></td></tr>
+<tr><td>直链下载会被 URLCache 双写、内存峰值高（MiMo）</td>
+<td class="ok">下载会话是 <code>ephemeral</code> 且 <code>urlCache = nil</code>：<code>FileDownloader.swift:45-49</code>（v1.0.101 就改过）</td></tr>
+<tr><td>HLS 不支持 AES-128 加密分片（DeepSeek、MiMo）</td>
+<td class="ok">支持：<code>Downloader.swift:12</code> 注释（CryptoKit 不做 CBC → 用 CommonCrypto）、<code>:45</code>、<code>:286</code>（<code>AES-128</code>）</td></tr>
+<tr><td>不选最高码率 / 只认裸 m3u8</td>
+<td class="ok">master 选最高：<code>M3U8.swift:185</code>（<code>variants.max { bandwidth }</code>）；同目录清单变体还会先合并成一组（<code>BrowserModel.swift:1455</code>）</td></tr>
+<tr><td>分片下载完全没有重试</td>
+<td class="ok">有重试：<code>Downloader.swift:20</code>（<code>retry = 2</code>）+ <code>:262</code> 的重试循环</td></tr>
+<tr><td>blob 完全放弃、没有任何补救</td>
+<td class="ok">有一半：<code>pickAlt</code>（v1.0.105）会在 blob 播放时从 hook 记录里挑一个能下的真实地址（优先 m3u8 / 正在播的那条）</td></tr>
+</table>
+
+<h2>表 C · 部分成立 / 需实测</h2>
+<table>
+<tr><th>建议</th><th>成立的部分 / 不成立的部分</th></tr>
+<tr><td>分片重试要"指数退避 + 抖动"</td>
+<td class="half">有重试（2 次）但<strong>间隔固定、无抖动</strong>；遇 429 也没有降速 → 建议本身成立，只是别写成"没有重试"</td></tr>
+<tr><td>每域名并发限制</td>
+<td class="half">目前并发 4 是写死的、与域名无关 → 建议成立</td></tr>
+<tr><td>Cookie 要拿最新的（含 HttpOnly）</td>
+<td class="half"><strong>网页触发的下载已经用</strong> <code>httpCookieStore</code>（含 HttpOnly，v1.0.113）；但<strong>嗅探面板/长按</strong>那条路仍用 JS <code>document.cookie</code>（拿不到 HttpOnly）→ 建议一半成立</td></tr>
+<tr><td>音频会话/画中画引用计数有竞态</td>
+<td class="half">引用计数<strong>有</strong>（<code>AudioSession.swift:22-29</code>），但注释写着"只在主线程调用" → 是<strong>约定而非强制</strong>，加锁更稳</td></tr>
+<tr><td>FFmpeg 在进程内跑导致内存尖峰</td>
+<td class="half">确实是 in-process（<code>Hook.m</code> 里 hook 了 <code>FFmpeg_main</code>）；但"memory 峰值"到底是不是崩溃主因<strong>没有数据</strong>，别急着改成子进程</td></tr>
+<tr><td>大文件别整片进内存</td>
+<td class="half">拼接阶段是<strong>逐个分片</strong> <code>Data(contentsOf: part)</code>（<code>Downloader.swift:188</code>）→ 单个超大分片会尖峰，但不像"整片视频进内存"那么严重</td></tr>
+<tr><td>非活跃标签要暂停视频播放</td>
+<td class="half">标签"睡着"是回收 WebView，但<strong>没有主动 pause</strong> 页面上正在播的 video → 建议成立、实现便宜</td></tr>
+<tr><td>嗅探结果"60 条上限会丢"</td>
+<td class="half">有上限（各 60）也有分组去重、也有"最近"标记；<strong>面板内搜索</strong>这一条我没核（待查）</td></tr>
+</table>
+
+<h2>要不要现在动手</h2>
+<div class="box">
+<ul>
+<li><strong>P0-1（现场留证）</strong>：改动小、收益大（悬案唯一的出路），我可以做成"后台写诊断文件"，不打扰你使用。</li>
+<li><strong>P0-2（JS 桥信任边界）</strong>：自用风险有限，但"网页能刷满磁盘 / 把本地服务当跳板"这两条是真的，加闸门也就几十行。</li>
+<li><strong>P1-3（全局调度 + 网络感知）</strong>：会改变下载手感（蜂窝下不自动下），要你点头再做。</li>
+</ul>
+说得直白些：这次会诊<strong>没有一条是"你完全没想到的重大缺陷"</strong>，价值主要在
+①"悬案只差一个现场"这件事被三家独立指出来、
+②"JS 桥没有信任边界"这条我自己也漏了、
+③ 顺手推翻了 11 条虚报（含"没做 Range/没防目录遍历/没做 AES-128"这类看着很唬人的）。
+</div>
+
+<div class="foot">
+方法：同一份简报（含形态、技术实现、已知限制、重点文件清单）并行发给 5 家；
+回收后逐条 grep 源码核实，命中即"推翻"。原始答案与核查脚本：
+<code>_probe_tmp/ask5_answers/</code>（各家原文）、<code>_probe_tmp/verify_ai_claims_10113.py</code>（第一轮）、
+<code>_probe_tmp/verify_ai_claims2.py</code>（第二轮精确核查）。<br>
+说明：豆包本轮<strong>回显简报、零建议</strong>（第 6 次同款），已弃用未计入；补派的 Gemini/ChatGPT/Claude 在该部署下未被识别（unknown provider），故本次有效声音为 4 家。
+</div>
+
+</body>
+</html>

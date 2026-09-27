@@ -90,11 +90,44 @@ struct PlayerSheet: View {
     /// 转屏没成功时补一次的定时器
     @State private var orientationRetry: Task<Void, Never>?
 
-    init(url: URL, title: String = "", pip: PiPProgress? = nil) {
+    /// ★ v1.0.115 续看：这条**任务**的身份（列表传 `job.id`）。
+    /// 不给（在线播别的东西）时退回"用地址末段当键"，至少同一条地址能续上。
+    let progressKey: String
+
+    init(url: URL, title: String = "", pip: PiPProgress? = nil, key: String = "") {
         self.url = url
         self.title = title
         self.pip = pip
-        _box = StateObject(wrappedValue: PlayerBox(url: url))
+        self.progressKey = key.isEmpty ? url.lastPathComponent : key
+        _box = StateObject(wrappedValue: PlayerBox(url: url, resumeKey: self.progressKey))
+    }
+
+    /// ★ v1.0.115：续看提示（顶部那颗小药丸）。
+    /// 只在"真的从上次位置接着播"时出现，6 秒后自己消失；点「从头开始」立刻重头播。
+    private var resumePill: some View {
+        VStack {
+            HStack(spacing: 12) {
+                Text("已从上次位置继续 · \(WatchProgress.clock(box.resumedAt))")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                Button {
+                    box.restartFromBeginning()
+                } label: {
+                    Text("从头开始")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.18), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.top, 16)
+            Spacer()
+        }
     }
 
     /// 我们这两个图标最终显示到什么程度（0 = 完全不见，1 = 完全显示）
@@ -323,6 +356,13 @@ struct PlayerSheet: View {
             // 兜底模式下自己补一个短渐变（节奏跟系统那套接近）；
             // ★ 镜像模式必须传 nil —— 数值本来就是一帧帧从系统搬来的，再加动画等于慢两拍
             .animation(mirrorSystem ? nil : .easeOut(duration: 0.25), value: shownAlpha)
+
+            // ★ v1.0.115 续看：这次是"从上次位置接着播"时，顶部弹一颗小药丸。
+            //   不常驻（6 秒后自己走）、平时完全不出现 —— 界面还是原来那么干净。
+            //   想重头看就点它，不会打断播放。
+            if box.didResume {
+                resumePill
+            }
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
@@ -370,6 +410,20 @@ final class PlayerBox: ObservableObject {
 
     let player: AVPlayer
     private let item: AVPlayerItem
+    /// ★ v1.0.115 续看：这条内容的身份（列表传的是任务 id）。进度就记在它下面。
+    private let resumeKey: String
+    /// 待恢复的位置（0 = 不恢复）
+    private var pendingResume: Double = 0
+    /// 只跳一次（ready 可能被多次判定）
+    private var resumeApplied = false
+    /// 最近一次记下的秒数 —— 状态轮询每 0.25 秒跑一次，别每次都动字典
+    private var lastRemembered: Double = -1
+    /// 药丸自动消失的定时器
+    private var resumePillTask: Task<Void, Never>?
+    /// 界面上那颗"已从上次位置继续"的药丸要不要弹
+    @Published var didResume = false
+    /// 从第几秒续上的（药丸上显示）
+    @Published var resumedAt: Double = 0
     @Published var error: String?
     @Published var loading = true
     /// 只自动转一次，之后听用户的。**故意不记"我让它横了"这个状态** ——
@@ -392,7 +446,11 @@ final class PlayerBox: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
 
-    init(url: URL) {
+    init(url: URL, resumeKey: String = "") {
+        self.resumeKey = resumeKey
+        // ★ v1.0.115 续看：先读上次看到哪儿；太靠前（<5 秒）就不打扰，从头播。
+        let saved = WatchProgress.position(for: resumeKey)
+        pendingResume = saved > WatchProgress.minResume ? saved : 0
         item = AVPlayerItem(url: url)
         player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause
@@ -437,6 +495,7 @@ final class PlayerBox: ObservableObject {
         pollTask?.cancel()
         stallTask?.cancel()
         stateTask?.cancel()
+        resumePillTask?.cancel()      // ★ v1.0.115 续看
     }
 
     // MARK: - 音频被打断 / 路由变化（v1.0.85）
@@ -488,6 +547,9 @@ final class PlayerBox: ObservableObject {
             while !Task.isCancelled {
                 let playing = (target.player.timeControlStatus == .playing)
                 if target.isPlaying != playing { target.isPlaying = playing }
+                // ★ v1.0.115 续看：正在播就顺手记一下位置。
+                //   remember() 里自己做了 0.5 秒的粒度门槛 + 落盘节流，这里每 0.25 秒调一次不心疼。
+                if playing { target.remember(target.player.currentTime().seconds) }
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
@@ -500,10 +562,50 @@ final class PlayerBox: ObservableObject {
     }
 
     func stop() {
+        remember(player.currentTime().seconds)     // ★ 续看：退出/切走前赶紧记一笔
+        WatchProgress.flushNow()
+        resumePillTask?.cancel()
         player.pause()
         pollTask?.cancel()
         stallTask?.cancel()
         stateTask?.cancel()
+    }
+
+    /// ★ v1.0.115 续看：用户点「从头开始」。
+    /// 清掉记录 + 回到 0 秒；药丸同时收掉（不然它还在那儿显示"已从上次位置继续"）。
+    func restartFromBeginning() {
+        WatchProgress.clear(for: resumeKey)
+        lastRemembered = -1
+        pendingResume = 0
+        didResume = false
+        resumePillTask?.cancel()
+        player.seek(to: .zero)
+        player.play()
+    }
+
+    /// ★ v1.0.115 续看：把"当前秒数"记下来（内存里先攒着，落盘由 WatchProgress 节流）。
+    private func remember(_ seconds: Double) {
+        guard !resumeKey.isEmpty, seconds.isFinite, seconds > 0 else { return }
+        guard abs(seconds - lastRemembered) >= 0.5 else { return }
+        lastRemembered = seconds
+        let d = player.currentItem?.duration.seconds ?? 0
+        WatchProgress.record(seconds, for: resumeKey, duration: d.isFinite ? d : 0)
+    }
+
+    /// ★ v1.0.115 续看：能播了 → 跳回上次的位置（只跳一次），并弹一下那颗药丸。
+    private func applyPendingResume() {
+        guard pendingResume > 0, !resumeApplied else { return }
+        resumeApplied = true
+        let t = pendingResume
+        resumedAt = t
+        player.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+        didResume = true
+        let target = self                    // 绑成 let：嵌套并发闭包里引用 weak self 会编译不过
+        resumePillTask?.cancel()
+        resumePillTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            target.didResume = false
+        }
     }
 
     func retry() {
@@ -551,6 +653,7 @@ final class PlayerBox: ObservableObject {
                 // 注意：这里**不记状态** —— 图标和点击都按"实际方向"判断（见 PlayerSheet）
                 if sz.width > sz.height { ScreenOrientation.landscape() }
             }
+            applyPendingResume()      // ★ v1.0.115 续看：跳回上次看到的位置（没有记录就什么都不做）
             player.play()
             return true
         case .failed:

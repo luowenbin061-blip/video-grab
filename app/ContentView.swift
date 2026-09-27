@@ -759,6 +759,8 @@ struct SniffPanel: View {
     @ObservedObject var downloads: DownloadCenter
     @Binding var isPresented: Bool
     @State private var picked: SniffItem?
+    /// ★ v1.0.115 挑清晰度：要打开"挑清晰度"卡片的那一条（懒解析的入口）
+    @State private var variantItem: SniffItem?
     @State private var showAll = false
     /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
     @State private var tab = 0
@@ -913,6 +915,10 @@ struct SniffPanel: View {
                     .padding(.vertical, 10)
                     .background(.thinMaterial)
             }
+        }
+        // ★ v1.0.115 挑清晰度：点小标签才弹这张卡片，而且**点开的那一刻**才去读清单
+        .sheet(item: $variantItem) { it in
+            VariantPickerSheet(model: model, item: it)
         }
     }
 
@@ -1077,9 +1083,27 @@ struct SniffPanel: View {
                     .font(.system(size: 13))
             }
             HStack(spacing: 10) {
+                // ★ v1.0.115 挑清晰度：hls 才给这个入口（直链文件没有多档可选）。
+                //   刻意做成"一个小标签"而不是把候选铺在页面上 —— 界面还是原来那么干净；
+                //   选过一次就记住（标签上显示所选值），点「开始下载」不会被再拦一次。
+                if item.kind == "hls" {
+                    Button {
+                        variantItem = item
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 11))
+                            Text(pickedVariantLabel(item))
+                                .font(.system(size: 12.5, weight: .medium))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Button {
                     downloads.add(title: model.pageTitle.isEmpty ? item.fileName : model.pageTitle,
-                                  url: item.url,
+                                  url: effectiveURL(item),
                                   referrer: item.referrer,
                                   ua: item.ua,
                                   cookie: item.cookie,
@@ -1097,6 +1121,17 @@ struct SniffPanel: View {
         .background(.thinMaterial)
     }
 
+    /// 这条现在会用哪个地址下：选过清晰度就用它，否则用嗅探到的那条（= 自动，最高带宽）
+    private func effectiveURL(_ item: SniffItem) -> String {
+        model.variantPicked[item.url]?.url.absoluteString ?? item.url
+    }
+
+    /// 标签上写什么：没选过就是「自动」，选过就写所选档位
+    private func pickedVariantLabel(_ item: SniffItem) -> String {
+        guard let v = model.variantPicked[item.url] else { return "自动" }
+        return BrowserModel.variantLabel(v)
+    }
+
     private func colorFor(_ kind: String) -> Color {
         switch kind {
         case "hls": return .orange
@@ -1110,6 +1145,114 @@ struct SniffPanel: View {
         case "doc": return .brown
         default: return .secondary
         }
+    }
+}
+
+// MARK: - ★ v1.0.115 挑清晰度
+
+/// 点「自动」那个小标签弹出的卡片。
+///
+/// 三条设计取舍（都有依据）：
+///  1. **懒解析**：卡片弹出的那一刻才去读一次清单 —— 嗅探阶段不解析（页面几十条，全解析
+///     既浪费请求、又容易拿到还没稳定的时效地址）。
+///  2. **不猜"1080P"**：有分辨率就写分辨率，只有码率就写码率 + 一根相对长度的小条。
+///     为什么：HEVC 低码率的可能是高清、AVC 高码率的可能只有 720P，猜错比不标更糟。
+///  3. **选一次就记住**：选完标签变成所选值，之后点「开始下载」直接用，不再弹卡片打扰。
+struct VariantPickerSheet: View {
+    @ObservedObject var model: BrowserModel
+    let item: SniffItem
+    @Environment(\.dismiss) private var dismiss
+
+    private var choices: [M3U8Playlist.Variant] { model.variantChoices[item.url] ?? [] }
+    private var isLoading: Bool { model.variantLoading.contains(item.url) }
+    private var errorText: String? { model.variantError[item.url] }
+    private var maxBW: Int { max(choices.compactMap { $0.bandwidth }.max() ?? 1, 1) }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    Button {
+                        model.variantPicked[item.url] = nil
+                        dismiss()
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("自动（推荐）").font(.system(size: 14, weight: .medium))
+                                Text("就是现在这套：挑带宽最高的那条")
+                                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if model.variantPicked[item.url] == nil {
+                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } footer: {
+                    Text("码率不等于清晰度：有的站 720P 的码率比别家 1080P 还大，所以这里按码率从大到小排，分辨率只作参考。")
+                }
+
+                Section {
+                    if isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("正在读清单…").foregroundStyle(.secondary)
+                        }
+                    } else if let e = errorText {
+                        Text(e).font(.system(size: 13)).foregroundStyle(.secondary)
+                    } else if choices.isEmpty {
+                        Text("这条没有多清晰度可选").font(.system(size: 13)).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(choices.enumerated()), id: \.offset) { _, v in
+                            Button {
+                                model.variantPicked[item.url] = v
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(BrowserModel.variantLabel(v))
+                                            .font(.system(size: 14, weight: .medium))
+                                        GeometryReader { g in
+                                            ZStack(alignment: .leading) {
+                                                Capsule().fill(Color.primary.opacity(0.08))
+                                                Capsule().fill(Color.accentColor.opacity(0.7))
+                                                    .frame(width: g.size.width
+                                                           * CGFloat(v.bandwidth ?? 0) / CGFloat(maxBW))
+                                            }
+                                        }
+                                        .frame(height: 4)
+                                        if let b = v.bandwidth, b > 0 {
+                                            Text("\(b / 1000) kbps")
+                                                .font(.system(size: 11).monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    if model.variantPicked[item.url]?.url == v.url {
+                                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } header: {
+                    Text(choices.isEmpty ? "可选清晰度" : "这个清单里有 \(choices.count) 档")
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("挑清晰度")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        // ★ 懒解析就发生在这一刻（用户明确表示要看有哪些清晰度）
+        .task { model.loadVariants(for: item) }
     }
 }
 
@@ -1341,13 +1484,7 @@ struct JobRow: View {
             }
 
             if job.isActive {
-                // ★ v1.0.114：进度是按"段"上报的，总长未知时（服务器没给 Content-Length）
-                //   原来会钉在 0% 像卡住 —— 换成不确定态的转圈条；总长已知就按真实比例走。
-                if job.total > 0 {
-                    ProgressView(value: job.overall)
-                } else {
-                    ProgressView()
-                }
+                ProgressView(value: job.overall)
             }
 
             HStack(spacing: 5) {
@@ -1556,7 +1693,11 @@ struct JobRow: View {
         // 播放器用 fullScreenCover（不是 sheet）：sheet 顶部会露出后面一截、
         // 四角是圆的，看着就不是"全屏"。fullScreenCover 是铺满整块屏。
         .fullScreenCover(item: $playSheet) { s in
-            PlayerSheet(url: s.url, title: job.title, pip: pip)
+            // ★ v1.0.115 续看：把**任务 id** 传进去当进度记录的键
+            //   （用 id 而不是文件名：转码会把 .ts 换成 .mp4，名字会变，id 不会；
+            //    同一条任务"本地播 / 在线播"也共用同一份进度）
+            PlayerSheet(url: s.url, title: job.title, pip: pip,
+                        key: job.id.uuidString)
         }
         .sheet(item: $exportSheet) { s in
             DocumentExporter(url: s.url, onFinish: { ok in
@@ -1596,6 +1737,21 @@ struct JobRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
+        // ★ v1.0.115 续看：看过多少 —— 缩略图底边一条 3pt 细线。
+        //   只在"看过一点、又没看完"时出现（看过 / 没看过都不画）；不是新控件、不占地方。
+        .overlay(alignment: .bottom) {
+            if let f = WatchProgress.fraction(for: job.id.uuidString, duration: job.duration) {
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Color.black.opacity(0.4)
+                        Color.white.opacity(0.92).frame(width: g.size.width * f)
+                    }
+                }
+                .frame(height: 3)
+                .padding(.horizontal, 1)
+                .padding(.bottom, 1)
+            }
+        }
         .task(id: key) {
             thumbImage = nil
             if let u = job.thumbURL {
