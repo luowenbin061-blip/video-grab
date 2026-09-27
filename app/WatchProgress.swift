@@ -11,48 +11,62 @@ import Foundation
 ///   但 id 是稳定的；同一条任务"本地播 / 在线播"也共用同一份进度。
 ///   代价：删掉任务再重下同一部片子 → 进度从头开始（这个可以接受，也没法更准）。
 ///
+/// ★ v1.0.118：**改成可观察的单例**。
+///   以前这里是纯 `enum` + 静态字典 —— 进度写进去了，但**没有任何"我变了"的通知**，
+///   于是下载列表里那一行的进度线不会重画：用户播完切回来，线永远不出现
+///   （用户实测原话「缩略图底部那条线我没看到」）。根因就是这个，不是没画。
+///   现在：单例 + `@Published`，谁在观察（列表行）谁就跟着刷新。
+///   对外**仍然保留 static 方法**，播放器那几处调用一个字都不用改。
+///
 /// 只在主线程调用（播放器、列表都在主线程）。
-enum WatchProgress {
+final class WatchProgress: ObservableObject {
+
+    static let shared = WatchProgress()
 
     /// 任务 id → 秒数
-    private static var store: [String: Double] = load()
-    private static var lastFlush = Date.distantPast
+    @Published private(set) var store: [String: Double] = [:]
+    private var lastFlush = Date.distantPast
 
-    private static var url: URL { JobStore.dir.appendingPathComponent("watch.json") }
+    /// 文件位置（静态一份：`init` 里还不能碰 `shared`）
+    private static var fileURL: URL { JobStore.dir.appendingPathComponent("watch.json") }
 
     /// 小于这个秒数不值得"续看"（刚打开就切走那种，别打扰）
     static let minResume: Double = 5
 
-    private static func load() -> [String: Double] {
-        guard let d = try? Data(contentsOf: url),
+    private init() { store = Self.readFromDisk() }
+
+    private static func readFromDisk() -> [String: Double] {
+        guard let d = try? Data(contentsOf: fileURL),
               let m = try? JSONDecoder().decode([String: Double].self, from: d) else { return [:] }
         return m
     }
 
-    private static func flush() {
+    private func flush() {
         guard let d = try? JSONEncoder().encode(store) else { return }
-        try? d.write(to: url, options: .atomic)      // 原子写 —— 写一半被杀也不会留坏文件
+        try? d.write(to: Self.fileURL, options: .atomic)   // 原子写 —— 写一半被杀也不会留坏文件
         lastFlush = Date()
     }
 
+    // MARK: - 实例方法（列表就是观察这个实例）
+
     /// 上次看到第几秒（没有记录就是 0）
-    static func position(for key: String) -> Double {
+    func position(for key: String) -> Double {
         guard !key.isEmpty else { return 0 }
         return max(0, store[key] ?? 0)
     }
 
     /// 看过多少（0~1）。没记录、或时长短得不足挂齿 → nil（界面就不画那条线）
-    static func fraction(for key: String, duration: Double) -> Double? {
+    func fraction(for key: String, duration: Double) -> Double? {
         guard duration > 1 else { return nil }
         let p = position(for: key)
-        guard p > minResume else { return nil }
+        guard p > Self.minResume else { return nil }
         return min(1, p / duration)
     }
 
     /// 记一笔。
     /// ★ 接近结尾就**当作看完**（把记录删掉）—— 否则"最后 3 秒"会永远变成
     ///   "一打开就跳结尾"，那是比不做还烦的毛病。
-    static func record(_ seconds: Double, for key: String, duration: Double) {
+    func record(_ seconds: Double, for key: String, duration: Double) {
         guard !key.isEmpty, seconds.isFinite, seconds > 0 else { return }
         let dur = (duration.isFinite && duration > 0) ? duration : 0
         if dur > 0 {
@@ -62,18 +76,30 @@ enum WatchProgress {
                 return
             }
         }
-        store[key] = seconds
+        store[key] = seconds                    // @Published → 列表那一行跟着重画
         // 播放中别每几秒写一次盘 —— 节流到 20 秒一次；退出时再显式刷一次
         if Date().timeIntervalSince(lastFlush) > 20 { flush() }
     }
 
     /// 立刻落盘（退出播放器时用）
-    static func flushNow() { flush() }
+    func flushNow() { flush() }
 
-    static func clear(for key: String) {
+    func clear(for key: String) {
         guard store.removeValue(forKey: key) != nil else { return }
         flush()
     }
+
+    // MARK: - 静态入口（播放器沿用这套写法，不用改）
+
+    static func position(for key: String) -> Double { shared.position(for: key) }
+    static func fraction(for key: String, duration: Double) -> Double? {
+        shared.fraction(for: key, duration: duration)
+    }
+    static func record(_ seconds: Double, for key: String, duration: Double) {
+        shared.record(seconds, for: key, duration: duration)
+    }
+    static func flushNow() { shared.flushNow() }
+    static func clear(for key: String) { shared.clear(for: key) }
 
     /// 秒数 → "12:30" / "1:02:03"
     static func clock(_ seconds: Double) -> String {

@@ -37,6 +37,9 @@ struct LongPressMenuView: View {
     let info: LongPressMenuInfo
     /// 点 Download
     let onDownload: () -> Void
+    /// ★ v1.0.118：点「选择清晰度」—— 用户提的需求（嗅探面板那条路能挑档，长按这条路不能）。
+    ///   点它 → 关菜单 + 弹挑档卡片；选完档位**立刻开始下**（长按上没有"开始下载"按钮）。
+    let onPickQuality: () -> Void
     /// 点别处 / 收起
     let onClose: () -> Void
 
@@ -113,6 +116,16 @@ struct LongPressMenuView: View {
                 text: "Download",
                 trailing: "square.and.arrow.up",
                 action: onDownload)
+
+            Divider().padding(.leading, 46)
+
+            // ★ v1.0.118：第二行 —— 挑档。
+            //   上一行保持"点了就下"（快路径，绝大多数情况够用）；
+            //   想挑清晰度/线路的，点这一行（多一步，但不打扰默认流程）。
+            row(icon: "slider.horizontal.3",
+                text: "选择清晰度",
+                trailing: "chevron.right",
+                action: onPickQuality)
         }
         .frame(width: 272)
         .background(.regularMaterial,

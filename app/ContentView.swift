@@ -193,6 +193,9 @@ struct ContentView: View {
     @State private var showToolbox = false
     @State private var showTabs = false        // 多窗口管理卡片
     @State private var input = ""
+    /// ★ v1.0.118：长按菜单里点「选择清晰度」→ 拿着那条视频的地址弹挑档卡片
+    ///   （嗅探面板那条路本来就能挑档，用户要的是长按这条路也能）
+    @State private var pickQuality: LongPressMenuInfo?
     /// 地址栏是否正在被编辑 —— 正在打字时，页面导航不能覆盖他输入的内容
     @FocusState private var urlFocused: Bool
 
@@ -265,11 +268,35 @@ struct ContentView: View {
             if let info = model.lpMenu {
                 LongPressMenuView(info: info,
                                   onDownload: { model.downloadFromLongPressMenu() },
+                                  // ★ v1.0.118：先收起菜单，再把挑档卡片抬起来 ——
+                                  //   两张卡片同时在屏幕上会看着像卡住（overlay 的淡出要 0.12s）
+                                  onPickQuality: {
+                                      model.closeLongPressMenu()
+                                      let m = info
+                                      Task { @MainActor in
+                                          try? await Task.sleep(nanoseconds: 160_000_000)
+                                          pickQuality = m
+                                      }
+                                  },
                                   onClose: { model.closeLongPressMenu() })
                     .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.12), value: model.lpMenu)
+        // ★ v1.0.118：长按 → 选择清晰度（选完立刻开始下载，跟嗅探面板那条路不同）
+        .sheet(item: $pickQuality) { m in
+            VariantPickerSheet(model: model,
+                               url: m.url,
+                               referrer: m.referrer, ua: m.ua, cookie: m.cookie) { v in
+                downloads.add(title: m.title.isEmpty ? "Download" : m.title,
+                              url: v?.url.absoluteString ?? m.url,
+                              referrer: m.referrer,
+                              ua: m.ua,
+                              cookie: m.cookie,
+                              kind: .video)
+                model.showToast(v == nil ? "已加入下载（自动选档）" : "已加入下载")
+            }
+        }
         // 长按诊断（设置里打开才出现）：显示这一步卡在哪，12 秒自己消失
         // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
         .overlay(alignment: .bottom) {
@@ -918,7 +945,8 @@ struct SniffPanel: View {
         }
         // ★ v1.0.115 挑清晰度：点小标签才弹这张卡片，而且**点开的那一刻**才去读清单
         .sheet(item: $variantItem) { it in
-            VariantPickerSheet(model: model, item: it)
+            VariantPickerSheet(model: model, url: it.url,
+                               referrer: it.referrer, ua: it.ua, cookie: it.cookie)
         }
     }
 
@@ -1160,12 +1188,23 @@ struct SniffPanel: View {
 ///  3. **选一次就记住**：选完标签变成所选值，之后点「开始下载」直接用，不再弹卡片打扰。
 struct VariantPickerSheet: View {
     @ObservedObject var model: BrowserModel
-    let item: SniffItem
+    /// 要解析的清单地址（也是 `model` 里那几个字典的键）
+    let url: String
+    /// 读清单时要带的页面上下文（防盗链站不给就 404）—— 嗅探条目和长按菜单都能提供
+    var referrer: String = ""
+    var ua: String = ""
+    var cookie: String = ""
+    /// ★ v1.0.118：**选完档位之后干什么**。
+    ///   · 嗅探面板那条路传 nil（只记住选择 —— 用户接着点「开始下载」，地址已经换成所选档）
+    ///   · 长按菜单那条路传一个闭包（选完**立刻**开始下 —— 长按上本来就没有「开始下载」按钮，
+    ///     用户提的需求：长按也要能挑档）
+    ///   回调收到 nil = 用户选了「自动」。
+    var onPick: ((M3U8Playlist.Variant?) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
-    private var choices: [M3U8Playlist.Variant] { model.variantChoices[item.url] ?? [] }
-    private var isLoading: Bool { model.variantLoading.contains(item.url) }
-    private var errorText: String? { model.variantError[item.url] }
+    private var choices: [M3U8Playlist.Variant] { model.variantChoices[url] ?? [] }
+    private var isLoading: Bool { model.variantLoading.contains(url) }
+    private var errorText: String? { model.variantError[url] }
     private var maxBW: Int { max(choices.compactMap { $0.bandwidth }.max() ?? 1, 1) }
 
     var body: some View {
@@ -1173,7 +1212,8 @@ struct VariantPickerSheet: View {
             List {
                 Section {
                     Button {
-                        model.variantPicked[item.url] = nil
+                        model.variantPicked[url] = nil
+                        onPick?(nil)
                         dismiss()
                     } label: {
                         HStack {
@@ -1183,7 +1223,7 @@ struct VariantPickerSheet: View {
                                     .font(.system(size: 11.5)).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if model.variantPicked[item.url] == nil {
+                            if model.variantPicked[url] == nil {
                                 Image(systemName: "checkmark").foregroundStyle(.tint)
                             }
                         }
@@ -1206,7 +1246,8 @@ struct VariantPickerSheet: View {
                     } else {
                         ForEach(Array(choices.enumerated()), id: \.offset) { _, v in
                             Button {
-                                model.variantPicked[item.url] = v
+                                model.variantPicked[url] = v
+                                onPick?(v)
                                 dismiss()
                             } label: {
                                 HStack(spacing: 10) {
@@ -1229,7 +1270,7 @@ struct VariantPickerSheet: View {
                                         }
                                     }
                                     Spacer()
-                                    if model.variantPicked[item.url]?.url == v.url {
+                                    if model.variantPicked[url]?.url == v.url {
                                         Image(systemName: "checkmark").foregroundStyle(.tint)
                                     }
                                 }
@@ -1252,7 +1293,7 @@ struct VariantPickerSheet: View {
         }
         .navigationViewStyle(.stack)
         // ★ 懒解析就发生在这一刻（用户明确表示要看有哪些清晰度）
-        .task { model.loadVariants(for: item) }
+        .task { model.loadVariants(url: url, referrer: referrer, ua: ua, cookie: cookie) }
     }
 }
 
@@ -1439,6 +1480,10 @@ struct JobRow: View {
     /// 故意用裸 let 而不是 @ObservedObject：这里不需要订阅画中画的每次变动，
     /// 订阅了反而会让列表每一行都跟着重绘。
     let pip: PiPProgress
+    /// ★ v1.0.118：**订阅"看到哪儿了"** —— 进度记录以前是纯静态的，写进去没有任何通知，
+    ///   这一行的 body 不会重画 → 缩略图底部那条进度线永远不出现（用户实测报的就是这个）。
+    ///   这里只是订阅（值本身不参与布局），线照旧从 `watch.fraction(...)` 取。
+    @ObservedObject private var watch = WatchProgress.shared
     @State private var playSheet: SheetURL?
     @State private var exportSheet: SheetURL?
     /// ★ v1.0.111：图片的「查看」入口（下好的图片点开看大图）
@@ -1739,8 +1784,9 @@ struct JobRow: View {
         )
         // ★ v1.0.115 续看：看过多少 —— 缩略图底边一条 3pt 细线。
         //   只在"看过一点、又没看完"时出现（看过 / 没看过都不画）；不是新控件、不占地方。
+        // ★ v1.0.118：走 `watch`（订阅过的实例）—— 否则这一行不重画，线不出现。
         .overlay(alignment: .bottom) {
-            if let f = WatchProgress.fraction(for: job.id.uuidString, duration: job.duration) {
+            if let f = watch.fraction(for: job.id.uuidString, duration: job.duration) {
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
                         Color.black.opacity(0.4)

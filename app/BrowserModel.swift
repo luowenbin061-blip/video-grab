@@ -1514,15 +1514,21 @@ final class BrowserModel: NSObject, ObservableObject {
     ///   去碰 `weak self`，编译器报 `reference to captured var 'self' in concurrently-executing code`
     ///   （run #115 就挂在这）。用 `await` 走 async/await 就没这个形状，也就不踩这个坑。
     func loadVariants(for item: SniffItem) {
-        let key = item.url
+        loadVariants(url: item.url, referrer: item.referrer, ua: item.ua, cookie: item.cookie)
+    }
+
+    /// ★ v1.0.118：上下文改成**显式参数**（不再要求传一个 `SniffItem`）——
+    ///   长按菜单那条路手里只有地址 + 页面上下文，没有嗅探条目。
+    func loadVariants(url key: String,
+                      referrer: String = "", ua: String = "", cookie: String = "") {
         guard !variantLoading.contains(key), let u = URL(string: key) else { return }
         variantError[key] = nil
         variantLoading.insert(key)
 
         var req = URLRequest(url: u, timeoutInterval: 20)
-        if !item.ua.isEmpty { req.setValue(item.ua, forHTTPHeaderField: "User-Agent") }
-        if !item.referrer.isEmpty { req.setValue(item.referrer, forHTTPHeaderField: "Referer") }
-        if !item.cookie.isEmpty { req.setValue(item.cookie, forHTTPHeaderField: "Cookie") }
+        if !ua.isEmpty { req.setValue(ua, forHTTPHeaderField: "User-Agent") }
+        if !referrer.isEmpty { req.setValue(referrer, forHTTPHeaderField: "Referer") }
+        if !cookie.isEmpty { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
 
         Task {                       // 继承本类的 @MainActor：await 回来就是主线程，可直接改状态
             let text = await Self.fetchPlaylistText(req)
