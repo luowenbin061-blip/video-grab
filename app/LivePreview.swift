@@ -24,9 +24,9 @@ import Foundation
 ///   播放器跑去请求假目录下的分片，404。清单一进分片目录，这个问题自然消失。
 ///
 /// ══ 一个已知的不精确 ══
-/// `#EXTINF` 的时长写的是固定值 —— 原始分片时长在下载器那边的清单对象里，
-/// 这里拿不到。它主要影响**进度条显示**（总时长会不准），不影响能不能播下去
-/// （TS 分片自带时间戳）。用户要的是"先看几段判断内容"，可接受。
+/// `#EXTINF` 的时长：v1.0.133 起读 `durations.txt`（下载器在下的时候顺手记的真实时长），
+/// 缺行才退回 12 秒的兜底值。它主要影响**进度条显示**（总时长），不影响能不能播下去
+/// （TS 分片自带时间戳）。
 ///
 /// ★ 这个 enum **故意不标 @MainActor**：本地服务是在后台并发队列里调它的
 ///   （只读磁盘，不碰 UI），标了主线程隔离就调不了。目录由调用方传进来，不依赖任何单例。
@@ -104,22 +104,62 @@ enum LivePreview {
         blockReason(taskID: taskID, root: root) == nil
     }
 
-    /// 现场生成清单内容。路径不是 `__live/...` 或算不出来 → nil（让本地服务按普通文件处理）
+    /// 时长旁注文件名（**必须与 `HLSDownloader.durationsFileName` 一致**）
+    static let durationsFileName = "durations.txt"
+
+    /// 分片时长的兜底值：旁注文件缺行时用它。
+    /// 12 秒是常见 HLS 分片长度的合理中位（6~15 都有），只影响进度条，不影响播放。
+    static let fallbackSegmentDuration: Double = 12
+
+    /// 读 `durations.txt` → 下标 = 分片序号 → 秒数。文件不在 / 读不出来就是空字典。
+    static func segmentDurations(taskID: UUID, root: URL) -> [Double] {
+        let f = root.appendingPathComponent(partsDirName(taskID: taskID))
+                     .appendingPathComponent(durationsFileName)
+        guard let text = try? String(contentsOf: f, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map {
+            Double($0.trimmingCharacters(in: .whitespaces)) ?? 0
+        }
+    }
+
+    /// 现场生成清单内容。认不出是我们这条边下边播清单 → nil（让本地服务按普通文件处理）
+    ///
+    /// ══ ★ v1.0.133：改成 VOD，跟"下载页播的清单"同一套 ══
+    /// 用户原话：「边下边播时播放器里只能看到进度条、看不到视频时长，还显示直播元素……
+    /// 我的需求是边下边播时播放器也应该用下载页面里那套播放器的逻辑才对」。
+    ///
+    /// 以前这里是 **EVENT 型**（不写 `#EXT-X-ENDLIST`）：播放器认为这是个"还在继续的直播流"，
+    /// 于是**不显示总时长**、还在界面上打出直播/LIVE 标记 —— 用户看到的就是这个。
+    /// 现在改成 VOD（有 `#EXT-X-PLAYLIST-TYPE:VOD` 和 `#EXT-X-ENDLIST`），
+    /// 播放器就当它是一部**有头有尾的普通片子**：总时长按清单里的分片时长算出来、
+    /// 正常显示进度条，跟下载页播成品一模一样。
+    ///
+    /// 代价（用户 2026-09-28 明确接受）：清单只在**打开播放器的这一刻**算一次，
+    /// 播到"当时已下完的位置"就停；想看新下完的部分要退出重进一次。
+    /// ——列表上的进度条本来也在走，用户能看出下到哪儿了。
+    ///
+    /// ★ 每次请求都重算 = 用户重开播放器时清单自动变长（本机服务每次 GET 都调这里）。
     static func playlistBody(forPath path: String, root: URL) -> String? {
         guard let id = taskID(fromPlaylistPath: path) else { return nil }
         let parts = contiguousParts(taskID: id, root: root)
         guard !parts.isEmpty else { return nil }
 
-        // ★ 故意**不写 `#EXT-X-ENDLIST`**，并且标成 EVENT：
-        //   这才是"还没完、会继续追加"的语义 —— 播放器才会隔一会儿再来要一次清单，
-        //   于是刚下完的新分片能被接上播。
-        var body = "#EXTM3U\n#EXT-X-VERSION:3\n"
-        body += "#EXT-X-TARGETDURATION:11\n"
-        body += "#EXT-X-MEDIA-SEQUENCE:0\n"
-        body += "#EXT-X-PLAYLIST-TYPE:EVENT\n"
-        for n in parts {
-            body += "#EXTINF:10.0,part\n\(n)\n"
+        // 真实分片时长（缺行用兜底值补）—— 总时长就是它们的和，进度条从此是准的
+        let durs = segmentDurations(taskID: id, root: root)
+        func dur(_ i: Int) -> Double {
+            let d = i < durs.count ? durs[i] : 0
+            return d.isFinite && d > 0 ? d : fallbackSegmentDuration
         }
+        let maxDur = (0..<parts.count).map(dur).max() ?? fallbackSegmentDuration
+
+        var body = "#EXTM3U\n#EXT-X-VERSION:3\n"
+        // TARGETDURATION 必须是"最长那个分片"向上取整 —— 写小了播放器会认为清单非法
+        body += "#EXT-X-TARGETDURATION:\(Int(ceil(maxDur)))\n"
+        body += "#EXT-X-MEDIA-SEQUENCE:0\n"
+        body += "#EXT-X-PLAYLIST-TYPE:VOD\n"
+        for (i, n) in parts.enumerated() {
+            body += "#EXTINF:\(String(format: "%.3f", dur(i))),part\n\(n)\n"
+        }
+        body += "#EXT-X-ENDLIST\n"
         return body
     }
 }

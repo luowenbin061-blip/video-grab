@@ -131,7 +131,7 @@ struct ToolboxView: View {
                 Button("取消", role: .cancel) {}
             } message: {
                 // ★ 必须是**单个字面量**：Text(拼接出来的 String) 不渲染 markdown，会露出 **
-                Text("打包：书签、下载记录、首页入口、播放进度、设置。**不含 Cookie**（登录态不外带）。\n恢复前会自动把当前数据另存一份，能回滚。")
+                Text("打包：书签、下载记录、首页入口、播放进度、已放行网站、设置。**不含 Cookie**（登录态不外带）。\n恢复前会自动把当前数据另存一份，能回滚。")
             }
             .sheet(isPresented: $showRestorePicker) {
                 FilePickerBox(onPicked: { files in doRestore(files) }, types: [.json])

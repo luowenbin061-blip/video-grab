@@ -1733,6 +1733,7 @@ struct JobRow: View {
     /// ★ v1.0.118：**订阅"看到哪儿了"** —— 进度记录以前是纯静态的，写进去没有任何通知，
     ///   这一行的 body 不会重画 → 缩略图底部那条进度线永远不出现（用户实测报的就是这个）。
     ///   这里只是订阅（值本身不参与布局），线照旧从 `watch.fraction(...)` 取。
+    /// ★ v1.0.133：续看总开关关着时 `fraction` 直接返回 nil，这条线自然不画。
     @ObservedObject private var watch = WatchProgress.shared
     @State private var playSheet: SheetURL?
     @State private var exportSheet: SheetURL?

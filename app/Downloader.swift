@@ -118,6 +118,11 @@ struct HLSDownloader {
         let segs = playlist.segmentURLs
         let total = segs.count
 
+        // ★ v1.0.133：分片时长**先落一份盘**（边下边播现场生成清单时要读，见上面那段说明）。
+        //   放在"格式检查通过"之后、"开始下载"之前 —— 早于第一个分片落盘，
+        //   所以边下边播那份清单从一开始就能算出像样的总时长。
+        writeSegmentDurations(playlist.segmentDurations, dir: options.tempDir)
+
         // 1) 并发下载（已存在的分片文件直接跳过 = 天然断点续传）
         var done = 0
         var bytesDone: Int64 = 0
@@ -250,6 +255,27 @@ struct HLSDownloader {
     private func partURL(_ i: Int) -> URL {
         options.tempDir.appendingPathComponent(String(format: "seg_%06d.part", i))
     }
+
+    /// ★ v1.0.133：把每个分片的**真实时长**落盘（一行一个，按分片序号）。
+    ///
+    /// 为什么需要：边下边播要在播放中途现场生成清单，可那时手边只有磁盘上的分片文件，
+    /// 原始清单对象早就不在了 —— 于是以前只能把 `#EXTINF` 写成固定 10.0 秒，
+    /// 播放器算出来的总时长自然是错的（用户报的「看不到视频时长」）。
+    /// 单个分片文件的长度**没法反推时长**（TS 里没有时长字段，字节数跟时长不成正比），
+    /// 所以只能在下的时候顺手记一份。
+    ///
+    /// 格式极简：每行 `<秒>`（下标 = 行号 = 分片序号）。缺行 = 那个分片还没下完。
+    /// 写完就没什么用了 —— `DownloadJob` 在任务结束清临时目录时会一起清掉。
+    private func writeSegmentDurations(_ durs: [Double], dir: URL) {
+        guard !durs.isEmpty else { return }
+        let text = durs.map { $0.isFinite ? String(format: "%.3f", $0) : "0" }
+                      .joined(separator: "\n")
+        try? Data(text.utf8).write(to: dir.appendingPathComponent(Self.durationsFileName),
+                                   options: .atomic)
+    }
+
+    /// 时长旁注文件名（`LivePreview` 读它，两处名字必须一致）
+    static let durationsFileName = "durations.txt"
 
     /// 下载单个分片。返回**本次新下载**的字节数（续传跳过的返回 0）。
     private func downloadSegment(index: Int, url: URL, playlist: M3U8Playlist) async throws -> Int64 {

@@ -18,10 +18,41 @@ import Foundation
 ///   现在：单例 + `@Published`，谁在观察（列表行）谁就跟着刷新。
 ///   对外**仍然保留 static 方法**，播放器那几处调用一个字都不用改。
 ///
+/// ★ v1.0.133：加了**总开关**（设置 → 播放 → 「记录播放进度」），按用户要求**默认关**。
+///   关着时：不读进度（每次从头播）、不写进度（不产生新文件）。
+///   用户还要求"关掉就把已有进度一并清空" —— 见 `setEnabled(_:)`，
+///   由设置页在"从开到关"的那一刻调用，把 `watch.json` 删掉。
+///   所以关掉之后**界面上的进度线也不会再有**（数据都没了，本来就画不出来）。
+///
 /// 只在主线程调用（播放器、列表都在主线程）。
 final class WatchProgress: ObservableObject {
 
     static let shared = WatchProgress()
+
+    /// 总开关的 UserDefaults 键（`SettingsView` 用 @AppStorage 绑同一个键，两边天然一致）
+    static let enabledKey = "resumeEnabled"
+
+    /// 总开关：关着 → 全都不读不写。
+    /// 读 UserDefaults 是常数开销，但这里还是缓存一份 —— `remember()` 每 0.25 秒就会被叫一次。
+    private static var enabledCache: Bool?
+
+    static var isEnabled: Bool {
+        if let c = enabledCache { return c }
+        let v = UserDefaults.standard.bool(forKey: enabledKey)   // 没设过 = false（默认关）
+        enabledCache = v
+        return v
+    }
+
+    /// 设置页在开关变化时调（它同时会改 UserDefaults，这里只负责同步缓存 + 该清就清）
+    static func setEnabled(_ on: Bool) {
+        enabledCache = on
+        if !on {
+            // ★ 用户要求：关掉就**一并清空**已有进度（不是只停用）。
+            //   理由：留着的话，下次再打开开关会突然冒出一堆"续看位置"，
+            //   中间隔了很久，用户早不记得那是什么了。
+            shared.wipe()
+        }
+    }
 
     /// 任务 id → 秒数
     @Published private(set) var store: [String: Double] = [:]
@@ -49,14 +80,16 @@ final class WatchProgress: ObservableObject {
 
     // MARK: - 实例方法（列表就是观察这个实例）
 
-    /// 上次看到第几秒（没有记录就是 0）
+    /// 上次看到第几秒（没有记录就是 0）。★ 开关关着时永远返回 0 —— 每次从头播。
     func position(for key: String) -> Double {
+        guard Self.isEnabled else { return 0 }
         guard !key.isEmpty else { return 0 }
         return max(0, store[key] ?? 0)
     }
 
     /// 看过多少（0~1）。没记录、或时长短得不足挂齿 → nil（界面就不画那条线）
     func fraction(for key: String, duration: Double) -> Double? {
+        guard Self.isEnabled else { return nil }
         guard duration > 1 else { return nil }
         let p = position(for: key)
         guard p > Self.minResume else { return nil }
@@ -66,7 +99,9 @@ final class WatchProgress: ObservableObject {
     /// 记一笔。
     /// ★ 接近结尾就**当作看完**（把记录删掉）—— 否则"最后 3 秒"会永远变成
     ///   "一打开就跳结尾"，那是比不做还烦的毛病。
+    /// ★ 开关关着时直接返回 —— 不写新数据（用户要的就是"完全不记"）。
     func record(_ seconds: Double, for key: String, duration: Double) {
+        guard Self.isEnabled else { return }
         guard !key.isEmpty, seconds.isFinite, seconds > 0 else { return }
         let dur = (duration.isFinite && duration > 0) ? duration : 0
         if dur > 0 {
@@ -87,6 +122,14 @@ final class WatchProgress: ObservableObject {
     func clear(for key: String) {
         guard store.removeValue(forKey: key) != nil else { return }
         flush()
+    }
+
+    /// ★ v1.0.133：把所有进度清空（关掉总开关时用）。
+    /// 内存清空 + 文件删掉 —— `@Published` 会让列表那一行跟着把进度线擦掉。
+    func wipe() {
+        store = [:]
+        try? FileManager.default.removeItem(at: Self.fileURL)
+        lastFlush = Date()
     }
 
     // MARK: - 静态入口（播放器沿用这套写法，不用改）

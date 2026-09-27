@@ -12,6 +12,11 @@ struct SettingsView: View {
     @State private var confirmClearHistory = false
     @State private var showHelp = false
     @State private var note: String?
+    /// ★ v1.0.133：两个播放相关开关，都放在新起的「播放」Section 里。
+    /// 键与 `WatchProgress.enabledKey` / `PlayerBox.autoLandscapeKey` 一致 —— 两边天然同步。
+    /// **两个都默认关**（用户 2026-09-28 选的）。
+    @AppStorage(WatchProgress.enabledKey) private var resumeEnabled = false
+    @AppStorage(PlayerBox.autoLandscapeKey) private var autoLandscape = false
     /// 播放小窗（App 里播放视频时切出去继续播）。
     /// 跟「下载保活」是两件事，所以是两个开关。
     @AppStorage("playerPiPEnabled") private var playerPiP = true
@@ -34,6 +39,22 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
+                Section {
+                    Toggle("记录播放进度（下次接着看）", isOn: $resumeEnabled)
+                        .onChange(of: resumeEnabled) { on in
+                            // ★ v1.0.133：关掉时**一并清空**已有进度（用户 2026-09-28 选的）。
+                            //   留着的话，下次再打开开关会突然冒出一堆"续看位置"，
+                            //   中间隔了很久，早就想不起那是什么了。
+                            WatchProgress.setEnabled(on)
+                            if !on { note = "已关闭续看，之前记录的播放进度也一并清掉了。" }
+                        }
+                    Toggle("首次播放自动横屏", isOn: $autoLandscape)
+                } header: {
+                    Text("播放")
+                } footer: {
+                    Text("**记录播放进度（默认关）** 开着：视频看到一半退出，下次打开会接着上次的位置继续，下载列表里也能看到一条细进度线。关着：每次从头播，不留任何记录。\n\n**首次播放自动横屏（默认关）** 开着：横向视频一打开就自动转成横屏；关着：保持竖屏播放，想横屏自己转手机（播放器里的全屏按钮照常能用）。")
+                }
+
                 Section {
                     Toggle("下载保活（切后台下载不停）", isOn: pipBinding)
                     if let e = downloads.pip.lastError {

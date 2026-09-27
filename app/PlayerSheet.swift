@@ -418,6 +418,15 @@ struct PlayerSheet: View {
 /// 产生"从非隔离上下文调用主 actor 初始化器"的告警。
 final class PlayerBox: ObservableObject {
 
+    /// ★ v1.0.133：首次播放要不要自动横屏。
+    /// **默认关**（用户 2026-09-28 选的）—— 以前这里是硬编码"横视频一律转横屏"，
+    /// 用户要能自己选。键与 `SettingsView` 的 @AppStorage 同一个，两边天然一致。
+    static let autoLandscapeKey = "autoLandscape"
+    /// 每次现读 UserDefaults：这个判断一次播放只走一遍，不值得缓存（缓存反而要多处理失效）
+    static var autoLandscapeEnabled: Bool {
+        UserDefaults.standard.bool(forKey: autoLandscapeKey)
+    }
+
     let player: AVPlayer
     private let item: AVPlayerItem
     /// ★ v1.0.115 续看：这条内容的身份（列表传的是任务 id）。进度就记在它下面。
@@ -462,6 +471,8 @@ final class PlayerBox: ObservableObject {
     init(url: URL, resumeKey: String = "", headers: [String: String]? = nil) {
         self.resumeKey = resumeKey
         // ★ v1.0.115 续看：先读上次看到哪儿；太靠前（<5 秒）就不打扰，从头播。
+        // ★ v1.0.133：总开关（设置 → 播放 → 「记录播放进度」）关着时
+        //   `WatchProgress.position` 直接返回 0 —— 也就是"每次从头播"。
         let saved = WatchProgress.position(for: resumeKey)
         pendingResume = saved > WatchProgress.minResume ? saved : 0
         if let headers, !headers.isEmpty {
@@ -664,12 +675,18 @@ final class PlayerBox: ObservableObject {
             error = nil
             // 视频是横的（宽 > 高）→ 自动横过来；竖屏视频保持竖屏。
             // 只自动来一次，用户手动切过之后不再自作主张。
+            //
+            // ★ v1.0.133：加开关（设置 → 播放 → 「首次播放自动横屏」，默认**关**）。
+            //   用户要能选"首次播放时横屏 / 正常竖屏播" —— 关着就一直竖屏，
+            //   想横自己转手机（播放器自身的横屏能力不受影响）。
             let sz = item.presentationSize
             if !autoOriented, sz.width > 0, sz.height > 0 {
                 autoOriented = true
                 // 横屏视频自动横过来（竖屏视频保持竖屏）。只自动一次，之后听用户的。
                 // 注意：这里**不记状态** —— 图标和点击都按"实际方向"判断（见 PlayerSheet）
-                if sz.width > sz.height { ScreenOrientation.landscape() }
+                if sz.width > sz.height, PlayerBox.autoLandscapeEnabled {
+                    ScreenOrientation.landscape()
+                }
             }
             applyPendingResume()      // ★ v1.0.115 续看：跳回上次看到的位置（没有记录就什么都不做）
             player.play()

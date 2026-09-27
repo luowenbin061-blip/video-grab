@@ -71,4 +71,9 @@ enum TrustedHosts {
         d.removeObject(forKey: lastHostKey)
         d.removeObject(forKey: lastAtKey)
     }
+
+    /// ★ v1.0.133：备份恢复时从外面**直接改写了 UserDefaults**，
+    /// 进程内那份 `cache` 还是旧名单 —— 不刷掉的话，设置页显示的个数和实际生效的都是旧的，
+    /// 而且用户完全看不出来（要等 App 重启才对）。所以暴露一个显式的失效入口。
+    static func invalidateCache() { cache = nil }
 }
