@@ -1539,7 +1539,12 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
     /// 判定一个地址像不像"要下载的文件"（打包/安装包这类**显示不了**的类型）。
     /// 为什么不收 pdf / 图片 / 视频：那些 WKWebView **能**显示，用户点它多半是想看内容。
-    static func looksLikeFileDownload(_ url: String) -> Bool {
+    ///
+    /// ★ 必须写 `nonisolated`：这个类是 `@MainActor`，它的 static 方法**也**被主线程隔离，
+    ///   而调用它的 `createWebViewWith` 是 `nonisolated` 的同步上下文 ——
+    ///   不标就编不过（run #112 就挂在这：`call to main actor-isolated static method
+    ///   'looksLikeFileDownload' in a synchronous nonisolated context`）。纯字符串判断，安全。
+    nonisolated static func looksLikeFileDownload(_ url: String) -> Bool {
         guard let u = URL(string: url) else { return false }
         let e = u.pathExtension.lowercased()
         return ["exe", "msi", "zip", "rar", "7z", "tar", "gz", "xz", "dmg", "pkg",
