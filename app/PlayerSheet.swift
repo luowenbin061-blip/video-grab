@@ -94,7 +94,9 @@ struct PlayerSheet: View {
     /// 不给（在线播别的东西）时退回"用地址末段当键"，至少同一条地址能续上。
     let progressKey: String
 
-    init(url: URL, title: String = "", pip: PiPProgress? = nil, key: String = "") {
+    /// ★ v1.0.127：`headers` 给"预览嗅探到的地址"用（要带 Referer/UA/Cookie 才过防盗链）。
+    init(url: URL, title: String = "", pip: PiPProgress? = nil, key: String = "",
+         headers: [String: String]? = nil) {
         self.url = url
         self.title = title
         self.pip = pip
@@ -104,7 +106,8 @@ struct PlayerSheet: View {
         //   `escaping autoclosure captures mutating 'self' parameter`（run #116 就挂在这）。
         let resolvedKey = key.isEmpty ? url.lastPathComponent : key
         self.progressKey = resolvedKey
-        _box = StateObject(wrappedValue: PlayerBox(url: url, resumeKey: resolvedKey))
+        _box = StateObject(wrappedValue: PlayerBox(url: url, resumeKey: resolvedKey,
+                                                   headers: headers))
     }
 
     /// ★ v1.0.115：续看提示（顶部那颗小药丸）。
@@ -133,6 +136,40 @@ struct PlayerSheet: View {
             .padding(.top, 16)
             Spacer()
         }
+    }
+
+    /// ★ v1.0.127 倍速：右上角一颗小胶囊显示当前档位，点开选 0.5 / 1 / 1.5 / 2。
+    ///   为什么不做"四颗常驻按钮"：界面越少越好 —— 它跟系统控件一起淡出，
+    ///   点一下屏幕（控件出现）才看得到。
+    private var ratePill: some View {
+        VStack {
+            HStack {
+                Spacer()
+                Menu {
+                    ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { r in
+                        Button(rateText(r)) { box.setRate(Float(r)) }
+                    }
+                } label: {
+                    Text(rateText(Double(box.rate)))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+            }
+            .padding(.trailing, 16)
+            .padding(.top, 14)
+            Spacer()
+        }
+        .opacity(shownAlpha)
+        .allowsHitTesting(shownAlpha > 0.5)
+    }
+
+    /// 倍速的显示文字：整数不带小数点（1x / 2x），小数保留（0.5x / 1.5x）
+    private func rateText(_ r: Double) -> String {
+        r == r.rounded() ? "\(Int(r))x" : "\(r)x"
     }
 
     /// 我们这两个图标最终显示到什么程度（0 = 完全不见，1 = 完全显示）
@@ -261,7 +298,8 @@ struct PlayerSheet: View {
                      onTap: { tapToggled() },
                      onDragBegan: { dragBegan() },
                      onDragEnded: { dragEnded() },
-                     onSystemControls: { systemControls($0) })
+                     onSystemControls: { systemControls($0) },
+                     onSwipeDown: { dismiss() })
                 .ignoresSafeArea()
 
             if box.loading && box.error == nil {
@@ -368,6 +406,9 @@ struct PlayerSheet: View {
             if box.didResume {
                 resumePill
             }
+
+            // ★ v1.0.127 倍速：右上角那颗小胶囊（跟系统控件一起淡出，平时完全不占地方）
+            ratePill
         }
         // 铺满整屏、状态栏也不留 —— 用户要的是「点播放就是全屏」的观感。
         .statusBar(hidden: true)
@@ -436,6 +477,10 @@ final class PlayerBox: ObservableObject {
     private var autoOriented = false
     /// 当前在不在播 —— 界面靠它决定"要不要自动隐藏控件"（暂停时不隐藏）
     @Published var isPlaying = false
+    /// ★ v1.0.127 倍速：用户选的档位（0.5 / 1 / 1.5 / 2）。
+    ///   为什么单独存一份：系统的 `play()` 会把速率打回 1.0（见 setRate 的注释），
+    ///   得留个"用户想要几倍"的原始意图，轮询时好掰回来。
+    @Published var rate: Float = 1.0
     private var stateTask: Task<Void, Never>?
 
     private var failObs: NSObjectProtocol?
@@ -451,12 +496,20 @@ final class PlayerBox: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
 
-    init(url: URL, resumeKey: String = "") {
+    /// ★ v1.0.127：`headers` 给**预览 / 在线播放**用 —— 有些地址要带 Referer/UA/Cookie 才放行。
+    ///   AVPlayer **没有公开办法**给请求带头，只有这个未公开的 `AVURLAssetHTTPHeaderFieldsKey`
+    ///   （TrollStore 自用可以接受）。传 nil / 空 = 走原来的路，与以前完全一致。
+    init(url: URL, resumeKey: String = "", headers: [String: String]? = nil) {
         self.resumeKey = resumeKey
         // ★ v1.0.115 续看：先读上次看到哪儿；太靠前（<5 秒）就不打扰，从头播。
         let saved = WatchProgress.position(for: resumeKey)
         pendingResume = saved > WatchProgress.minResume ? saved : 0
-        item = AVPlayerItem(url: url)
+        if let headers, !headers.isEmpty {
+            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            item = AVPlayerItem(asset: asset)
+        } else {
+            item = AVPlayerItem(url: url)
+        }
         player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
@@ -545,6 +598,16 @@ final class PlayerBox: ObservableObject {
 
     /// 盯着"在不在播"。轮询而不是 KVO —— 理由和其他地方一样（KVO 回调不在主线程，
     /// 要往主线程跳就得在闭包里再套并发闭包，这条线踩过坑）。250ms 一次，几乎不要钱。
+    /// ★ v1.0.127 倍速：切换播放速率。
+    ///   ★ 经典坑：**AVPlayer 的 play() 就等于"把 rate 设成 1.0"** ——
+    ///     所以不能"先 play() 再设倍速"，那样会被立刻重置回 1 倍。
+    ///     rate 设成非 0 值本身就会开始播放，这就是正确姿势。
+    ///     暂停状态下只记档位（不偷偷开始播放），等下次播放由轮询补上。
+    func setRate(_ r: Float) {
+        rate = r
+        if player.timeControlStatus != .paused { player.rate = r }
+    }
+
     private func startStateWatch() {
         stateTask?.cancel()
         let target = self               // 绑成 let：嵌套并发闭包里引用 weak var 会编译不过
@@ -552,6 +615,11 @@ final class PlayerBox: ObservableObject {
             while !Task.isCancelled {
                 let playing = (target.player.timeControlStatus == .playing)
                 if target.isPlaying != playing { target.isPlaying = playing }
+                // ★ v1.0.127 倍速纠偏：用户选了 2 倍、之后又按了系统那个播放键 →
+                //   系统会把速率打回 1.0，这里 250ms 内掰回来，保持他选的档位。
+                if playing, target.rate != 1.0, target.player.rate != target.rate {
+                    target.player.rate = target.rate
+                }
                 // ★ v1.0.115 续看：正在播就顺手记一下位置。
                 //   remember() 里自己做了 0.5 秒的粒度门槛 + 落盘节流，这里每 0.25 秒调一次不心疼。
                 if playing { target.remember(target.player.currentTime().seconds) }
@@ -728,6 +796,8 @@ final class TouchObserver: UIGestureRecognizer {
     var onDragBegan: () -> Void = {}
     /// 松手 → 报"拖完了"
     var onDragEnded: () -> Void = {}
+    /// ★ v1.0.127 下滑关闭：手指**明显往下划**一下 → 报一次（由外层关掉播放页）
+    var onSwipeDown: () -> Void = {}
 
     private var startPoint = CGPoint.zero
     private var beganAt: TimeInterval = 0
@@ -767,6 +837,16 @@ final class TouchObserver: UIGestureRecognizer {
     private func finish(_ touches: Set<UITouch>) {
         if moved {
             onDragEnded()            // 松手 —— 交回系统读数
+            // ★ v1.0.127 下滑关闭：判定条件刻意保守 ——
+            //   ① 往下 150pt 以上（短划不算）；② 竖直位移是横向的 2 倍以上（斜着划/调进度不算）。
+            //   为什么不做"跟手位移动画"：这个识别器是**只看不抢**的（state 永远 .failed），
+            //   它拿不到"实时跟手"的控制权，硬做会和系统控件打架。这里只做"划够了就关"，稳。
+            if let t = touches.first {
+                let p = t.location(in: view)
+                let dy = p.y - startPoint.y
+                let dx = abs(p.x - startPoint.x)
+                if dy > 150, dy > dx * 2 { onSwipeDown() }
+            }
         } else if let t = touches.first, t.timestamp - beganAt < 0.4 {
             onTap()
         }
@@ -791,6 +871,8 @@ private struct PlayerVC: UIViewControllerRepresentable {
     let onDragEnded: () -> Void
     /// 读到系统控制条的显隐了（只读）→ 我们跟着它
     let onSystemControls: (CGFloat) -> Void
+    /// ★ v1.0.127：手指明显往下划 → 关掉播放页
+    let onSwipeDown: () -> Void
 
     final class Coord: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         var onSystemExit: () -> Void = {}
@@ -799,6 +881,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
         var onDragBegan: () -> Void = {}
         var onDragEnded: () -> Void = {}
         var onSystemControls: (CGFloat) -> Void = { _ in }
+        var onSwipeDown: () -> Void = {}
 
         /// 只在"刚越过拖动阈值"那一下报一次
         private var dragReported = false
@@ -883,6 +966,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
         touch.onTap = { context.coordinator.onTap() }
         touch.onDragBegan = { context.coordinator.onDragBegan() }
         touch.onDragEnded = { context.coordinator.onDragEnded() }
+        touch.onSwipeDown = { context.coordinator.onSwipeDown() }
         context.coordinator.startWatchingSystemControls(vc.view)   // 只读地盯系统控制条
         touch.cancelsTouchesInView = false
         touch.delaysTouchesBegan = false
@@ -908,6 +992,7 @@ private struct PlayerVC: UIViewControllerRepresentable {
         context.coordinator.onDragBegan = onDragBegan
         context.coordinator.onDragEnded = onDragEnded
         context.coordinator.onSystemControls = onSystemControls
+        context.coordinator.onSwipeDown = onSwipeDown
         // 只在真的换了播放器时才替换，绝不无条件重建
         if vc.player !== player { vc.player = player }
         if vc.delegate !== context.coordinator { vc.delegate = context.coordinator }

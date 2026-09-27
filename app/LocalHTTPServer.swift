@@ -456,6 +456,16 @@ final class LocalHTTPServer {
             return
         }
 
+        // ★ v1.0.127 边下边播：这条清单是**现场生成**的 —— 每下完一个分片它就变长。
+        //   所以不能当普通文件发（那只会发出第一次写下的内容，播放器播完就停）。
+        //   路径形如 `__live/<任务id>.m3u8`；磁盘上并没有这个目录。
+        if let body = LivePreview.playlistBody(forPath: path, root: root) {
+            sendBody(fd, status: 200, reason: "OK",
+                     contentType: "application/vnd.apple.mpegurl",
+                     body: Data(body.utf8))
+            return
+        }
+
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir) else {
             sendSimple(fd, status: 404, reason: "Not Found")
@@ -540,6 +550,18 @@ final class LocalHTTPServer {
         head += "Content-Type: text/html; charset=utf-8\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Cache-Control: no-store\r\n"
+        head += "Connection: close\r\n\r\n"
+        guard writeAll(fd, Data(head.utf8)) else { return }
+        _ = writeAll(fd, body)
+    }
+
+    /// ★ v1.0.127：发一段带指定 Content-Type 的内容（边下边播的清单要它）
+    private func sendBody(_ fd: Int32, status: Int, reason: String,
+                          contentType: String, body: Data) {
+        var head = "HTTP/1.1 \(status) \(reason)\r\n"
+        head += "Content-Type: \(contentType)\r\n"
+        head += "Content-Length: \(body.count)\r\n"
+        head += "Cache-Control: no-store\r\n"      // 清单每次都要最新，绝不缓存
         head += "Connection: close\r\n\r\n"
         guard writeAll(fd, Data(head.utf8)) else { return }
         _ = writeAll(fd, body)

@@ -214,7 +214,8 @@ final class DownloadJob: ObservableObject, Identifiable {
         self.sourceURL = sourceURL
         self.referrer = referrer
         self.ua = ua
-        self.cookie = cookie
+        // ★ Cookie 可能很长（整站 cookie）—— 截到 8KB，防单条任务把存档撑爆
+        self.cookie = cookie.count > 8192 ? String(cookie.prefix(8192)) : cookie
         kindHint = kind
         createdAt = Date()
         phase = "排队中"
@@ -236,7 +237,9 @@ final class DownloadJob: ObservableObject, Identifiable {
         // 从嗅探面板重开一次）。
         referrer = record.referrer ?? ""
         ua = record.ua ?? ""
-        cookie = ""
+        // ★ v1.0.127：以前这里写死空串 —— 恢复出来的任务 Cookie 全丢了，
+        //   于是"暂停隔夜 / 重启后接着下"在需要登录态或防盗链的站上必然失败。
+        cookie = record.cookie ?? ""
         phase = record.phaseText
         // ★ v1.0.107：这里原来无条件写 `finished = true`（本意是"别让它在后台自己跑起来"），
         //   但它把**没下完**的任务也标成了"完成" —— 列表上按钮的判据跟着一起错：
@@ -300,6 +303,7 @@ final class DownloadJob: ObservableObject, Identifiable {
                   resolution: resolution,
                   phaseText: phase,
                   notes: notes,
+                  cookie: cookie,
                   kind: kindHint?.key)
     }
 
@@ -356,6 +360,16 @@ final class DownloadJob: ObservableObject, Identifiable {
         guard let pl = playlistName, JobStore.exists(named: n) else { return nil }
         guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
         return LocalHTTPServer.shared.url(pl)
+    }
+
+    /// ★ v1.0.127 边下边播：下载中也能先看 —— 只能看**已下载的连续部分**，
+    /// 拖不到还没下的地方（那些分片还不存在）。加密流 / 分片太少时返回 nil，
+    /// 界面据此决定给不给这个入口（而不是给一个点了黑屏的按钮）。
+    func livePreviewURL() -> URL? {
+        guard isActive, mediaKind == .video else { return nil }
+        guard LivePreview.canPlay(taskID: id, root: JobStore.dir) else { return nil }
+        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        return LocalHTTPServer.shared.url(LivePreview.relativePath(taskID: id))
     }
 
     /// 能导出的文件（优先 mp4）

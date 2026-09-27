@@ -847,6 +847,8 @@ struct SniffPanel: View {
     @State private var picked: SniffItem?
     /// ★ v1.0.115 挑清晰度：要打开"挑清晰度"卡片的那一条（懒解析的入口）
     @State private var variantItem: SniffItem?
+    /// ★ v1.0.127 预览：要"先看一眼"的那一条（点了播放器盖上来）
+    @State private var previewItem: SniffItem?
     @State private var showAll = false
     /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
     @State private var tab = 0
@@ -1003,6 +1005,17 @@ struct SniffPanel: View {
             }
         }
         // ★ v1.0.115 挑清晰度：点小标签才弹这张卡片，而且**点开的那一刻**才去读清单
+        // ★ v1.0.127：嗅探结果的"下载前预览" —— 先看一眼是不是正片，别下完才发现不对。
+        //   走同一套播放器，但**带上 Referer/UA/Cookie**（防盗链站不带就 403）。
+        //   键固定成 "preview"：**不污染真实任务的续看键**（各任务的进度是按任务 id 记的）。
+        .fullScreenCover(item: $previewItem) { it in
+            if let u = URL(string: it.url) {
+                PlayerSheet(url: u,
+                            title: it.fileName.isEmpty ? "预览" : it.fileName,
+                            key: "preview",
+                            headers: previewHeaders(it))
+            }
+        }
         .sheet(item: $variantItem) { it in
             VariantPickerSheet(model: model, url: it.url,
                                referrer: it.referrer, ua: it.ua, cookie: it.cookie)
@@ -1156,6 +1169,15 @@ struct SniffPanel: View {
         .buttonStyle(.plain)
     }
 
+    /// ★ v1.0.127：预览要带的请求头 —— 跟下载同一个道理，防盗链站不给 Referer 就 403。
+    private func previewHeaders(_ it: SniffItem) -> [String: String]? {
+        var h: [String: String] = [:]
+        if !it.ua.isEmpty { h["User-Agent"] = it.ua }
+        if !it.referrer.isEmpty { h["Referer"] = it.referrer }
+        if !it.cookie.isEmpty { h["Cookie"] = it.cookie }
+        return h.isEmpty ? nil : h
+    }
+
     private func startBar(_ item: SniffItem) -> some View {
         VStack(spacing: 8) {
             HStack {
@@ -1170,6 +1192,17 @@ struct SniffPanel: View {
                     .font(.system(size: 13))
             }
             HStack(spacing: 10) {
+                // ★ v1.0.127 预览：用户要的形态是"**能看前几秒判断是不是正片**就够"。
+                //   只给视频类 —— 图片/音频/文档没什么好"预览前几秒"的。
+                if item.kind == "hls" || item.kind == "file" {
+                    Button {
+                        previewItem = item
+                    } label: {
+                        Label("预览", systemImage: "play.circle")
+                            .font(.system(size: 12.5))
+                    }
+                    .buttonStyle(.bordered)
+                }
                 // ★ v1.0.115 挑清晰度：hls 才给这个入口（直链文件没有多档可选）。
                 //   刻意做成"一个小标签"而不是把候选铺在页面上 —— 界面还是原来那么干净；
                 //   选过一次就记住（标签上显示所选值），点「开始下载」不会被再拦一次。
@@ -1395,6 +1428,20 @@ struct DownloadList: View {
     /// ★ v1.0.111：顶部四个分类按钮当前选中的那个（默认「视频」）。
     @State private var filter: DownloadFilter = .video
 
+    // ── ★ v1.0.127 多选与批量 ──
+    /// 多选模式（长按任意一条进入）
+    @State private var selecting = false
+    /// 选中的任务。按 **id** 记，不按下标 —— 过滤/排序一变下标就错位了
+    @State private var picked = Set<UUID>()
+    /// 批量操作的进度提示（存相册/导出都是串行的，得让用户看到走到哪了）
+    @State private var batchNote: String?
+    /// 批量导出：当前正在弹保存的那个 / 剩下的 / 已完成 / 总数
+    /// （用户要的形态是"**逐个弹保存**"，一个文件一次）
+    @State private var exportURL: SheetURL?
+    @State private var exportRest: [URL] = []
+    @State private var exportDone = 0
+    @State private var exportTotal = 0
+
     /// 搜索过滤（按标题或原始地址）+ 分类过滤。
     /// ★ 过滤后左滑删除必须**按对象**删、不能按下标删 —— 过滤后的下标跟
     ///   center.jobs 的下标不是一回事，按下标删会删错人。
@@ -1453,6 +1500,30 @@ struct DownloadList: View {
                                 Section {
                                     ForEach(shownJobs) { job in
                                         JobRow(job: job, pip: center.pip)
+                                            // ★ v1.0.127 多选态：盖一层透明拦截层 ——
+                                            //   这样点整行就是"选中/取消"，**不会误触到行内的按钮**
+                                            //   （播放、存相册那些按钮在多选时本来也不该生效）。
+                                            .overlay {
+                                                if selecting {
+                                                    Color.clear
+                                                        .contentShape(Rectangle())
+                                                        .onTapGesture { togglePick(job) }
+                                                        .overlay(alignment: .leading) {
+                                                            Image(systemName: picked.contains(job.id)
+                                                                  ? "checkmark.circle.fill" : "circle")
+                                                                .font(.system(size: 20))
+                                                                .foregroundStyle(picked.contains(job.id)
+                                                                                 ? Color.accentColor : Color.secondary)
+                                                                .padding(.leading, 8)
+                                                        }
+                                                }
+                                            }
+                                            // 长按任意一条 → 进多选（跟 iOS 相册一个手感）
+                                            .onLongPressGesture(minimumDuration: 0.4) {
+                                                guard !selecting else { return }
+                                                selecting = true
+                                                picked = [job.id]
+                                            }
                                     }
                                     .onDelete { idx in
                                         // ★ 按**对象**删：过滤后的下标和 center.jobs 不是一回事
@@ -1479,17 +1550,137 @@ struct DownloadList: View {
                         .listStyle(.insetGrouped)
                         .searchable(text: $query, prompt: "搜标题或地址")
                     }
+                    // ★ v1.0.127 多选：底部操作条（只在多选态出现，平时完全不占地方）
+                    .safeAreaInset(edge: .bottom) {
+                        if selecting { batchBar }
+                    }
                 }
             }
             .navigationTitle("下载")
             .navigationBarTitleDisplayMode(.inline)
+            // ★ iOS 15 的老坑：`.toolbar { }` 里**不能写 if**（v1.0.97 实错过）——
+            //   条件必须写在 ToolbarItem 内部。
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { center.save(); isPresented = false }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if selecting { Button("取消") { exitSelecting() } }
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    if selecting {
+                        Button("完成") { exitSelecting() }     // 退出多选
+                    } else {
+                        Button("完成") { center.save(); isPresented = false }
+                    }
+                }
+            }
+            // ★ v1.0.127 批量导出：逐个弹保存（一个文件一次），保存完自动弹下一个
+            .sheet(item: $exportURL) { one in
+                DocumentExporter(url: one.url, onFinish: { _ in
+                    exportDone += 1
+                    // 稍等一下再弹下一个 —— sheet 自己还在收尾，立刻换会让它弹不出来
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        if exportRest.isEmpty {
+                            batchNote = "已导出 \(exportDone)/\(exportTotal)"
+                            selecting = false
+                            picked.removeAll()
+                        } else {
+                            exportURL = SheetURL(url: exportRest.removeFirst())
+                        }
+                    }
+                })
             }
         }
         .navigationViewStyle(.stack)
+    }
+
+    // MARK: - ★ v1.0.127 多选与批量
+
+    /// 底部操作条：删除 / 存相册 / 导出，都是"对选中的那些做"
+    private var batchBar: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("已选 \(picked.count) 个")
+                    .font(.system(size: 13, weight: .medium))
+                Spacer(minLength: 4)
+                Button(role: .destructive) { batchDelete() } label: {
+                    Label("删除", systemImage: "trash").font(.system(size: 12.5))
+                }
+                .buttonStyle(.bordered)
+                Button { batchSavePhotos() } label: {
+                    Label("存相册", systemImage: "photo.on.rectangle").font(.system(size: 12.5))
+                }
+                .buttonStyle(.bordered)
+                Button { batchExport() } label: {
+                    Label("导出", systemImage: "folder").font(.system(size: 12.5))
+                }
+                .buttonStyle(.bordered)
+            }
+            .disabled(picked.isEmpty)
+
+            if let batchNote {
+                Text(batchNote).font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.thinMaterial)
+    }
+
+    private var pickedJobs: [DownloadJob] {
+        center.jobs.filter { picked.contains($0.id) }
+    }
+
+    private func togglePick(_ job: DownloadJob) {
+        if picked.contains(job.id) { picked.remove(job.id) } else { picked.insert(job.id) }
+    }
+
+    private func exitSelecting() {
+        selecting = false
+        picked.removeAll()
+        batchNote = nil
+    }
+
+    /// 批量删除：走跟单条删除**同一条路**（连文件一起删，不留垃圾）
+    private func batchDelete() {
+        let victims = pickedJobs
+        guard !victims.isEmpty else { return }
+        for j in victims { center.remove(j) }
+        batchNote = "已删除 \(victims.count) 个"
+        exitSelecting()
+    }
+
+    /// 批量存相册：**串行**逐个存（相册写入一次只能一个），并把进度显示出来
+    private func batchSavePhotos() {
+        let list = pickedJobs.filter { $0.canSaveToPhotos }
+        guard !list.isEmpty else {
+            batchNote = "选中的里面没有能存相册的（要图片或视频）"
+            return
+        }
+        let total = list.count
+        Task { @MainActor in
+            var ok = 0
+            for (i, j) in list.enumerated() {
+                batchNote = "正在存相册 \(i + 1)/\(total)…"
+                await j.saveToPhotos()
+                if j.savedToPhotos { ok += 1 }
+            }
+            batchNote = "已存相册 \(ok)/\(total)"
+            selecting = false
+            picked.removeAll()
+        }
+    }
+
+    /// 批量导出：收集文件地址，交给上面那张 sheet 逐个弹保存
+    private func batchExport() {
+        let urls = pickedJobs.compactMap { $0.exportURL() }
+        guard !urls.isEmpty else {
+            batchNote = "选中的里面没有能导出的文件"
+            return
+        }
+        exportTotal = urls.count
+        exportDone = 0
+        exportRest = Array(urls.dropFirst())
+        batchNote = "开始导出 \(urls.count) 个，逐个选保存位置…"
+        exportURL = SheetURL(url: urls[0])
     }
 
     /// 顶部存储条：这个 App 占了多少、设备还剩多少。
@@ -1642,14 +1833,29 @@ struct JobRow: View {
             // 进行中 → 暂停；已暂停/被中断 → 继续；失败 → 重试。
             // 文案分开是给用户看的语义，底层都是「保留已下分片，从断点接着来」。
             if job.isActive {
-                Button {
-                    job.pause()
-                } label: {
-                    Label("暂停", systemImage: "pause.fill")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    Button {
+                        job.pause()
+                    } label: {
+                        Label("暂停", systemImage: "pause.fill")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    // ★ v1.0.127 边下边播：下载中也能先看几段（复用上面那个播放器）。
+                    //   只在"真的有连续分片、且不是加密流"的时候才出现。
+                    if let u = job.livePreviewURL() {
+                        Button {
+                            playSheet = SheetURL(url: u)
+                        } label: {
+                            Label("边下边播", systemImage: "play.circle")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-                .buttonStyle(.bordered)
             } else if !job.finished {
                 // ★ v1.0.107：判据从「paused 或 failed」改成「**只要没完成**」——
                 //   以前恢复出来的任务可能三个标志都不满足（既没完成也没失败），

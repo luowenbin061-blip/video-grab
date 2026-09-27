@@ -34,6 +34,10 @@ struct ToolboxView: View {
     @State private var shareItem: SheetURL?
     /// ★ v1.0.124：点「导出 PDF」先问一句 —— 只要 PDF，还是顺带也转一张图片
     @State private var showPDFOptions = false
+    /// ★ v1.0.127 备份：点"备份数据"先问一句（备份 / 恢复）
+    @State private var showBackupOptions = false
+    /// 从备份恢复：选那个 json 文件
+    @State private var showRestorePicker = false
 
     // ★ v1.0.119：这两个开关直接读 UserDefaults（@AppStorage）——
     //   这样"已开/已关"的字样会跟着状态自己变，不用把整个 BrowserModel 订阅进来。
@@ -76,6 +80,12 @@ struct ToolboxView: View {
                     //     点这格会问一句：只要 PDF，还是顺带也转一张图片。
                     cell("doc.richtext", "导出 PDF", .red,
                          detail: "可顺带转图片") { showPDFOptions = true }
+
+                    // ★ v1.0.127 备份 / 恢复 —— 这是个单机 App（没 iCloud、没账号），
+                    //   重装 IPA / 换机 / 手滑删了 App，攒的书签·记录·首页·进度就全没了。
+                    //   点开弹一句"备份 还是 恢复"，不在这一页上摊两个按钮。
+                    cell("externaldrive.badge.timemachine", "备份数据", .cyan,
+                         detail: "一个文件带走全部") { showBackupOptions = true }
                 }
                 .padding(16)
 
@@ -110,6 +120,19 @@ struct ToolboxView: View {
                 Button("取消", role: .cancel) {}
             } message: {
                 Text("PDF 的字能选中、能搜索；图片是转出来的长图，能在聊天里直接看。")
+            }
+            // ★ v1.0.127 备份 / 恢复：两件事一个入口
+            .confirmationDialog("数据备份", isPresented: $showBackupOptions,
+                                titleVisibility: .visible) {
+                Button("备份数据（存一个文件）") { doBackup() }
+                Button("从备份恢复（会覆盖现在数据）") { showRestorePicker = true }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("打包：书签、下载记录、首页入口、播放进度、设置。**不含 Cookie**（登录态不外带）。"
+                     + "恢复前会自动把当前数据另存一份，能回滚。")
+            }
+            .sheet(isPresented: $showRestorePicker) {
+                FilePickerBox(onPicked: { files in doRestore(files) }, types: [.json])
             }
             .sheet(isPresented: $showPhotoPicker) {
                 PhotoPickerBox { files in
@@ -214,6 +237,37 @@ struct ToolboxView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
             shareItem = SheetURL(url: u)
+        }
+    }
+
+    /// ★ v1.0.127 备份：生成 JSON → 落盘 → 抬系统分享面板（存文件 / 发微信都走它）
+    private func doBackup() {
+        do {
+            let d = try DataBackup.exportData()
+            let f = DateFormatter()
+            f.dateFormat = "yyyyMMdd-HHmmss"
+            let u = JobStore.file(named: "VideoGrab备份-\(f.string(from: Date())).json")
+            try d.write(to: u, options: .atomic)
+            isPresented = false
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                shareItem = SheetURL(url: u)
+            }
+        } catch {
+            note = "备份失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// ★ v1.0.127 恢复：**覆盖**当前数据（覆盖前 DataBackup 会自动留一份可回滚）
+    private func doRestore(_ files: [SavedFile]) {
+        guard let f = files.first, let d = try? Data(contentsOf: f.url) else {
+            note = "这个文件读不出来。"
+            return
+        }
+        do {
+            note = try DataBackup.restore(from: d)
+        } catch {
+            note = error.localizedDescription
         }
     }
 
