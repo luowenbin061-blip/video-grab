@@ -1162,8 +1162,16 @@ final class BrowserModel: NSObject, ObservableObject {
     @MainActor private func urlChanged(_ wv: WKWebView) {
         guard let t = tab(for: wv) else { return }
         guard let u = wv.url?.absoluteString, !u.isEmpty else { return }
-        // 建标签时那次预热空白页不算
-        if u == "about:blank", t.address.isEmpty { return }
+        // ★ v1.0.121：**只要落在空白页，就把地址清空** ——
+        //   界面据此显示「首页」（用户要的：不只是新建标签，任何空白页都该进首页）。
+        //   原来只在"新建标签的那次预热导航"时跳过（t.address.isEmpty 那条），
+        //   于是"已有内容的标签跳到 about:blank"会把 about:blank 写进地址栏，
+        //   既不显示首页、地址栏还是串英文。
+        if u == "about:blank" {
+            t.address = ""
+            if t === currentTab { address = "" }
+            return
+        }
         t.address = u
         if t === currentTab { address = u }
     }
@@ -1421,15 +1429,16 @@ final class BrowserModel: NSObject, ObservableObject {
             guard let self else { return }
             self.shooting = false
             switch result {
-            case .success(let img):
-                self.finishLongShot(img)
+            case .success(let shot):
+                self.finishLongShot(shot)
             case .failure(let e):
                 self.showToast(e.localizedDescription)
             }
         }
     }
 
-    private func finishLongShot(_ img: UIImage) {
+    private func finishLongShot(_ shot: LongShot.Shot) {
+        let img = shot.image
         // ★ v1.0.120：改存 **JPEG（质量 0.95）**，不再存 PNG。
         //   3 倍分辨率拼出来动辄两三千万像素，PNG 会有几十 MB ——
         //   存相册、发微信都很吃力；JPEG 0.95 肉眼看不出差别、体积只有几分之一。
@@ -1450,7 +1459,11 @@ final class BrowserModel: NSObject, ObservableObject {
         // 报**实际像素**（不是点）—— 用户一眼能看出清晰度有没有真的提上去
         let px = Int((img.size.width * img.scale).rounded())
         let py = Int((img.size.height * img.scale).rounded())
-        showToast("长图已生成 \(px)×\(py) 像素 · \(data.count / 1024 / 1024) MB")
+        // ★ v1.0.121：把"降了清晰度"和"有几屏没截到"都说出来，不静默
+        var msg = "长图已生成 \(px)×\(py) 像素 · \(max(1, data.count / 1024 / 1024)) MB"
+        if shot.reducedQuality { msg += "\n页面较长，已降低清晰度" }
+        if shot.missedScreens > 0 { msg += "\n有 \(shot.missedScreens) 屏没截到（可能留空）" }
+        showToast(msg)
     }
 
     // MARK: - 从 JS 收到的数据
