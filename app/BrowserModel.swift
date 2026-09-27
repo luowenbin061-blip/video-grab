@@ -1508,6 +1508,11 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 读一次这个清单，看看有哪些清晰度可选（用户点「清晰度」标签时才调）。
     /// 自己带 Referer/UA/Cookie —— 读清单和下载分片一样要过防盗链。
+    ///
+    /// ★ 取文本这一步刻意放到 `nonisolated static` 的异步函数里去做（见下面 fetchPlaylistText）：
+    ///   `URLSession.dataTask` 的完成回调是 `@Sendable`，在这个回调里**再嵌**一个并发闭包
+    ///   去碰 `weak self`，编译器报 `reference to captured var 'self' in concurrently-executing code`
+    ///   （run #115 就挂在这）。用 `await` 走 async/await 就没这个形状，也就不踩这个坑。
     func loadVariants(for item: SniffItem) {
         let key = item.url
         guard !variantLoading.contains(key), let u = URL(string: key) else { return }
@@ -1518,29 +1523,38 @@ final class BrowserModel: NSObject, ObservableObject {
         if !item.ua.isEmpty { req.setValue(item.ua, forHTTPHeaderField: "User-Agent") }
         if !item.referrer.isEmpty { req.setValue(item.referrer, forHTTPHeaderField: "Referer") }
         if !item.cookie.isEmpty { req.setValue(item.cookie, forHTTPHeaderField: "Cookie") }
+
+        Task {                       // 继承本类的 @MainActor：await 回来就是主线程，可直接改状态
+            let text = await Self.fetchPlaylistText(req)
+            self.variantLoading.remove(key)
+            guard let text else {
+                self.variantError[key] = "读不到清单（可能是防盗链，或这条链接已经过期）"
+                return
+            }
+            let pl = M3U8Playlist.parse(text: text, baseURL: u)
+            if pl.variants.isEmpty {
+                self.variantError[key] = "这条不是多清晰度清单（只有一档，直接下就行）"
+            } else {
+                // 带宽从大到小 —— 用户一眼看到的是"最高的那条多大"
+                self.variantChoices[key] = pl.variants.sorted { ($0.bandwidth ?? 0) > ($1.bandwidth ?? 0) }
+            }
+        }
+    }
+
+    /// 拉一个清单的纯文本。**不吃缓存**（清单常常带时效参数，拿旧的没用）。
+    /// 写成 nonisolated：它只是网络与解码，不需要主线程，也就绕开了那条 Sendable 坑。
+    nonisolated static func fetchPlaylistText(_ req: URLRequest) async -> String? {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.urlCache = nil
-
-        URLSession(configuration: cfg).dataTask(with: req) { [weak self] data, resp, err in
-            let text = data.flatMap { String(data: $0, encoding: .utf8) }
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            Task { @MainActor in
-                guard let self else { return }
-                self.variantLoading.remove(key)
-                guard let text, code == 0 || (200...299).contains(code) else {
-                    self.variantError[key] = "读不到清单（\(err?.localizedDescription ?? "HTTP \(code)")）"
-                    return
-                }
-                let pl = M3U8Playlist.parse(text: text, baseURL: u)
-                if pl.variants.isEmpty {
-                    self.variantError[key] = "这条不是多清晰度清单（只有一档，直接下就行）"
-                } else {
-                    // 带宽从大到小 —— 用户一眼看到的是"最高的那条多大"
-                    self.variantChoices[key] = pl.variants.sorted { ($0.bandwidth ?? 0) > ($1.bandwidth ?? 0) }
-                }
-            }
-        }.resume()
+        do {
+            let (data, resp) = try await URLSession(configuration: cfg).data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 200
+            guard code == 0 || (200...299).contains(code) else { return nil }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
     }
 
     private static func date(fromMs v: Any?) -> Date? {
