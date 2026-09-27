@@ -182,7 +182,9 @@ enum PagePDF {
 
     /// 把 WebKit 的报错变成一句人话
     private static func readable(_ e: Error) -> String {
-        if let wk = e as? WKError, case .webContentProcessTerminated = wk {
+        // ★ WKError.webContentProcessTerminated 的类型是 WKError.Code（不是 WKError），
+        //   不能用 case 匹配 —— 用 rawValue 比对（run #122 就是栽在这一行）
+        if (e as NSError).code == WKError.webContentProcessTerminated.rawValue {
             return "网页渲染进程没响应（页面可能太重）"
         }
         let ns = e as NSError
