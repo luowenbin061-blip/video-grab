@@ -29,8 +29,17 @@
   if (window.__vgInstalled) return;
   window.__vgInstalled = true;
 
-  var MEDIA_RE = /\.(m3u8|m3u8\?|mp4|m4v|mov|webm|mkv|flv|f4v|ts|m4s|mpd)([?#]|$)/i;
-  var found = {};          // key: 去掉 fragment 的 url
+  // ★ v1.0.109：白名单从「只认视频」扩到 视频 + 音频 + 文档。
+  //   图片不走这条（它有自己的一条正则和**另一个**列表，见 IMG_RE / foundImg）。
+  var MEDIA_RE = /\.(m3u8|m3u8\?|mp4|m4v|mov|webm|mkv|flv|f4v|ts|m4s|mpd|mp3|m4a|aac|wav|flac|ogg|opus|pdf|zip|rar|7z|epub|txt|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
+  var IMG_RE = /\.(jpg|jpeg|png|webp|gif|heic|heif|avif|bmp|tiff|svg)([?#]|$)/i;
+  var found = {};          // key: 去掉 fragment 的 url（视频/音频/文档）
+  // ★ v1.0.109：图片单独一个字典 —— 「视频」和「图片」是两个 tab，
+  //   各自独立的上限，互不挤占（一页几百张图不会把视频顶掉）。
+  var foundImg = {};
+  // 图片默认**不主动上报**（省跨进程开销）。原生在用户切到「图片」tab 时
+  // 调 __vgSetImages(true) 打开它，并顺便扫一次当前页面。
+  var wantImages = false;
   var dirty = false;       // 有变化待上报
   var mseSeen = false;     // 页面是否用过 MSE
 
@@ -54,6 +63,10 @@
     if (/\.mpd([?#]|$)/i.test(u)) return 'dash';
     if (/\.(ts|m4s)([?#]|$)/i.test(u)) return 'segment';
     if (/\.(mp4|m4v|mov|webm|mkv|flv|f4v)([?#]|$)/i.test(u)) return 'file';
+    // ★ v1.0.109：这三类以前全落到 other（而 other 又进不来）—— 现在各自有名有姓
+    if (IMG_RE.test(u)) return 'image';
+    if (/\.(mp3|m4a|aac|wav|flac|ogg|opus)([?#]|$)/i.test(u)) return 'audio';
+    if (/\.(pdf|zip|rar|7z|epub|txt|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i.test(u)) return 'doc';
     return 'other';
   }
 
@@ -64,15 +77,19 @@
     if (/^(data|javascript|about|mailto):/i.test(url)) return;
 
     var isBlob = /^blob:/i.test(url);
-    if (!isBlob && !MEDIA_RE.test(url)) return;
+    var kind = kindOf(url);
+    var isImg = (kind === 'image');
+    // ★ v1.0.109：图片也收（进 foundImg），但**不是**走 MEDIA_RE 那条
+    if (!isBlob && !MEDIA_RE.test(url) && !isImg) return;
     // 页面自身 HTML 不要
     try {
       if (url.split('#')[0] === location.href.split('#')[0]) return;
     } catch (e) {}
 
+    var store = isImg ? foundImg : found;
     var key = url.split('#')[0];
-    if (found[key]) {
-      var f = found[key];
+    if (store[key]) {
+      var f = store[key];
       f.last = nowMs();
       // perf 回溯和 DOM 轮询是「回读」不是新请求 —— 照旧累计的话数字会
       // 膨胀到上千次（实测见过 1,268 次），反而失去参考价值。
@@ -88,10 +105,10 @@
       if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) abs = new URL(url, location.href).href;
     } catch (e) {}
 
-    found[key] = {
+    store[key] = {
       url: abs,
       raw: url,
-      kind: kindOf(url),
+      kind: kind,
       src: src,
       page: (function () { try { return location.href; } catch (e) { return ''; } })(),
       // 页面上下文：下载分片、取 AES key 时都要带上（防盗链校验 Referer / 登录态靠 Cookie）
@@ -103,6 +120,15 @@
       hits: 1,
       playing: /^video/.test(src)
     };
+    // 图片单独一个上限：不设的话，刷图站挂一晚上能攒几千条。
+    // 超了就丢"最久没再出现过"的那些（last 最小的）。
+    if (isImg) {
+      var ks = Object.keys(foundImg);
+      if (ks.length > 400) {
+        ks.sort(function (a, b) { return (foundImg[a].last || 0) - (foundImg[b].last || 0); });
+        for (var i2 = 0; i2 < ks.length - 400; i2++) delete foundImg[ks[i2]];
+      }
+    }
     dirty = true;
   }
 
@@ -322,14 +348,15 @@
   } catch (e) {}
 
   // ---------- 8. 上报给原生 ----------
-  function payload() {
+  function payloadItems() {
     var out = [];
     for (var k in found) {
       if (!Object.prototype.hasOwnProperty.call(found, k)) continue;
       out.push(found[k]);
     }
-    // 排序：hls > file > dash > blob > other > segment
-    var order = { hls: 0, file: 1, dash: 2, blob: 3, other: 4, segment: 9 };
+    // 排序：hls > file > dash > blob > other > audio > doc > segment
+    // （分片永远垫底；音频/文档排在视频后面）
+    var order = { hls: 0, file: 1, dash: 2, blob: 3, other: 4, audio: 5, doc: 6, segment: 9 };
     out.sort(function (a, b) {
       var d = (order[a.kind] || 5) - (order[b.kind] || 5);
       if (d !== 0) return d;
@@ -337,6 +364,23 @@
     });
     return out.slice(0, 60);
   }
+
+  // ★ v1.0.109：图片走**独立通道**，不进上面那个 60 条池 ——
+  //   否则一页几百张图会把视频顶出去（「视频和图片分开」本来就是用户的诉求）。
+  //   用户没切到「图片」tab 时返回空数组，一次多余的跨进程开销都不花。
+  function payloadImages() {
+    if (!wantImages) return [];
+    var out = [];
+    for (var k in foundImg) {
+      if (!Object.prototype.hasOwnProperty.call(foundImg, k)) continue;
+      out.push(foundImg[k]);
+    }
+    // 图片按「最近出现」排 —— 页面上刚显示出来的那张最可能就是要找的
+    out.sort(function (a, b) { return (b.last || 0) - (a.last || 0); });
+    return out.slice(0, 60);
+  }
+
+  function payload() { return payloadItems(); }
 
   // 上报最小间隔 500ms。跨进程 postMessage 不免费 —— 原生每收到一次都要重排
   // 整个列表并刷新界面。短时间内的多次变化合并成一次；force（手动刷新 / 长按）
@@ -354,7 +398,8 @@
         type: 'sniff',
         href: location.href,
         mse: mseSeen,
-        items: payload()
+        items: payloadItems(),
+        images: payloadImages()
       });
     } catch (e) {}
   }
@@ -373,6 +418,49 @@
     scanPageHtml();
     report(true);
     return payload().length;
+  };
+
+  // ---------- 9b. 扫当前页面的图片（v1.0.109） ----------
+  // 只在用户切到「图片」tab 时跑（原生调 __vgSetImages(true)）。
+  //
+  // 为什么默认不扫：一页几十上百个 img，每次 DOM 扫描都遍历一遍是白花钱；
+  // 而 hook 那条路（fetch/xhr/img 请求）本来就在收，用户点了才补扫就够了。
+  // 过滤 1×1 追踪像素：naturalWidth/Height ≤ 2 的直接丢（这是免费拿到的，
+  // 不用额外发请求 —— 实测体积阈值那条路要先下载才知道大小，成本太高）。
+  function scanImages() {
+    try {
+      var els = document.querySelectorAll('img');
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        var w = 0, h = 0;
+        try { w = el.naturalWidth || 0; h = el.naturalHeight || 0; } catch (e) {}
+        if (w > 0 && h > 0 && (w <= 2 || h <= 2)) continue;   // 追踪像素
+        var u = '';
+        try { if (el.currentSrc) u = el.currentSrc; } catch (e) {}
+        try { if (!u && el.src) u = el.src; } catch (e) {}
+        if (!u) { try { u = el.getAttribute('data-src') || ''; } catch (e) {} }
+        if (u) add(u, 'img');
+        // srcset 最后一项通常是最大那张（页面显示的多半是缩略图）
+        try {
+          var ss = el.getAttribute && el.getAttribute('srcset');
+          if (ss) {
+            var parts = ss.split(',');
+            var biggest = parts[parts.length - 1].trim().split(' ')[0];
+            if (biggest) add(biggest, 'img-srcset');
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  // 原生在切到「图片」tab 时调用：打开图片上报 + 立刻扫一次当前页面。
+  window.__vgSetImages = function (on) {
+    wantImages = !!on;
+    if (wantImages) scanImages();
+    report(true);
+    var n = 0;
+    for (var k in foundImg) { if (Object.prototype.hasOwnProperty.call(foundImg, k)) n++; }
+    return n;
   };
 
   // ---------- 10. 长按视频：只回答原生「这一点上有没有视频」 ----------

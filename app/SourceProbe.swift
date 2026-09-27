@@ -11,7 +11,24 @@ struct SourceProbe {
 
     enum Kind { case hls, file, unknown }
 
+    /// ★ v1.0.109：这个地址到底是什么东西 —— 决定下载后怎么处理。
+    ///   原来只有"视频/不是视频"两种，现在四类 + 未知（未知也允许下载）。
+    enum MediaClass: String {
+        case video, image, audio, doc, unknown
+
+        var label: String {
+            switch self {
+            case .video: return "视频"
+            case .image: return "图片"
+            case .audio: return "音频"
+            case .doc: return "文档"
+            case .unknown: return "文件"
+            }
+        }
+    }
+
     var kind: Kind = .unknown
+    var media: MediaClass = .unknown
     var httpStatus: Int = 0
     var contentType: String = ""
     var contentLength: Int64 = 0
@@ -33,8 +50,8 @@ struct SourceProbe {
     private var label: String {
         switch kind {
         case .hls: return "HLS 清单"
-        case .file: return "单个文件"
-        case .unknown: return "认不出"
+        case .file: return "单个文件 · \(media.label)"
+        case .unknown: return "认不出（网页）"
         }
     }
 
@@ -68,15 +85,39 @@ struct SourceProbe {
 
             let text = String(data: Data(data.prefix(2048)), encoding: .utf8) ?? ""
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ct = p.contentType.lowercased()
+            let head = trimmed.lowercased()
+
             if trimmed.hasPrefix("#EXTM3U") {
+                // ① HLS 清单（视频的分片式）
                 p.kind = .hls
-            } else if p.contentType.hasPrefix("video/") || p.contentType.hasPrefix("audio/")
-                        || p.contentType.contains("octet-stream") {
-                p.kind = .file
+                p.media = .video
+            } else if ct.hasPrefix("text/html") || head.hasPrefix("<!doctype") || head.hasPrefix("<html") {
+                // ② 网页本身 —— **唯一**"认出来了也故意不让下"的类型。
+                //    以前 unknown 一律拒，现在 unknown 也允许（见 ⑥），所以必须在这里显式拦。
+                p.kind = .unknown
+                p.media = .unknown
             } else {
+                // ③④⑤⑥ 依次往下试：Content-Type → 文件头 → 扩展名 → 都不认识也放行
+                //
+                // ★ v1.0.109 把顺序**反过来**了（原来是"扩展名优先"）。
+                //   这是"不带后缀的地址一律下不了"的根因：/media?id=8823 这种
+                //   明明 Content-Type 写着 image/jpeg，却因为没后缀被判"认不出"。
                 let ext = url.pathExtension.lowercased()
-                let fileExts = ["mp4", "m4v", "mov", "webm", "mkv", "flv", "avi", "ts", "mp3", "m4a"]
-                p.kind = fileExts.contains(ext) ? .file : .unknown
+                p.kind = .file
+                if let m = Self.byContentType(ct) {
+                    p.media = m
+                } else if let m = Self.byMagic(Data(data.prefix(16))) {
+                    // 文件头 —— 这 2KB 我们**本来就在取**，只是以前没拿去比对
+                    p.media = m
+                } else if let m = Self.byExtension(ext) {
+                    p.media = m
+                } else if ct.contains("octet-stream") {
+                    p.media = .unknown
+                } else {
+                    // 什么都不认识 —— 仍然允许下载（存成文件总比"直接失败"有用）
+                    p.media = .unknown
+                }
             }
             p.headText = Self.oneLine(String(trimmed.prefix(160)))
         } catch {
@@ -84,6 +125,66 @@ struct SourceProbe {
             p.headText = "请求出错：\(error.localizedDescription)"
         }
         return p
+    }
+
+    /// Content-Type → 类型（最权威，服务器自己说的）
+    private static func byContentType(_ ct: String) -> MediaClass? {
+        if ct.hasPrefix("video/") || ct == "application/mp2t" { return .video }
+        if ct.hasPrefix("image/") { return .image }
+        if ct.hasPrefix("audio/") { return .audio }
+        let docTypes = ["application/pdf", "application/zip", "application/x-zip",
+                        "application/x-rar", "application/x-7z-compressed",
+                        "application/epub+zip", "text/plain", "text/csv",
+                        "application/msword", "application/vnd.ms-excel",
+                        "application/vnd.ms-powerpoint",
+                        "application/vnd.openxmlformats-officedocument"]
+        for d in docTypes where ct.hasPrefix(d) { return .doc }
+        return nil
+    }
+
+    /// 文件头（magic bytes）→ 类型。Content-Type 不可靠时的兜底
+    /// （很多站把什么都写成 application/octet-stream）。
+    private static func byMagic(_ d: Data) -> MediaClass? {
+        guard d.count >= 12 else { return nil }
+        let b = [UInt8](d)
+        func at(_ i: Int, _ s: [UInt8]) -> Bool {
+            guard i + s.count <= b.count else { return false }
+            for (k, v) in s.enumerated() where b[i + k] != v { return false }
+            return true
+        }
+        func text(_ i: Int, _ t: String) -> Bool { at(i, [UInt8](t.utf8)) }
+
+        if at(0, [0xFF, 0xD8, 0xFF]) { return .image }                     // JPEG
+        if at(0, [0x89, 0x50, 0x4E, 0x47]) { return .image }               // PNG
+        if text(0, "GIF8") { return .image }                               // GIF
+        if text(0, "RIFF"), text(8, "WEBP") { return .image }              // WebP
+        if text(0, "RIFF"), text(8, "WAVE") { return .audio }              // WAV
+        if at(0, [0x25, 0x50, 0x44, 0x46]) { return .doc }                 // PDF
+        if at(0, [0x50, 0x4B, 0x03, 0x04]) || at(0, [0x50, 0x4B, 0x05, 0x06]) { return .doc }  // ZIP
+        if text(0, "Rar!") { return .doc }                                 // RAR
+        if at(0, [0x37, 0x7A, 0xBC, 0xAF]) { return .doc }                 // 7z
+        if at(0, [0x1A, 0x45, 0xDF, 0xA3]) { return .video }               // MKV / WebM
+        if text(0, "ID3") { return .audio }                                // MP3（带 ID3）
+        if b[0] == 0xFF, (b[1] & 0xE0) == 0xE0 { return .audio }           // MP3（裸帧）
+        if text(0, "OggS") { return .audio }                               // OGG
+        if text(0, "fLaC") { return .audio }                               // FLAC
+        if text(4, "ftyp") {                                               // MP4 / MOV / M4A / HEIC
+            let brand = String(bytes: b[8..<min(12, b.count)], encoding: .ascii) ?? ""
+            if brand.hasPrefix("heic") || brand.hasPrefix("heix")
+                || brand.hasPrefix("avif") || brand.hasPrefix("mif1") { return .image }
+            if brand.hasPrefix("M4A") { return .audio }
+            return .video
+        }
+        return nil
+    }
+
+    /// 扩展名 → 类型（最后的兜底）
+    private static func byExtension(_ ext: String) -> MediaClass? {
+        if ["mp4", "m4v", "mov", "webm", "mkv", "flv", "f4v", "avi", "ts", "m4s"].contains(ext) { return .video }
+        if ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tiff", "svg"].contains(ext) { return .image }
+        if ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"].contains(ext) { return .audio }
+        if ["pdf", "zip", "rar", "7z", "epub", "txt", "doc", "docx", "xls", "xlsx", "ppt", "pptx"].contains(ext) { return .doc }
+        return nil
     }
 
     private static func oneLine(_ s: String) -> String {

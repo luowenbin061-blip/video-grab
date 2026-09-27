@@ -744,6 +744,8 @@ struct SniffPanel: View {
     @Binding var isPresented: Bool
     @State private var picked: SniffItem?
     @State private var showAll = false
+    /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
+    @State private var tab = 0
 
     private var visibleGroups: [SniffGroup] {
         showAll ? model.groups : Array(model.groups.prefix(8))
@@ -752,7 +754,10 @@ struct SniffPanel: View {
     var body: some View {
         NavigationView {
             Group {
-                if model.groups.isEmpty {
+                // ★ v1.0.109：图片是**另一条通道**（不混进视频列表，也不挤占它的 60 条上限）
+                if tab == 1 {
+                    imageArea
+                } else if model.groups.isEmpty {
                     emptyState
                 } else {
                     List {
@@ -809,6 +814,14 @@ struct SniffPanel: View {
             .navigationTitle("嗅探结果")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("", selection: $tab) {
+                        Text("视频").tag(0)
+                        Text("图片").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 168)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { isPresented = false }
                 }
@@ -826,6 +839,10 @@ struct SniffPanel: View {
         // ★ v1.0.104：打开面板就扫一次。自动扫描默认关了 —— 那么「用户打开
         //   这个面板」本身就是「现在需要嗅探」的信号，代他扫一下最省事。
         .onAppear { model.scanQuietly() }
+        // ★ v1.0.109：切到「图片」才去扫当前页面的图（平时一张都不收，省开销）
+        .onChange(of: tab) { t in
+            if t == 1 { model.loadImages() } else { model.stopImages() }
+        }
         .safeAreaInset(edge: .bottom) {
             if let p = picked {
                 startBar(p)
@@ -837,6 +854,37 @@ struct SniffPanel: View {
                     .padding(.vertical, 10)
                     .background(.thinMaterial)
             }
+        }
+    }
+
+    /// 图片 tab（v1.0.109）。图片与视频是两个独立列表 ——
+    /// 视频那条有 60 条上限，图片混进去会把视频顶掉，所以干脆分通道。
+    @ViewBuilder
+    private var imageArea: some View {
+        if model.imageGroups.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("这一页还没抓到图片")
+                        .font(.headline)
+                    Text("已经扫过当前页面了。图片是单独一条通道，平时不抓 —— 让图片在页面上显示出来（往下翻一翻），再点右上角「⋯ → 重新扫描」。")
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+            }
+        } else {
+            List {
+                Section {
+                    ForEach(model.imageGroups) { g in
+                        row(g.best, variants: g.total)
+                    }
+                } header: {
+                    Text("共 \(model.imageGroups.count) 张 · 点一张开始下载")
+                }
+            }
+            .listStyle(.insetGrouped)
         }
     }
 
@@ -981,6 +1029,10 @@ struct SniffPanel: View {
         case "dash": return .purple
         case "blob": return .blue
         case "segment": return .gray
+        // ★ v1.0.109
+        case "image": return .pink
+        case "audio": return .teal
+        case "doc": return .brown
         default: return .secondary
         }
     }
@@ -1153,7 +1205,13 @@ struct JobRow: View {
                 ProgressView(value: job.overall)
             }
 
-            HStack {
+            HStack(spacing: 5) {
+                // ★ v1.0.109：非视频的成品标一下类型 —— 只看文件名看不出是图还是音频
+                if job.mediaKind != .video {
+                    Image(systemName: job.mediaKind.icon)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
                 Text(job.phase)
                     .font(.system(size: 12))
                     .foregroundStyle(job.failed != nil ? .red : .secondary)
@@ -1218,7 +1276,8 @@ struct JobRow: View {
             // 操作按钮
             if job.finished && !job.fileMissing {
                 HStack(spacing: 8) {
-                    if job.localPlaybackURL() != nil {
+                    // ★ v1.0.109：只有视频才给「播放」—— 图片/音频/文档没得播
+                    if job.mediaKind == .video, job.localPlaybackURL() != nil {
                         Button {
                             // ★ 每次现取地址 —— 本机服务端口每次启动都可能变，
                             //   用存下来的旧地址就是白屏的根源之一
@@ -1234,7 +1293,7 @@ struct JobRow: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                    } else {
+                    } else if job.mediaKind == .video {
                         // 本地没东西可播（比如文件被删了），退回原始在线地址，
                         // 仍然走我们自己的播放器 —— 而不是丢给 Safari
                         Button {
@@ -1276,11 +1335,18 @@ struct JobRow: View {
                     .buttonStyle(.bordered)
                 }
 
-                if !job.canSaveToPhotos && job.exportURL() != nil {
-                    Text("相册不认 .ts，要等 MP4 转出来才能存相册；「存文件夹」可以保存原文件。")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                if job.exportURL() != nil {
+                    if job.mediaKind == .audio || job.mediaKind == .doc {
+                        Text("相册只收图片和视频，这个用「存文件夹」保存。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if job.mediaKind == .video && !job.canSaveToPhotos {
+                        Text("相册不认 .ts，要等 MP4 转出来才能存相册；「存文件夹」可以保存原文件。")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
 

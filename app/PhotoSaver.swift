@@ -9,21 +9,27 @@ enum Saver {
 
     enum Fail: LocalizedError {
         case noPhotoPermission
-        case notMP4
+        case notSavable(String)
 
         var errorDescription: String? {
             switch self {
             case .noPhotoPermission:
                 return "没有相册写入权限。请到 设置 → 隐私与安全性 → 照片 里允许「视频抓取」添加照片。"
-            case .notMP4:
-                return "只有转好的 MP4 才能存进相册（相册不认 .ts）。"
+            case .notSavable(let ext):
+                return "相册只收图片和视频（.mp4/.mov/.jpg/.png 这类）。.\(ext) 请用「存文件夹」。"
             }
         }
     }
 
-    /// 存到系统相册
+    /// 存到系统相册。
+    /// ★ v1.0.109：不再只认 mp4 —— 图片也能存（相册同时收 photo / video 两类资源），
+    ///   音频和文档则明确拒绝（相册根本没有能装它们的地方）。
     static func toPhotos(_ url: URL) async throws {
-        guard url.pathExtension.lowercased() == "mp4" else { throw Fail.notMP4 }
+        let ext = url.pathExtension.lowercased()
+        let imgExts = ["jpg", "jpeg", "png", "gif", "heic", "heif", "avif", "bmp", "tiff", "webp"]
+        let vidExts = ["mp4", "m4v", "mov"]
+        let isImg = imgExts.contains(ext)
+        guard isImg || vidExts.contains(ext) else { throw Fail.notSavable(ext) }
 
         // requestAuthorization(for:) 的 async 版本在各 SDK 上可用性不一致，
         // 一律用回调版包一层，避开版本差异。
@@ -37,7 +43,7 @@ enum Saver {
                 let req = PHAssetCreationRequest.forAsset()
                 let opt = PHAssetResourceCreationOptions()
                 opt.shouldMoveFile = false          // 我们是"另存一份"，程序内的原件要留着
-                req.addResource(with: .video, fileURL: url, options: opt)
+                req.addResource(with: isImg ? .photo : .video, fileURL: url, options: opt)
             }, completionHandler: { ok, err in
                 if let err { c.resume(throwing: err) }
                 else if ok { c.resume() }

@@ -350,7 +350,49 @@ final class DownloadJob: ObservableObject, Identifiable {
         return JobStore.file(named: n)
     }
 
-    var canSaveToPhotos: Bool { mp4Ready && JobStore.exists(named: outputName) }
+    /// ★ v1.0.109：成品是什么类别 —— 从**扩展名**推断。
+    ///   文件名是我们自己按类型起的（见 preferExtension），所以扩展名是可信的；
+    ///   这样不用给 JobRecord 加字段（那玩意的字段顺序和构造点实参顺序强绑定，
+    ///   动它风险大于收益 —— 上一次核过 18 个字段的顺序）。
+    enum MediaKind {
+        case video, image, audio, doc
+
+        var label: String {
+            switch self {
+            case .video: return "视频"
+            case .image: return "图片"
+            case .audio: return "音频"
+            case .doc: return "文件"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .video: return "film"
+            case .image: return "photo"
+            case .audio: return "waveform"
+            case .doc: return "doc"
+            }
+        }
+    }
+
+    var mediaKind: MediaKind {
+        let e = (outputName as NSString?)?.pathExtension.lowercased() ?? ""
+        if ["mp4", "m4v", "mov", "ts", "webm", "mkv", "flv", "avi", "3gp"].contains(e) { return .video }
+        if ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tiff", "svg"].contains(e) { return .image }
+        if ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"].contains(e) { return .audio }
+        return .doc
+    }
+
+    /// 能不能存相册：**只有图片和视频**可以（相册不收音频/文档）。
+    /// 视频还要求 mp4Ready —— 相册不认 .ts。
+    var canSaveToPhotos: Bool {
+        guard !fileMissing, let n = outputName, JobStore.exists(named: n) else { return false }
+        switch mediaKind {
+        case .image: return true
+        case .video: return mp4Ready
+        case .audio, .doc: return false
+        }
+    }
 
     /// 缩略图路径（文件还在才有值）
     var thumbURL: URL? {
@@ -408,25 +450,47 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     /// 直链下载落盘用什么扩展名：先看地址后缀，再看 Content-Type
-    static func preferExtension(url: URL, contentType: String) -> String {
+    /// 给下载下来的文件起什么后缀。
+    /// ★ v1.0.109：不再"什么都不认识就 .mp4" —— 图片/音频/文档都要有自己的后缀，
+    ///   否则一张图会被存成 xxx.mp4，后面按扩展名判类型也全错。
+    static func preferExtension(url: URL, contentType: String,
+                                media: SourceProbe.MediaClass = .video) -> String {
         let ext = url.pathExtension.lowercased()
         if !ext.isEmpty, ext.count <= 5 { return ext }
-        switch contentType {
+        let ct = contentType.lowercased()
+        switch ct {
         case "video/mp4": return "mp4"
         case "video/quicktime": return "mov"
         case "video/webm": return "webm"
         case "video/x-matroska": return "mkv"
         case "video/mp2t": return "ts"
         case "audio/mpeg": return "mp3"
-        case "audio/mp4": return "m4a"
-        default: return "mp4"
+        case "audio/mp4", "audio/aac": return "m4a"
+        case "image/jpeg": return "jpg"
+        case "image/png": return "png"
+        case "image/webp": return "webp"
+        case "image/gif": return "gif"
+        case "image/heic": return "heic"
+        case "image/avif": return "avif"
+        case "application/pdf": return "pdf"
+        case "application/zip": return "zip"
+        default: break
+        }
+        // Content-Type 也没用 → 按已知的大类给个通用后缀
+        switch media {
+        case .image: return "jpg"
+        case .audio: return "mp3"
+        case .doc: return "bin"
+        case .video: return "mp4"
+        case .unknown: return "bin"
         }
     }
 
     /// 直链单文件（mp4 这类）：拉下来 → 能直接播就用它；不能播就试着转成 MP4。
     private func runDirectFile(src: URL, probe: SourceProbe, tempDir: URL,
                                ua: String, referer: String?, cookie: String?) async throws {
-        let ext = Self.preferExtension(url: src, contentType: probe.contentType)
+        let ext = Self.preferExtension(url: src, contentType: probe.contentType,
+                                       media: probe.media)
         let outURL = JobStore.file(named: baseName + "." + ext)
 
         var fopt = FileDownloader.Options(
@@ -458,7 +522,18 @@ final class DownloadJob: ObservableObject, Identifiable {
         if Task.isCancelled { paused = true; onUpdate?(); return }
 
         fileSize = got
-        notes.append("✓ 直链下载完成 \(Self.mb(got))MB（.\(ext)）")
+        notes.append("✓ 直链下载完成 \(Self.mb(got))MB（.\(ext)）· \(probe.media.label)")
+
+        // ★ v1.0.109：图片 / 音频 / 文档 —— 下载下来**就是成品**，
+        //   不转码、不进播放器。只有视频才走下面「能播就留、不能播就转 MP4」那条路。
+        if probe.media != .video {
+            outputName = outURL.lastPathComponent
+            phase = "完成"
+            finished = true
+            onUpdate?()
+            notes.append("✓ 已保存（\(probe.media.label)，不需要转码）")
+            return
+        }
 
         if ["mp4", "m4v", "mov"].contains(ext) {
             mp4Ready = true

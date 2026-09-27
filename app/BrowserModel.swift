@@ -25,12 +25,19 @@ struct SniffItem: Identifiable, Hashable {
     /// 来自「正在播放的 video 元素」→ 面板置顶的绿标，就是用户要下的那个
     var playing: Bool
 
-    /// 能直接下的是 hls 和直链文件；blob / segment 只能当线索。
-    var isDownloadable: Bool { kind == "hls" || kind == "file" }
+    /// 能直接下的是 hls、直链文件和图片/音频/文档；blob / segment 只能当线索。
+    /// ★ v1.0.109：加了后三类 —— 否则放开嗅探后用户在图片 tab 里点一条，
+    ///   底部会写"这一条不能直接下"、按钮还是灰的（改了白改）。
+    var isDownloadable: Bool {
+        ["hls", "file", "image", "audio", "doc"].contains(kind)
+    }
 
     /// 分组键：同目录的清单变体（master / media / 线路）合并成一条。
     /// 聚合站一个页面会预加载几十个视频的清单，全平铺用户根本没法选。
     var groupKey: String {
+        // ★ v1.0.109：图片**不参与**同目录合并 —— 每张图都是一个独立条目，
+        //   合并会把 100 张图并成 1 条（"合并清单变体"只对视频有意义）。
+        if kind == "image" { return url }
         guard let u = URL(string: url) else { return url }
         let host = u.host ?? ""
         if kind == "blob" { return url }                       // blob 每条独立
@@ -46,14 +53,21 @@ struct SniffItem: Identifiable, Hashable {
         case "dash": return "MPD"
         case "blob": return "BLOB"
         case "segment": return "TS"
+        case "image": return "图片"
+        case "audio": return "音频"
+        case "doc": return "文件"
         default: return "?"
         }
     }
 
     var fileName: String {
-        guard let u = URL(string: url) else { return "video" }
+        // 兜底名按类型给 —— 图片存成 "video" 太难看了（v1.0.109）
+        let fallback = (kind == "image") ? "image"
+                     : (kind == "audio") ? "audio"
+                     : (kind == "doc") ? "file" : "video"
+        guard let u = URL(string: url) else { return fallback }
         let last = u.lastPathComponent
-        if last.isEmpty || last == "/" { return "video" }
+        if last.isEmpty || last == "/" { return fallback }
         return last.removingPercentEncoding ?? last
     }
 
@@ -109,6 +123,10 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published var items: [SniffItem] = []
     /// 分组去重后的展示列表（同目录清单变体合并成一条）
     @Published var groups: [SniffGroup] = []
+    /// ★ v1.0.109：图片走**独立列表**（用户要的就是"视频和图片分开"）。
+    ///   只写当前标签的 —— 后台标签的图片不往界面上写，避免串台。
+    @Published var images: [SniffItem] = []
+    @Published var imageGroups: [SniffGroup] = []
     @Published var address = ""
     @Published var pageTitle = ""
     @Published var isLoading = false
@@ -1183,6 +1201,20 @@ final class BrowserModel: NSObject, ObservableObject {
         webView?.evaluateJavaScript("window.__vgScan ? window.__vgScan() : 0") { _, _ in }
     }
 
+    /// ★ v1.0.109：用户切到「图片」tab —— 打开图片上报 + 扫一次当前页面的图片。
+    /// 图片平时**不收也不上报**（一页几十上百张，白花跨进程开销），
+    /// 所以"切过来"这个动作本身就是"现在要"的信号。
+    func loadImages() {
+        webView?.evaluateJavaScript(
+            "window.__vgSetImages ? window.__vgSetImages(true) : 0") { _, _ in }
+    }
+
+    /// 离开「图片」tab —— 关掉上报（结果留着，不清）。
+    func stopImages() {
+        webView?.evaluateJavaScript(
+            "window.__vgSetImages ? window.__vgSetImages(false) : 0") { _, _ in }
+    }
+
     /// 设置里改了「后台自动嗅探」→ 通知**所有已经建好的页面**立刻生效，
     /// 不用刷新页面（新开的页面在注入时就带上正确的值，见 snifferSource）。
     func applyAutoSniffSetting() {
@@ -1220,6 +1252,8 @@ final class BrowserModel: NSObject, ObservableObject {
     func clearItems(silent: Bool = false) {
         items.removeAll()
         groups.removeAll()
+        images.removeAll()
+        imageGroups.removeAll()
         mseSeen = false
         hint = nil
         lastUpdated = nil
@@ -1273,7 +1307,8 @@ final class BrowserModel: NSObject, ObservableObject {
     ///   只有它是当前标签时，才同步到界面状态上 ——
     ///   否则你在 A 页面上会看到 B 页面（后台正在跑的那个）嗅出来的地址。
     fileprivate func ingest(tab t: BrowserTab, isCurrent: Bool,
-                            href: String, mse: Bool, raw: [[String: Any]]) {
+                            href: String, mse: Bool, raw: [[String: Any]],
+                            imgs: [[String: Any]] = []) {
         var merged: [String: SniffItem] = [:]
         for old in t.items { merged[old.url] = old }
         let now = Date()
@@ -1343,11 +1378,58 @@ final class BrowserModel: NSObject, ObservableObject {
 
         items = capped
         groups = t.groups
+        // ★ v1.0.109：图片单独一条通道（JS 那边是独立字典 + 独立 60 条上限）。
+        //   这里也只在"当前标签"时才写界面状态 —— 跟 items 同一个规矩。
+        var oldImgs: [String: SniffItem] = [:]
+        for it in images { oldImgs[it.url] = it }
+        images = Self.parseImageItems(imgs, href: href, merge: oldImgs)
+        imageGroups = Self.makeGroups(images)
         lastUpdated = now
         mseSeen = mse
         hint = t.hint
         if address.isEmpty { address = href }
         refreshTabs()
+    }
+
+    /// 把 JS 上报的图片条目解析成 SniffItem。
+    /// 字段处理与视频那条一致 —— 图片**同样要带 Referer / Cookie**，
+    /// 否则防盗链的站直接给 403（这是 v1.0.106 在长按下载上踩过的同一个坑）。
+    private static func parseImageItems(_ raw: [[String: Any]], href: String,
+                                        merge old: [String: SniffItem]) -> [SniffItem] {
+        var merged = old
+        let now = Date()
+        for d in raw {
+            guard let url = d["url"] as? String, !url.isEmpty else { continue }
+            let first = date(fromMs: d["first"]) ?? merged[url]?.first ?? now
+            let last = date(fromMs: d["last"]) ?? merged[url]?.last ?? now
+            var item = SniffItem(url: url,
+                                 kind: (d["kind"] as? String) ?? "image",
+                                 src: (d["src"] as? String) ?? "",
+                                 page: (d["page"] as? String) ?? href,
+                                 hits: (d["hits"] as? Int) ?? 1,
+                                 first: first,
+                                 last: last,
+                                 playing: false)
+            let ref = (d["ref"] as? String) ?? ""
+            let uaStr = (d["ua"] as? String) ?? ""
+            let ck = (d["ck"] as? String) ?? ""
+            if !ref.isEmpty { item.referrer = ref }
+            if !uaStr.isEmpty { item.ua = uaStr }
+            if !ck.isEmpty { item.cookie = ck }
+            if var o = merged[url] {
+                o.hits = max(o.hits, item.hits)
+                o.first = min(o.first, item.first)
+                o.last = max(o.last, item.last)
+                if !item.referrer.isEmpty { o.referrer = item.referrer }
+                if !item.ua.isEmpty { o.ua = item.ua }
+                if !item.cookie.isEmpty { o.cookie = item.cookie }
+                merged[url] = o
+            } else {
+                merged[url] = item
+            }
+        }
+        // 最近出现的排前面 —— 页面上刚显示出来的图最可能就是要找的那张
+        return Array(merged.values).sorted { $0.last > $1.last }
     }
 
     /// 同目录的清单变体（master / media / 线路）合并成一组，每组选一条代表：
@@ -1422,7 +1504,9 @@ extension BrowserModel: WKScriptMessageHandler {
             let href = (body["href"] as? String) ?? ""
             let mse = (body["mse"] as? Bool) ?? false
             let raw = (body["items"] as? [[String: Any]]) ?? []
-            self.ingest(tab: t, isCurrent: isCurrent, href: href, mse: mse, raw: raw)
+            let rawImgs = (body["images"] as? [[String: Any]]) ?? []
+            self.ingest(tab: t, isCurrent: isCurrent, href: href, mse: mse,
+                        raw: raw, imgs: rawImgs)
         }
     }
 }
