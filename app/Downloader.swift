@@ -32,6 +32,11 @@ struct HLSDownloader {
         case badStatus(Int, String)
         case noVariant
         case noSegment(String)
+        /// ★ v1.0.134：清单里有分片行，但**每一行都解析不出地址**。
+        ///   以前这种情况会走到 noSegment，报出"没有解析出任何分片"——
+        ///   看着像"清单是空的"，其实清单里有东西，是我们读不懂它的地址。
+        ///   分开报，用户和排查都能一眼看出是哪一类。
+        case noAddress(String, [String])
         case decryptFailed
         case unsupported(String)
 
@@ -42,6 +47,12 @@ struct HLSDownloader {
             case .noSegment(let head):
                 return "m3u8 里没有解析出任何分片"
                     + (head.isEmpty ? "" : " —— 取回内容开头：\(head)")
+            case .noAddress(let head, let bad):
+                // 说清"清单里其实有分片，是地址读不懂"——比笼统一句"没解析出分片"有用得多
+                var s = "这份清单里的分片地址读不懂（\(bad.count) 条）"
+                s += bad.isEmpty ? "" : " —— 例如：\(bad[0])"
+                if !head.isEmpty { s += "\n取回内容开头：\(head)" }
+                return s
             case .decryptFailed: return "分片解密失败（AES-128）"
             case .unsupported(let why):
                 // ★ 宁可诚实地失败，也不产出「打不开但显示成功」的残缺文件
@@ -114,7 +125,16 @@ struct HLSDownloader {
         //   残缺文件，界面上还显示「下载成功」。产出坏文件却报成功，比直接失败恶劣得多。
         if let why = playlist.unsupportedReason { throw Fail.unsupported(why) }
 
-        guard !playlist.segmentURLs.isEmpty else { throw Fail.noSegment(head) }
+        // ★ v1.0.134：分清两种"没分片"——
+        //   ① 清单里**本来就没有**分片行 → noSegment（清单确实是空的，多半给错了地址）
+        //   ② 清单里**有分片行，但地址全读不懂** → noAddress（能指名道姓说是哪条）
+        //   以前两种情况都报"没有解析出任何分片"，第二种的真正原因（地址读不懂）被埋掉了。
+        guard !playlist.segmentURLs.isEmpty else {
+            if !playlist.badAddressLines.isEmpty {
+                throw Fail.noAddress(head, playlist.badAddressLines)
+            }
+            throw Fail.noSegment(head)
+        }
         let segs = playlist.segmentURLs
         let total = segs.count
 

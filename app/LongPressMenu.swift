@@ -40,6 +40,15 @@ struct LongPressMenuView: View {
     /// ★ v1.0.118：点「选择清晰度」—— 用户提的需求（嗅探面板那条路能挑档，长按这条路不能）。
     ///   点它 → 关菜单 + 弹挑档卡片；选完档位**立刻开始下**（长按上没有"开始下载"按钮）。
     let onPickQuality: () -> Void
+    /// ★ v1.0.134：**点上面那张预览卡 = 用 App 内置播放器播**。
+    ///
+    /// 用户原话：「把长按下载里这个按钮增加一个调用内置播放器的功能，点击这个按钮就可以用
+    /// 我们自己内置的播放器播放视频，而不是用网站的那个播放器，而且要做到适用于视频播放和直播播放」。
+    ///
+    /// ★ 为什么做成"点预览卡"而不是"再加一行"（用户追加要求「不要加按钮名字」）：
+    ///   加一行就是多一块 UI、还多一行字；而上面那张大白卡本来就占着位置、又是**视频的示意**——
+    ///   让它可点是最自然的，界面上一个字都不用加。卡上加一个小播放角标提示"这里能点"。
+    let onPlay: () -> Void
     /// 点别处 / 收起
     let onClose: () -> Void
 
@@ -59,24 +68,40 @@ struct LongPressMenuView: View {
     }
 
     // MARK: - 上面那张预览卡（照截图：白卡 + 居中摄像机图标 + 域名）
+    //
+    // ★ v1.0.134：这张卡现在**可点** —— 点它 = 用 App 内置播放器播（`onPlay`）。
+    //   按用户要求「不要加按钮名字」，所以没有任何文字提示；
+    //   只在图标右侧叠一个小小的播放角标，让人知道这里能点（看一眼就懂，不占地方）。
 
     private var previewCard: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "video.fill")
-                .font(.system(size: 52, weight: .regular))
-                .foregroundStyle(Color(white: 0.35))
-            Text(info.host.isEmpty ? "视频" : info.host)
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .padding(.horizontal, 16)
+        Button(action: onPlay) {
+            VStack(spacing: 14) {
+                ZStack {
+                    Image(systemName: "video.fill")
+                        .font(.system(size: 52, weight: .regular))
+                        .foregroundStyle(Color(white: 0.35))
+                    // 小角标：右下角一颗播放三角 —— 暗示"这张卡能点开播"
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color(white: 0.35))
+                        .background(Circle().fill(Color(UIColor.systemBackground)).padding(1))
+                        .offset(x: 30, y: 20)
+                }
+                Text(info.host.isEmpty ? "视频" : info.host)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 16)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 168)
+            .background(Color(UIColor.systemBackground),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.22), radius: 20, y: 10)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 168)
-        .background(Color(UIColor.systemBackground),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: .black.opacity(0.22), radius: 20, y: 10)
+        .buttonStyle(.plain)
     }
 
     // MARK: - 下面那张行卡（标题行 + Download 行）

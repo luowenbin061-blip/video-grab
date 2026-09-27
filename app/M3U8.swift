@@ -42,6 +42,11 @@ struct M3U8Playlist {
     var sawByteRange = false
     /// 见过的 DRM 加密方式（SAMPLE-AES 那一类；AES-128 不算）
     var drmMethod: String?
+    /// ★ v1.0.134：**解析不出来的地址行**（前几条，截断存）。
+    ///   以前这种行是静默跳过的 —— 结果是"清单里明明有分片，我们却一个都没拿到"，
+    ///   报错只有一句"没有解析出任何分片"，看不出真正原因。
+    ///   现在留着它们，报错时能把"到底卡在哪条地址上"念给用户听。
+    var badAddressLines: [String] = []
 
     var totalDuration: Double { segmentDurations.reduce(0, +) }
 
@@ -65,6 +70,64 @@ struct M3U8Playlist {
 
     // MARK: - 解析
 
+    /// ★★ v1.0.134：把一行地址「洗干净」成 Foundation 认得的写法。
+    ///
+    /// ══ 为什么必须有这一步（用户 2026-09-28 报的真 bug）══
+    /// 有些站的分片名**直接写中文**（那一条是 `早披白莉莉莉音号083122-001-CARIB（口交）.0.ts`，
+    /// 还带两个**全角括号**）。而 `URL(string:)` 有个硬规矩：
+    /// **字符串里只要有一个非 ASCII 字符，它就直接返回 nil**（要求你先做百分号编码）。
+    /// 以前这里写的是 `guard let abs = URL(string: line, relativeTo: baseURL) else { continue }`
+    /// —— 遇到 nil 就**静默跳过**，于是所有分片行全被扔掉，最后报出
+    /// 「m3u8 里没有解析出任何分片」。用户看到的就是"个别视频下不了"
+    /// （其实规律是**分片地址带中文的**下不了），而亚瑟浏览器能下 ——
+    /// 因为它不走 `URL(string:)` 这条死路。
+    ///
+    /// ══ 规矩 ══
+    ///   · **只编码 ASCII 以外的字符 + 空格 + 几个会坏事的分隔符**；
+    ///     `:/?#[]@!$&'()*+,;=` 这些在 URL 里有意义，动了反而会改语义（`?` 是查询开始、
+    ///     `#` 是片段开始 —— 把它们编码掉，服务器就取不到东西了）。
+    ///   · **已经是 `%XX` 的不能重复编码**（`%` 后面跟两位十六进制就原样留着），
+    ///     否则 `%E6` 会变成 `%25E6`，请求路径就错了。
+    static func sanitizeURLString(_ s: String) -> String {
+        // 快路径：纯 ASCII 且没有空格 → 不用动（绝大多数站走这条，零开销）
+        if s.allSatisfy({ $0.isASCII && $0 != " " }) { return s }
+
+        var out = ""
+        out.reserveCapacity(s.count + 16)
+        let chars = Array(s)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "%", i + 2 < chars.count,
+               chars[i + 1].isHexDigit, chars[i + 2].isHexDigit {
+                // 已经是 %XX —— 原样保留（不重复编码）
+                out.append(c); out.append(chars[i + 1]); out.append(chars[i + 2])
+                i += 3
+                continue
+            }
+            if let scalar = c.unicodeScalars.first, c.unicodeScalars.count == 1,
+               c.isASCII, c != " " {
+                out.append(c)
+            } else {
+                // 非 ASCII / 空格 / 杂七杂八 → 逐个 UTF-8 字节编码
+                for b in String(c).utf8 {
+                    out += String(format: "%%%02X", b)
+                }
+            }
+            i += 1
+        }
+        return out
+    }
+
+    /// 把一行地址解析成绝对 URL。**先用 `sanitizeURLString` 洗一遍**，
+    /// 中文/全角/空格都不会再让 `URL(string:)` 返回 nil。
+    /// 真的还是解析不出来（地址本身就残缺）→ 返回 nil，由调用方决定怎么说。
+    static func resolve(_ line: String, relativeTo baseURL: URL) -> URL? {
+        if let u = URL(string: line, relativeTo: baseURL)?.absoluteURL { return u }
+        let fixed = sanitizeURLString(line)
+        return URL(string: fixed, relativeTo: baseURL)?.absoluteURL
+    }
+
     /// baseURL 用「真正取到这份 m3u8 的那个地址」，相对路径都相对它解析。
     static func parse(text: String, baseURL: URL) -> M3U8Playlist {
         var p = M3U8Playlist()
@@ -75,6 +138,8 @@ struct M3U8Playlist {
         var nextIsDiscontinuity = false
         var currentKey: Key?
         var mediaSequence = 0
+        /// ★ v1.0.134：解析不出来的地址行 —— 记下前几条，报错时能说清是哪种地址
+        var badLines: [String] = []
 
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -125,7 +190,8 @@ struct M3U8Playlist {
                         var uri: URL? = nil
                         if let u = attrString(line, "URI") {
                             // 关键：key 的 URI 常常是相对路径，必须相对这份 m3u8 解析
-                            uri = URL(string: u, relativeTo: baseURL)?.absoluteURL
+                            // ★ v1.0.134：同样走 resolve（可能带中文 / 全角）
+                            uri = resolve(u, relativeTo: baseURL)
                         }
                         var iv: Data? = nil
                         if let ivStr = attrString(line, "IV") {
@@ -150,7 +216,13 @@ struct M3U8Playlist {
             // ---- 非 # 开头 = 一个地址行 ----
             // 关键：分片名常常是纯文件名（无斜杠无协议），
             // 必须用 URL(string:relativeTo:) 解析成绝对地址，否则 404。
-            guard let abs = URL(string: line, relativeTo: baseURL)?.absoluteURL else { continue }
+            // ★ v1.0.134：`resolve` 会先做百分号编码 —— 中文 / 全角 / 空格的分片名
+            //   以前会让 URL(string:) 返回 nil，整行被静默跳过（这就是"个别视频下不了"的真因）。
+            guard let abs = resolve(line, relativeTo: baseURL) else {
+                // 解析不出来别静默吞掉 —— 记下来，调用方能把原因念给用户听
+                if badLines.count < 5 { badLines.append(String(line.prefix(80))) }
+                continue
+            }
 
             if let pv = pendingVariant {
                 // 在 master playlist 里，这一行是某个清晰度的 m3u8 地址
@@ -176,6 +248,7 @@ struct M3U8Playlist {
         // 之前这里写了个单值兜底，结果只有第 0 个分片 IV 正确、其余全错；
         // 现在只把 mediaSequence 带出去，由下载器逐分片算（mediaSequence + 下标）。
         p.mediaSequence = mediaSequence
+        p.badAddressLines = badLines
 
         return p
     }

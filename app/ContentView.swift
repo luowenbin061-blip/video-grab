@@ -196,6 +196,20 @@ struct ContentView: View {
     /// ★ v1.0.118：长按菜单里点「选择清晰度」→ 拿着那条视频的地址弹挑档卡片
     ///   （嗅探面板那条路本来就能挑档，用户要的是长按这条路也能）
     @State private var pickQuality: LongPressMenuInfo?
+    /// ★ v1.0.134：长按菜单里点**上面那张预览卡** → 用 App 内置播放器播这条视频。
+    ///
+    /// 用户原话：「点击这个按钮就可以用我们自己内置的播放器播放视频，而不是用网站的那个播放器，
+    /// 而且要做到适用于视频播放和直播播放」。
+    ///
+    /// ★ 为什么复用 `LongPressMenuInfo` 而不是新造一个类型：**播放要的东西跟挑档要的完全一样**
+    ///   —— 地址 + Referer/UA/Cookie（防盗链站缺一个就 403）。info 里这三样本来就有（v1.0.106 加的）。
+    /// ★ 为什么用 `PlayerBox.pendingPlay`（见下）承接、而不是自己开个 `fullScreenCover`：
+    ///   根因跟 v1.0.132 那次「点备份没弹选择器」是同一类 ——
+    ///   **在 sheet 里先关自己、再弹另一个 sheet，那个 View 已经被销毁，挂在上面的弹层没人响应**。
+    ///   长按菜单是 overlay（不是 sheet），但同一帧里"先关 overlay + 再抬 fullScreenCover"照样会撞：
+    ///   overlay 的淡出动画还在跑，新 cover 就跟着这棵正在消失的视图树挂上去了。
+    ///   → 统一走「先关菜单 → 隔一帧（160ms，和挑档那条路一样的等待）→ 再抬播放器」。
+    @State private var lpPlay: LongPressMenuInfo?
     /// ★ v1.0.119 首页快捷入口（单例：存档 + 图标缓存都在它手里）
     @ObservedObject private var homeStore = HomeStore.shared
     /// ★ v1.0.119 系统分享面板：要分享的东西（当前网址 / 下载好的文件 / 截出来的长图）
@@ -292,6 +306,16 @@ struct ContentView: View {
                                           pickQuality = m
                                       }
                                   },
+                                  // ★ v1.0.134：点预览卡 = 用内置播放器播。
+                                  //   跟挑档同一条「先关菜单、隔一帧再抬卡片」的路 —— 理由见 lpPlay 的声明处。
+                                  onPlay: {
+                                      model.closeLongPressMenu()
+                                      let m = info
+                                      Task { @MainActor in
+                                          try? await Task.sleep(nanoseconds: 160_000_000)
+                                          lpPlay = m
+                                      }
+                                  },
                                   onClose: { model.closeLongPressMenu() })
                     .transition(.opacity)
             }
@@ -309,6 +333,43 @@ struct ContentView: View {
                               cookie: m.cookie,
                               kind: .video)
                 model.showToast(v == nil ? "已加入下载（自动选档）" : "已加入下载")
+            }
+        }
+        // ★ v1.0.134：长按 → 点预览卡 = **用内置播放器播这条视频**（不走网页那个播放器）。
+        //
+        // 用户要的是「适用于视频播放和直播播放」——
+        // **不用做两套**：这个 PlayerSheet 就是下载页那个，它自己会看清单类型
+        //   · 普通点播（VOD 清单 / mp4 直链）→ 能拖进度、显示总时长
+        //   · 直播（清单里没有 ENDLIST）→ 按直播处理（不显示总时长，进度条不可拖）
+        // 两条路是同一个播放器按内容自动分的，所以"直播也能播"是白拿的。
+        //
+        // 地址：`URL(string:)` 对带中文/全角的地址会返回 nil（v1.0.134 修的那类站），
+        // 所以先走 M3U8.sanitizeURLString 洗一遍 —— 跟下载器用同一套洗法，两边行为一致。
+        //
+        // 播不出来怎么办（用户原话「实在播不出来就给提示」）：
+        // PlayerSheet 自身就有明确报错路径 —— 拿不到 ready 会走 `.failed` 分支显示
+        // "具体错误 + 地址"，另有 60 秒超时兜底。所以这里**不需要另加提示**，
+        // 但要保证异常地址能进到那一层：URL 实在拼不出来时给一句 toast，别静默什么都不发生。
+        .fullScreenCover(item: $lpPlay) { m in
+            let raw = M3U8.sanitizeURLString(m.url)
+            if let u = URL(string: raw) {
+                PlayerSheet(url: u,
+                            title: m.title.isEmpty ? "视频" : m.title,
+                            // 键固定成 "lp"：跟"预览"同一个道理 —— 长按随手点开不该污染
+                            // 任何真实下载任务的续看进度（各任务的键是任务 id）。
+                            key: "lp",
+                            headers: lpHeaders(m))
+            } else {
+                // 极少数：地址脏到洗都洗不出来。给一句人话，别让人对着黑屏猜。
+                Color.black.ignoresSafeArea()
+                    .overlay(
+                        Text("这个地址读不懂，播不了。\n可以换个源，或者直接下载试试。")
+                            .font(.system(size: 15))
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                            .padding(28)
+                    )
+                    .onTapGesture { lpPlay = nil }
             }
         }
         // ★ v1.0.119：系统分享面板（当前网页 / 拼好的长图 / 下载好的文件都走它）
@@ -835,6 +896,19 @@ struct ContentView: View {
                 // 点一下就能收掉（尤其证书那条现在会停 8 秒）
                 .onTapGesture { model.toast = nil }
         }
+    }
+
+    /// ★ v1.0.134：内置播放器播长按那条视频时带的请求头。
+    ///
+    /// 跟下载 / 嗅探预览同一个道理：防盗链站不给 Referer 就直接 403，
+    /// 播放器只会显示"播不了"，用户看不出是因为缺头。这三样在长按探测时就取回来了
+    /// （v1.0.106 加的），直接带上就行。
+    private func lpHeaders(_ m: LongPressMenuInfo) -> [String: String]? {
+        var h: [String: String] = [:]
+        if !m.ua.isEmpty { h["User-Agent"] = m.ua }
+        if !m.referrer.isEmpty { h["Referer"] = m.referrer }
+        if !m.cookie.isEmpty { h["Cookie"] = m.cookie }
+        return h.isEmpty ? nil : h
     }
 }
 
