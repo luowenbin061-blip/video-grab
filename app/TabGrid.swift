@@ -26,10 +26,13 @@ struct TabGridView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-
+            // ★ v1.0.108：网格页的顶栏整条去掉了（左边「标签页」标题 + 右边「完成」）。
+            //   理由（用户定）：① 底部已经有「完成」了，上面那个是重复入口；
+            //   ② 那颗标题显示的是"当前标签页组名"，平时根本用不上（组名只在多组时才有意义）。
+            //   顶栏只留给「标签页组」那一页 —— 进那一页**必须有返回入口**，否则出不来。
             if showingGroups {
+                header
+                Divider()
                 groupsPage
             } else if model.tabSnapshot.isEmpty {
                 emptyState
@@ -59,31 +62,23 @@ struct TabGridView: View {
 
     // MARK: - 顶栏
 
+    /// ★ v1.0.108：这个顶栏现在**只被「标签页组」那一页用**（返回必需）。
+    ///   网格页那套（组名 + 右上「完成」）整条删了 —— 见 body 里的说明。
+    ///   所以这里不再需要 if showingGroups 分支，也不再放「完成」（底部那个就是）。
     private var header: some View {
         HStack {
-            if showingGroups {
-                Button {
-                    showingGroups = false
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("标签页").font(.system(size: 16))
-                    }
+            Button {
+                showingGroups = false
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("标签页").font(.system(size: 16))
                 }
-                .buttonStyle(.plain)
-            } else {
-                // ★ v1.0.107：这里原来是个按钮（点它进「标签页组」）。
-                //   按用户要求，切换/管理的入口挪到**底栏中间那行字**上了 —— 这里只留显示。
-                Text(model.currentGroup?.displayName ?? "标签页")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.primary)
             }
+            .buttonStyle(.plain)
 
             Spacer()
-
-            Button("完成") { isPresented = false }
-                .font(.system(size: 16))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
