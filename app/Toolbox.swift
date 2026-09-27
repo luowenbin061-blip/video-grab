@@ -32,6 +32,8 @@ struct ToolboxView: View {
     @State private var showBookmarkPicker = false
     /// ★ v1.0.119：分享本页
     @State private var shareItem: SheetURL?
+    /// ★ v1.0.124：点「导出 PDF」先问一句 —— 只要 PDF，还是顺带也转一张图片
+    @State private var showPDFOptions = false
 
     // ★ v1.0.119：这两个开关直接读 UserDefaults（@AppStorage）——
     //   这样"已开/已关"的字样会跟着状态自己变，不用把整个 BrowserModel 订阅进来。
@@ -65,16 +67,15 @@ struct ToolboxView: View {
                          detail: noImage ? "已开 · 不下载图片" : "已关 · 点一下开") {
                         model.toggleNoImage()
                     }
-                    cell("photo.on.rectangle.angled", "截长图", .teal,
-                         detail: "整页拼成一张") {
-                        longShot()
-                    }
                     cell("square.and.arrow.up", "分享本页", .blue) { share() }
 
-                    // ★ v1.0.122：导出 PDF —— 跟「截长图」不是一回事（见 PagePDF.swift 顶部注释）：
-                    //   那条是位图拼接，这条是 WebKit 自己排版的**矢量** PDF，一次成型。
+                    // ★ v1.0.122：导出 PDF —— WebKit 自己排版的**矢量** PDF，一次成型。
+                    //   ★ v1.0.124：原来的「截长图」（逐屏截图再拼）**已删** ——
+                    //     那条路一直拼不干净（接缝、固定栏重复、有些页干脆截不动），
+                    //     而 PDF 能转出干净的长图，等于把它替代掉了。
+                    //     点这格会问一句：只要 PDF，还是顺带也转一张图片。
                     cell("doc.richtext", "导出 PDF", .red,
-                         detail: "矢量的，字能选中") { exportPDF() }
+                         detail: "可顺带转图片") { showPDFOptions = true }
                 }
                 .padding(16)
 
@@ -99,6 +100,16 @@ struct ToolboxView: View {
                 Button("从相册（可多选）") { showPhotoPicker = true }
                 Button("从「文件」（可多选）") { showFilePicker = true }
                 Button("取消", role: .cancel) {}
+            }
+            // ★ v1.0.124：导出 PDF 前的两个形态 —— 用户按场合自己挑
+            //   （发 PDF 文件 vs 直接发能看的图）
+            .confirmationDialog("整页保存", isPresented: $showPDFOptions,
+                                titleVisibility: .visible) {
+                Button("只要 PDF（矢量）") { exportPDF(asImage: false) }
+                Button("PDF + 图片（能发微信、存相册）") { exportPDF(asImage: true) }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("PDF 的字能选中、能搜索；图片是转出来的长图，能在聊天里直接看。")
             }
             .sheet(isPresented: $showPhotoPicker) {
                 PhotoPickerBox { files in
@@ -206,23 +217,14 @@ struct ToolboxView: View {
         }
     }
 
-    /// ★ v1.0.119：截长图 —— 收起卡片后再动（截图要整个网页视图在最前面）。
-    /// 结果由主界面弹分享面板（见 BrowserModel.longShotFile → ContentView.onChange）
-    private func longShot() {
+    /// ★ v1.0.122 / v1.0.124：导出 PDF（asImage = 顺带也转一张图片）。
+    /// 先收起卡片（渲染要网页视图在最前面），结果由主界面弹分享面板
+    /// （见 BrowserModel.pagePDFResult → ContentView.onChange）
+    private func exportPDF(asImage: Bool) {
         isPresented = false
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
-            model.captureLongShot()
-        }
-    }
-
-    /// ★ v1.0.122：导出 PDF —— 同样先收起卡片（渲染要网页视图在前台）。
-    /// 结果同样由主界面弹分享面板（见 BrowserModel.pagePDFFile）
-    private func exportPDF() {
-        isPresented = false
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            model.exportPagePDF()
+            model.exportPagePDF(asImage: asImage)
         }
     }
 

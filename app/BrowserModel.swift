@@ -1406,76 +1406,17 @@ final class BrowserModel: NSObject, ObservableObject {
         objectWillChange.send()
     }
 
-    /// 截长图的结果文件（非空 → 界面弹系统分享面板；收起后由界面清掉）
-    @Published var longShotFile: URL?
+    /// 导出结果的落盘文件（PDF 一份；选了"顺带转图片"就是两份）。
+    /// 非空 → 界面把它交给系统分享面板（存文件 / 发微信 / 存相册都走它）
+    @Published var pagePDFResult: [URL]?
 
-    /// ★ v1.0.120：正在截长图 —— 防重入。
-    /// 截图过程要滚页面、还要占着绘图上下文，中途再点一次会互相打架（图会花）。
-    private var shooting = false
-
-    /// 把当前整页拼成一张长图
-    func captureLongShot() {
-        guard !shooting else {
-            showToast("上一张还在拼，稍等一下")
-            return
-        }
-        guard let wv = currentTab?.webView else {
-            showToast("现在没有打开的网页")
-            return
-        }
-        shooting = true
-        showToast("正在拼长图，页面越长越慢…")
-        LongShot.capture(wv) { [weak self] result in
-            guard let self else { return }
-            self.shooting = false
-            switch result {
-            case .success(let shot):
-                self.finishLongShot(shot)
-            case .failure(let e):
-                self.showToast(e.localizedDescription)
-            }
-        }
-    }
-
-    private func finishLongShot(_ shot: LongShot.Shot) {
-        let img = shot.image
-        // ★ v1.0.120：改存 **JPEG（质量 0.95）**，不再存 PNG。
-        //   3 倍分辨率拼出来动辄两三千万像素，PNG 会有几十 MB ——
-        //   存相册、发微信都很吃力；JPEG 0.95 肉眼看不出差别、体积只有几分之一。
-        guard let data = img.jpegData(compressionQuality: 0.95) else {
-            showToast("长图生成失败（转不出图片数据）")
-            return
-        }
-        let f = DateFormatter()
-        f.dateFormat = "yyyyMMdd-HHmmss"
-        let u = JobStore.file(named: "长图-\(f.string(from: Date())).jpg")
-        do {
-            try data.write(to: u, options: .atomic)
-        } catch {
-            showToast("长图存不下来（磁盘可能满了）")
-            return
-        }
-        longShotFile = u                    // 界面收到就弹分享面板（里面能存相册/发微信）
-        // 报**实际像素**（不是点）—— 用户一眼能看出清晰度有没有真的提上去
-        let px = Int((img.size.width * img.scale).rounded())
-        let py = Int((img.size.height * img.scale).rounded())
-        // ★ v1.0.121：把"降了清晰度"和"有几屏没截到"都说出来，不静默
-        var msg = "长图已生成 \(px)×\(py) 像素 · \(max(1, data.count / 1024 / 1024)) MB"
-        if shot.reducedQuality { msg += "\n页面较长，已降低清晰度" }
-        if shot.missedScreens > 0 { msg += "\n有 \(shot.missedScreens) 屏没截到（可能留空）" }
-        showToast(msg)
-    }
-
-    /// 导出 PDF 的结果文件（非空 → 界面弹系统分享面板；收起后由界面清掉）
-    @Published var pagePDFFile: URL?
-
-    /// ★ v1.0.122：正在导出 PDF —— 防重入（跟截长图同一个理由：中途再点会互相打架）
+    /// ★ v1.0.122：正在导出 —— 防重入（渲染期间再点一次会互相打架）
     private var exportingPDF = false
 
-    /// 把当前整页导出成**矢量** PDF。
-    /// 跟截长图是两条独立的路：这条走 WebKit 自己的排版渲染器，
-    /// 输出矢量（文字可选中/可搜索）、一次成型（没接缝、固定栏不重复）。
-    func exportPagePDF() {
+    /// 把当前整页导出成**矢量** PDF；asImage = 顺带转一张长图。
+    /// 为什么要转图：PDF 在微信里只能当"文件"发（对方得点开）；
+    /// 图片能直接在聊天里看到、也能存相册 —— 用户自己按场合选。
+    func exportPagePDF(asImage: Bool = false) {
         guard !exportingPDF else {
             showToast("上一份还在导出，稍等一下")
             return
@@ -1485,34 +1426,66 @@ final class BrowserModel: NSObject, ObservableObject {
             return
         }
         exportingPDF = true
-        showToast("正在导出 PDF，页面越长越慢…")
+        showToast(asImage ? "正在导出 PDF 和图片，页面越长越慢…" : "正在导出 PDF，页面越长越慢…")
         PagePDF.capture(wv) { [weak self] result in
             guard let self else { return }
             self.exportingPDF = false
             switch result {
             case .success(let out):
-                self.finishPagePDF(out)
+                self.finishPagePDF(out, asImage: asImage)
             case .failure(let e):
                 self.showToast(e.localizedDescription)
             }
         }
     }
 
-    private func finishPagePDF(_ out: PagePDF.Output) {
+    private func finishPagePDF(_ out: PagePDF.Output, asImage: Bool) {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
-        let u = JobStore.file(named: "\(Self.pdfName(from: pageTitle))-\(f.string(from: Date())).pdf")
+        let stamp = f.string(from: Date())
+        let base = Self.pdfName(from: pageTitle)
+        let pdfURL = JobStore.file(named: "\(base)-\(stamp).pdf")
         do {
-            try out.data.write(to: u, options: .atomic)
+            try out.data.write(to: pdfURL, options: .atomic)
         } catch {
             showToast("PDF 存不下来（磁盘可能满了）")
             return
         }
-        pagePDFFile = u                    // 界面收到就弹分享面板（存文件 / 发微信都走它）
-        var msg = "PDF 已生成 \(out.widthPts)×\(out.heightPts) 点 · \(max(1, out.data.count / 1024)) KB"
-        if out.pages > 1 { msg += " · \(out.pages) 页" }
-        if out.veryLong { msg += "\n页面很长，是一整页的大 PDF（有些阅读器会缩得很小）" }
-        showToast(msg)
+
+        let head: String = {
+            var m = "PDF 已生成 \(out.widthPts)×\(out.heightPts) 点 · \(max(1, out.data.count / 1024)) KB"
+            if out.pages > 1 { m += " · \(out.pages) 页" }
+            if out.veryLong { m += "\n页面很长，是一整页的大 PDF（有些阅读器会缩得很小）" }
+            return m
+        }()
+
+        guard asImage else {
+            pagePDFResult = [pdfURL]                  // 界面收到就弹分享面板
+            showToast(head)
+            return
+        }
+
+        // 转图是 CPU 活（几千万像素），**丢后台**，别把界面卡住。
+        // 渲染只碰 CoreGraphics / UIImage，不碰 UI，所以放后台是安全的。
+        showToast(head + "\n正在转图片…")
+        let data = out.data
+        let jpgURL = JobStore.file(named: "\(base)-\(stamp).jpg")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let img = PagePDF.rasterize(data)
+            let jpg = img?.jpegData(compressionQuality: 0.9)
+            var ok = false
+            if let jpg { ok = (try? jpg.write(to: jpgURL, options: .atomic)) != nil }
+            let px = Int(((img?.size.width ?? 0) * (img?.scale ?? 1)).rounded())
+            let py = Int(((img?.size.height ?? 0) * (img?.scale ?? 1)).rounded())
+            let kb = jpg.map { max(1, $0.count / 1024) } ?? 0
+            let tail = ok ? "\n图片 \(px)×\(py) 像素 · \(kb) KB"
+                          : "\n图片没转出来（页面太大或太复杂），PDF 是好的"
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pagePDFResult = ok ? [pdfURL, jpgURL] : [pdfURL]
+                self.showToast(head + tail)
+            }
+        }
     }
 
     /// 网页标题 → 能当文件名用的短名（去掉路径分隔符这类；太长就截断）

@@ -25,7 +25,7 @@ struct HomeItem: Codable, Identifiable, Equatable {
 /// ★ rawValue 会被写进存档，**改名字等于让老存档认不出来** —— 只加不改。
 enum HomeFeature: String, CaseIterable, Identifiable {
     case sniff, downloads, bookmarks, toolbox, settings, tabs, copyURL
-    case desktopMode, noImage, longShot, pagePDF, share
+    case desktopMode, noImage, pagePDF, share
 
     var id: String { rawValue }
 
@@ -40,7 +40,6 @@ enum HomeFeature: String, CaseIterable, Identifiable {
         case .copyURL:     return "复制 URL"
         case .desktopMode: return "桌面模式"
         case .noImage:     return "无图模式"
-        case .longShot:    return "截长图"
         case .pagePDF:     return "导出 PDF"
         case .share:       return "分享"
         }
@@ -58,7 +57,6 @@ enum HomeFeature: String, CaseIterable, Identifiable {
         case .copyURL:     return "link"
         case .desktopMode: return "desktopcomputer"
         case .noImage:     return "eye.slash"
-        case .longShot:    return "photo.on.rectangle.angled"
         case .pagePDF:     return "doc.richtext"
         case .share:       return "square.and.arrow.up"
         }
@@ -105,6 +103,12 @@ final class HomeStore: ObservableObject {
         let fm = FileManager.default
         try? fm.createDirectory(at: Self.iconsDir, withIntermediateDirectories: true)
         items = Self.readFromDisk()
+        // ★ v1.0.124：清掉"这个版本已经不认识"的功能格子。
+        //   删掉某个功能（这回是截长图）后，老存档里可能还留着它 ——
+        //   不清的话首页上会多出一个点不动、显示问号的小方块。
+        let before = items.count
+        items.removeAll { $0.kind == .feature && HomeFeature(rawValue: $0.value) == nil }
+        if items.count != before { save() }
         loadIconsFromDisk()
     }
 

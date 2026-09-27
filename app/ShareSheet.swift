@@ -1,6 +1,18 @@
 import SwiftUI
 import UIKit
 
+/// 一次要分享的一组东西。
+///
+/// 为什么要包一层：`.sheet(item:)` 要求 Identifiable，而 `[Any]` 本身没有 id。
+/// 为什么可能是好几件：导出「PDF + 图片」会同时产出两份文件，
+/// 交给面板让用户自己挑（有些 App 只接第一件，所以调用方把图片排在前面）。
+struct ShareBundle: Identifiable {
+    let id = UUID()
+    var items: [Any]
+
+    init(_ items: [Any]) { self.items = items }
+}
+
 /// 系统分享面板（`UIActivityViewController` 的 SwiftUI 包装）。
 ///
 /// 用系统的而不是自己画：分享目标（微信、存到文件、AirDrop…）是系统提供的，

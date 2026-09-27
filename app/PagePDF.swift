@@ -172,6 +172,72 @@ enum PagePDF {
         }
     }
 
+    /// 把一份 PDF 渲染成一张**长图**（给"想发微信 / 存相册"的场景）。
+    ///
+    /// ★ 它替代了原来那个「截长图」（逐屏截图再拼）——
+    ///   因为 PDF 是**一次排版成型**的，渲染出来没有接缝、固定导航栏不重复、
+    ///   也不受"页面真正在滚的是哪个元素"影响 —— 那些恰好就是截图拼接拼不干净的地方。
+    ///
+    /// 用 CoreGraphics 自己画（不引 PDFKit）：新建位图上下文 → 逐页
+    /// `drawPDFPage` 到各自的纵向位置。CGContext 与 PDF 都是**左下原点、y 向上**，
+    /// 所以不用翻转，只要把每页平移到"从顶部数第 N 段"的位置。
+    /// ★ 标 nonisolated：转图是几千万像素的 CPU 活，调用方会把它丢到后台队列去，
+    ///   在主线程隔离的类型里不标就调不了（只碰 CoreGraphics，不碰 UI，所以安全）。
+    nonisolated static func rasterize(_ data: Data, targetScale: Double = 2.0,
+                                      maxPixels: Double = 20_000_000) -> UIImage? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let doc = CGPDFDocument(provider), doc.numberOfPages >= 1 else { return nil }
+
+        // ① 量总尺寸（多页就按顺序竖着排）
+        var boxes: [CGRect] = []
+        var totalH: Double = 0
+        var maxW: Double = 0
+        for i in 1...doc.numberOfPages {
+            guard let pg = doc.page(at: i) else { continue }
+            let r = pg.getBoxRect(.mediaBox)
+            guard r.width > 1, r.height > 1 else { continue }
+            boxes.append(r)
+            totalH += Double(r.height)
+            maxW = max(maxW, Double(r.width))
+        }
+        guard !boxes.isEmpty, totalH > 1, maxW > 1 else { return nil }
+
+        // ② 输出倍率：默认 2 倍（视网膜下字能看清）；超像素上限就等比降，最低 1 倍
+        //    （1 倍 = PDF 自己的点数，仍然能看清字；再低就真糊了）
+        var s = targetScale
+        if maxW * totalH * s * s > maxPixels {
+            s = max(1.0, sqrt(maxPixels / (maxW * totalH)))
+        }
+        let pxW = max(1, Int((maxW * s).rounded()))
+        let pxH = max(1, Int((totalH * s).rounded()))
+
+        guard let ctx = CGContext(data: nil, width: pxW, height: pxH,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            return nil
+        }
+        ctx.setFillColor(UIColor.white.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: pxW, height: pxH))
+
+        // ③ 逐页画。某页的**底边** y = 总高 − 它上面所有页的高度和 − 它自己的高
+        var above: Double = 0
+        for (idx, box) in boxes.enumerated() {
+            guard let pg = doc.page(at: idx + 1) else { continue }
+            let h = Double(box.height)
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: CGFloat((totalH - above - h) * s))
+            ctx.scaleBy(x: CGFloat(s), y: CGFloat(s))
+            ctx.translateBy(x: -box.origin.x, y: -box.origin.y)   // 页面可能带原点偏移
+            ctx.drawPDFPage(pg)
+            ctx.restoreGState()
+            above += h
+        }
+
+        guard let cg = ctx.makeImage() else { return nil }
+        return UIImage(cgImage: cg, scale: 1, orientation: .up)
+    }
+
     /// 读 PDF 的页数和第一页尺寸 —— 用 CoreGraphics，不引 PDFKit（少一个依赖）
     private static func readInfo(_ data: Data) -> (Int, CGSize) {
         guard let p = CGDataProvider(data: data as CFData),

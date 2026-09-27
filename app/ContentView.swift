@@ -199,7 +199,9 @@ struct ContentView: View {
     /// ★ v1.0.119 首页快捷入口（单例：存档 + 图标缓存都在它手里）
     @ObservedObject private var homeStore = HomeStore.shared
     /// ★ v1.0.119 系统分享面板：要分享的东西（当前网址 / 下载好的文件 / 截出来的长图）
-    @State private var shareURL: SheetURL?
+    /// ★ v1.0.124：一次要分享的东西可能有好几件（导出 PDF + 转出的图片）
+    ///   原来是单个 URL，现在换成容器；分享网址 / 分享下载好的文件仍是一件的写法。
+    @State private var shareBundle: ShareBundle?
     /// 地址栏是否正在被编辑 —— 正在打字时，页面导航不能覆盖他输入的内容
     @FocusState private var urlFocused: Bool
 
@@ -310,20 +312,20 @@ struct ContentView: View {
             }
         }
         // ★ v1.0.119：系统分享面板（当前网页 / 拼好的长图 / 下载好的文件都走它）
-        .sheet(item: $shareURL) { s in
-            ActivityView(items: [s.url])
+        .sheet(item: $shareBundle) { b in
+            ActivityView(items: b.items)
         }
-        // ★ v1.0.119：长图拼好了 → 立刻把分享面板抬起来（里面就能"存储图像"或发微信）
-        .onChange(of: model.longShotFile) { u in
-            guard let u else { return }
-            shareURL = SheetURL(url: u)
-            model.longShotFile = nil          // 用完就清，免得下次进来又弹
-        }
-        // ★ v1.0.122：PDF 导好了 → 同样立刻抬分享面板（存文件 / 发微信都从这里走）
-        .onChange(of: model.pagePDFFile) { u in
-            guard let u else { return }
-            shareURL = SheetURL(url: u)
-            model.pagePDFFile = nil
+        // ★ v1.0.122：PDF 导好了 → 立刻抬分享面板（存文件 / 发微信 / 存相册都从这里走）
+        //   v1.0.124：选了"顺带转图片"时这里会带两份（PDF + JPG）
+        .onChange(of: model.pagePDFResult) { list in
+            guard let list, !list.isEmpty else { return }
+            // ★ 图片排前面：有些 App（微信这类分享扩展）只接第一个 item ——
+            //   用户选"PDF + 图片"图的往往是"能直接在聊天里看到的那张图"，
+            //   而 PDF 依然在分享面板里（想发文件就选「存储到文件」）。
+            let imgs = list.filter { $0.pathExtension.lowercased() == "jpg" }
+            let rest = list.filter { $0.pathExtension.lowercased() != "jpg" }
+            shareBundle = ShareBundle(imgs + rest)
+            model.pagePDFResult = nil
         }
         // 长按诊断（设置里打开才出现）：显示这一步卡在哪，12 秒自己消失
         // 功能卡片：点底栏「≡」调出；点空白处收起，选完一项也收起。
@@ -703,7 +705,7 @@ struct ContentView: View {
             model.showToast("还没打开网页")
             return
         }
-        shareURL = SheetURL(url: u)
+        shareBundle = ShareBundle([u])
     }
 
     /// ★ v1.0.119：首页上的功能格子 → 接到各自动作。
@@ -719,7 +721,6 @@ struct ContentView: View {
         case .copyURL:     copyCurrentURL()
         case .desktopMode: model.toggleDesktopUA()
         case .noImage:     model.toggleNoImage()
-            case .longShot:    model.captureLongShot()
             case .pagePDF:     model.exportPagePDF()
             case .share:       shareCurrentPage()
         }
