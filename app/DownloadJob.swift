@@ -303,8 +303,10 @@ final class DownloadJob: ObservableObject, Identifiable {
                   resolution: resolution,
                   phaseText: phase,
                   notes: notes,
-                  cookie: cookie,
-                  kind: kindHint?.key)
+                  kind: kindHint?.key,
+                  // ★ v1.0.127：必须跟在 kind 后面 —— JobRecord 是 memberwise init，
+                  //   参数顺序**必须与字段声明顺序一致**（#127 就挂在这里：kind 写在了 cookie 后面）。
+                  cookie: cookie)
     }
 
     // MARK: - 控制
