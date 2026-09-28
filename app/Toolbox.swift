@@ -71,7 +71,8 @@ struct ToolboxView: View {
                     // 点一下切换（不是进二级页面）。
                     cell("desktopcomputer", "桌面模式", .indigo, isOn: desktopUA) {
                         model.toggleDesktopUA()
-                        note = model.desktopUA ? "桌面模式已开" : "桌面模式已关"
+                        // ★ desktopUA 是本视图的 @AppStorage（不是 model 的）——v1.0.150 就写错了
+                        note = desktopUA ? "桌面模式已开" : "桌面模式已关"
                     }
                     cell("eye.slash", "无图模式", .gray, isOn: noImage) {
                         model.toggleNoImage()
