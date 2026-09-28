@@ -793,6 +793,12 @@ final class DownloadJob: ObservableObject, Identifiable {
             // ★ v1.0.101：上次已经拼好的 .ts 还在（有完成标记、大小也对得上）
             //   → 不重下也不重拼，直接进转码。崩在转码阶段的重试，从此是"重转一遍"
             //   而不是"重下几百 MB"。（标记由下面拼接校验通过时写入。）
+            // ★ v1.0.141：这两个在下面的"下载分支"里被赋值，但**声明必须放在分支外面** ——
+            //   因为后面"转成 MP4"那一整段要用它们判断"新路是不是已经把成品做出来了"。
+            //   （run #141 就是踩了这条：声明放里面 → cannot find 'ffmpegMP4' in scope。
+            //    这种"作用域"错文本自检查不出来，和"类型名不存在"是同一类。）
+            var ffmpegMP4: URL? = nil
+            var ffmpegDone = false
             var joinedBytes: Int64 = 0
             if let m = Self.readJoinedMarker(id: id), m.bytes > 0,
                JobStore.size(of: tsURL.lastPathComponent) == m.bytes {
@@ -814,13 +820,13 @@ final class DownloadJob: ObservableObject, Identifiable {
                 duration = rd.duration
                 let partsBytes = Self.dirSize(tempDir)
                 notes.append("✓ 分片下齐 \(rd.segmentCount) 个 · 合计 \(Self.mb(partsBytes))MB")
-                let ffmpegMP4 = await remuxViaFFmpeg(
+                ffmpegMP4 = await remuxViaFFmpeg(
                     partsDir: tempDir,
                     mp4URL: JobStore.file(named: baseName + ".mp4"),
                     partsBytes: partsBytes,
                     headers: Self.ctxHeaders(ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie),
                     playlist: rd.playlist)
-                let ffmpegDone = (ffmpegMP4 != nil)
+                ffmpegDone = (ffmpegMP4 != nil)
                 // 回落：ffmpeg 那条不成 → 走"自己解密 + 自己拼接"的老路（分片都在，只需拼接）
                 if !ffmpegDone {
                 let r = try await dl.run(sourceURL: src)

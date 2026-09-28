@@ -100,6 +100,13 @@ chk('G7 有体积统计 dirSize', 'private static func dirSize(' in djc)
 chk('G8 有上下文头助手', 'private static func ctxHeaders(' in djc)
 chk('G9 缩略图在新路成功时也抽（thumbSource = ffmpegMP4）',
     'var thumbSource: URL? = ffmpegMP4' in djc)
+# ★★ run #141 编译失败就挂在这：这两个变量声明在"下载分支"里、却在分支外用 →
+#    `cannot find 'ffmpegMP4' in scope`。文本自检查不出"作用域"，所以这里单列一条位置判据钉死。
+chk('G10 声明必须在分支外（在 joinedBytes 声明之前）—— run #141 的坑',
+    djc.index('var ffmpegMP4: URL? = nil') < djc.index('var joinedBytes: Int64 = 0'))
+chk('G11 分支里是赋值、不是重新声明',
+    'let ffmpegMP4 = await remuxViaFFmpeg(' not in djc
+    and 'ffmpegMP4 = await remuxViaFFmpeg(' in djc)
 
 print()
 print('=== H. 回归：前几版不能被碰掉 ===')
