@@ -131,6 +131,17 @@ chk('G12 ★闭合位置：必须在收尾代码之前（只包住"转成 MP4"�
     '关闭 `if !ffmpegDone`' in _raw_dj
     and _raw_dj.index('关闭 `if !ffmpegDone`')
         < _raw_dj.index('            failed = nil\n            if let cur = Self.stageName(stage) { stageEnd(cur) }'))
+# ★★ v1.0.145 真机踩的坑：ffmpeg 成功后只写了一条记录就 return，**没把"完成"的状态设全** →
+#   `mp4Ready` 一直 false → 界面只给「在线播放」、收尾还说"没完全成功"（本地成品明明在）。
+#   这条判据盯着"新路成功时必须设全那几项状态"。
+chk('G13 ★新路成功后必须设全完成状态（mp4Ready/outputName/fileSize/phase）',
+    'mp4Ready = true' in djc
+    and 'outputName = mp4URL.lastPathComponent' in djc
+    and 'phase = "完成 · MP4 已就绪"' in djc
+    and djc.count('mp4Ready = true') >= 2)      # 老路一处 + 新路一处
+# ★★ 空间检查对新路是多余的、而且有害（成品已做好，fileSize 已是成品大小）
+chk('G14 空间检查只对老路做（新路已完成，不能再拦）',
+    'if !ffmpegDone {\n                let need = fileSize + 200 * 1024 * 1024' in _raw_dj)
 
 print()
 print('=== H. 回归：前几版不能被碰掉 ===')

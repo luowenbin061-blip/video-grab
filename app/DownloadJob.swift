@@ -867,18 +867,25 @@ final class DownloadJob: ObservableObject, Identifiable {
 
             // ── 写一条只含这个 .ts 的 m3u8 ──────────────────────────
             // 只在"转 mp4 失败"时才用得上（本地 .ts 必须靠本机 HTTP 包成 HLS 才能播）
+            // ★ v1.0.145：新路（ffmpeg 直接把成品做出来）**根本没有 .ts**，
+            //   再写这条清单是指向一个不存在的文件 —— 所以那条路直接跳过。
             let playName = "play_\(id.uuidString.prefix(8)).m3u8"
-            let wrotePlaylist = Self.writePlaylist(tsName: tsURL.lastPathComponent,
-                                                   duration: duration,
-                                                   folder: JobStore.dir,
-                                                   name: playName) != nil
+            let wrotePlaylist = ffmpegDone ? false
+                : Self.writePlaylist(tsName: tsURL.lastPathComponent,
+                                     duration: duration,
+                                     folder: JobStore.dir,
+                                     name: playName) != nil
 
             // ★ v1.0.101：转码前**先看空间**（.ts 与 .mp4 会同时存在）——
             //   不够就提前说清楚，而不是写到一半失败（那种失败还要被自动重试，白烧一遍）。
-            let need = fileSize + 200 * 1024 * 1024
-            if let free = JobStore.freeSpace(), free < need {
-                throw Self.fail("手机空间不够：转码还要约 \(Self.mb(need - free))MB。"
-                                + "先清一下空间（设置 → 浏览数据 → 清理下载临时文件），再点重试。")
+            // ★ v1.0.145：**新路已经做完成品了**，这里再检查就是多余、而且有害 ——
+            //   那时 `fileSize` 是**成品**大小，再要求"额外 200MB"会把一次成功判成"空间不够"。
+            if !ffmpegDone {
+                let need = fileSize + 200 * 1024 * 1024
+                if let free = JobStore.freeSpace(), free < need {
+                    throw Self.fail("手机空间不够：转码还要约 \(Self.mb(need - free))MB。"
+                                    + "先清一下空间（设置 → 浏览数据 → 清理下载临时文件），再点重试。")
+                }
             }
 
             var thumbSource: URL? = ffmpegMP4    // 新路(Ffmpeg)成功时就是它
@@ -1053,6 +1060,20 @@ final class DownloadJob: ObservableObject, Identifiable {
                     }
                 })
             notes.append("✓ 转成 MP4（ffmpeg）：\(detail)")
+            // ★★ v1.0.145：**成功之后必须把"完成"的状态设全** —— 这里以前只写了一条记录就
+            //   `return` 了，于是 `mp4Ready` 一直是 false，界面就变成：
+            //     · 本地成品明明在，却只给「在线播放」（`localPlaybackURL()` 返回 nil）
+            //     · 收尾那句还说"没完全成功"
+            //     · 状态那行还停在上一步的详情上（因为 `phase` 被最后那次 onProgress 覆盖了）
+            //   下面这几行跟**老路成功时一一对应**，漏一个就出上面那种症状。别再漏。
+            mp4Ready = true
+            outputName = mp4URL.lastPathComponent
+            playlistName = nil
+            fileSize = JobStore.size(of: mp4URL.lastPathComponent)
+            resolution = detail.components(separatedBy: " · ").first ?? detail
+            phase = "完成 · MP4 已就绪"
+            notes.append("✓ 已转成 MP4（程序内保存，需要的话点「存相册」或「存文件夹」）")
+            Self.removeJoinedMarker(id: id)
             return mp4URL
         } catch {
             notes.append("✗ 交给 ffmpeg 没成：\(error.localizedDescription)")
