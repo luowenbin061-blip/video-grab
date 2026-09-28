@@ -221,7 +221,8 @@ enum PlaylistRelay {
     /// ★ v1.0.142：以前只返回 nil，调用方只能说一句"凑不成一份本地清单" —— 于是真机上
     ///   根本看不出卡在哪（白猜一轮）。失败原因必须留痕，这一条是这个项目的铁律。
     static func localPlaylistURL(playlist: M3U8Playlist, partsDir: URL,
-                                 headers: [String: String]?) async -> (url: URL?, why: String?, skippedAds: Int) {
+                                 headers: [String: String]?, requestURL: URL?)
+        async -> (url: URL?, why: String?, skippedAds: Int, anchorNote: String?) {
         let fm = FileManager.default
         try? fm.createDirectory(at: partsDir, withIntermediateDirectories: true)
 
@@ -237,22 +238,35 @@ enum PlaylistRelay {
         //   → 只保留"地址里带请求目录名"的那一段（= 用户要的那部），广告段不下。
         //   判据：分片地址里含不含【请求清单所在目录的名字】（如 fGzW9Ut6）。
         //   ★ 判据不成立（全都匹配 / 全都不匹配）→ **全下**，绝不误删真片。
-        var anchor: String? = nil
-        if let b = base {
-            let n = b.deletingLastPathComponent().lastPathComponent
-            if n.count >= 4 { anchor = n }        // 太短的目录名当锚点容易误伤
+        // ★★ v1.0.148：锚点改从【用户请求的那个地址】取，并且**试一组候选**。
+        //   v1.0.147 只拿【清单所在目录】当锚点 —— 但这份清单是 master 挑出来的**变体**，
+        //   它的地址是 `…/fGzW9Ut6/2000kb/hls/index.m3u8`，所在目录名是 **`hls`**，
+        //   每个分片地址里都有 "hls" → 全都"匹配" → 过滤根本不生效（真机：一句跳过都没有）。
+        //   现在的候选 = 请求地址 / 清单地址 路径里的目录名（从深到浅、长度≥4），
+        //   **谁能把分片分成两堆**（有匹配也有不匹配）就用谁；都不行 → 全下并写明原因。
+        var candidates: [String] = []
+        for u in [requestURL, base].compactMap({ $0 }) {
+            for p in u.deletingLastPathComponent().pathComponents.reversed() {
+                if p.count >= 4, p != "/", !candidates.contains(p) { candidates.append(p) }
+            }
         }
+        var anchor: String? = nil
         var matched = 0, missed = 0
-        if anchor != nil {
+        for cand in candidates {
+            var m = 0, x = 0
             for raw in playlist.rawText.components(separatedBy: .newlines) {
                 let line = raw.trimmingCharacters(in: .whitespaces)
                 if line.isEmpty || line.hasPrefix("#") { continue }
                 let u = M3U8Playlist.resolve(line, relativeTo: base ?? partsDir)?.absoluteString ?? line
-                if u.contains(anchor!) { matched += 1 } else { missed += 1 }
+                if u.contains(cand) { m += 1 } else { x += 1 }
             }
+            if m > 0, x > 0 { anchor = cand; matched = m; missed = x; break }
         }
-        // 只在"有匹配也有不匹配"时才过滤 —— 两种极端都按全下处理
-        let keepOnlyMatched = (anchor != nil && matched > 0 && missed > 0)
+        let keepOnlyMatched = (anchor != nil)
+        let anchorNote: String? = (anchor == nil && !candidates.isEmpty)
+            ? "没找到能区分广告的锚点（试过：" + candidates.prefix(3).joined(separator: " / ")
+              + "），这份清单按原样全部下载"
+            : nil
         var skippedAds = 0
 
         for raw in playlist.rawText.components(separatedBy: .newlines) {
@@ -282,7 +296,7 @@ enum PlaylistRelay {
                 } else {
                     resolved = URL(string: M3U8Playlist.sanitizeURLString(info.uri))
                 }
-                guard let ku = resolved else { return (nil, "钥匙地址读不懂：\(info.uri.prefix(80))", 0) }
+                guard let ku = resolved else { return (nil, "钥匙地址读不懂：\(info.uri.prefix(80))", 0, nil) }
                 var req = URLRequest(url: ku, timeoutInterval: 20)
                 if let headers {
                     for (k, v) in headers where !v.isEmpty { req.setValue(v, forHTTPHeaderField: k) }
@@ -290,11 +304,11 @@ enum PlaylistRelay {
                 guard let (kd, resp) = try? await URLSession.shared.data(for: req),
                       let http = resp as? HTTPURLResponse,
                       (200...299).contains(http.statusCode),
-                      kd.count >= 16 else { return (nil, "钥匙取不到（状态码或内容不对）：\(ku.absoluteString.prefix(80))", 0) }
+                      kd.count >= 16 else { return (nil, "钥匙取不到（状态码或内容不对）：\(ku.absoluteString.prefix(80))", 0, nil) }
                 let name = DLName.key(keyIndex)
                 do {
                     try kd.write(to: partsDir.appendingPathComponent(name), options: .atomic)
-                } catch { return (nil, "钥匙写盘失败", 0) }
+                } catch { return (nil, "钥匙写盘失败", 0, nil) }
                 keyCache[info.uri] = name
                 keyIndex += 1
                 out.append(replacingURI(line, with: name))
@@ -304,7 +318,7 @@ enum PlaylistRelay {
             // 分片行 → 本地相对名（按出现顺序，从 seg_000000.ts 起）
             let name = DLName.segment(segIndex)
             guard fm.fileExists(atPath: partsDir.appendingPathComponent(name).path) else {
-                return (nil, "第 \(segIndex) 个分片文件不在（\(name)）—— 分片没下齐或名字对不上", 0)
+                return (nil, "第 \(segIndex) 个分片文件不在（\(name)）—— 分片没下齐或名字对不上", 0, nil)
             }
             segIndex += 1
             // ★ 广告过滤（判据见上）：只留"带请求目录名"的那段
@@ -314,16 +328,16 @@ enum PlaylistRelay {
             }
             out.append(name)
         }
-        guard segIndex > 0 else { return (nil, "这份清单里没有分片行", 0) }
+        guard segIndex > 0 else { return (nil, "这份清单里没有分片行", 0, nil) }
 
         let dst = partsDir.appendingPathComponent(DLName.playlist)
         guard let body = out.joined(separator: "\n").appending("\n").data(using: .utf8) else {
-            return (nil, "清单文本编码失败", 0)
+            return (nil, "清单文本编码失败", 0, nil)
         }
         do {
             try body.write(to: dst, options: .atomic)
-        } catch { return (nil, "清单写盘失败：\(error.localizedDescription)", 0) }
-        return (dst, nil, skippedAds)
+        } catch { return (nil, "清单写盘失败：\(error.localizedDescription)", 0, nil) }
+        return (dst, nil, skippedAds, anchorNote)
     }
 
     /// 从 `#EXT-X-KEY` 行里取出 METHOD 与 URI（没有 URI 就返回 nil）

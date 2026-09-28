@@ -142,6 +142,14 @@ chk('G13 ★新路成功后必须设全完成状态（mp4Ready/outputName/fileSi
 # ★★ 空间检查对新路是多余的、而且有害（成品已做好，fileSize 已是成品大小）
 chk('G14 空间检查只对老路做（新路已完成，不能再拦）',
     'if !ffmpegDone {\n                let need = fileSize + 200 * 1024 * 1024' in _raw_dj)
+# ★★ v1.0.148：锚点曾取自【变体清单所在目录】（= "hls"）→ 每个分片地址都含 "hls" → 全部
+#   "匹配" → 过滤不生效（真机：一句跳过都没有）。现在锚点要从【用户请求的地址】取并试一组候选。
+chk('G15 remuxViaFFmpeg 把【用户请求的地址】带给了 localPlaylistURL',
+    'requestURL: URL?' in code_of(read('PlaylistRelay.swift'))
+    and 'requestURL: src)' in djc)
+chk('G16 锚点是"试一组候选、谁能分成两堆就用谁"',
+    'let keepOnlyMatched = (anchor != nil)' in code_of(read('PlaylistRelay.swift'))
+    and 'candidates.prefix(3)' in read('PlaylistRelay.swift'))
 
 print()
 print('=== H. 回归：前几版不能被碰掉 ===')

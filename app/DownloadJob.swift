@@ -828,7 +828,8 @@ final class DownloadJob: ObservableObject, Identifiable {
                     mp4URL: JobStore.file(named: baseName + ".mp4"),
                     partsBytes: partsBytes,
                     headers: Self.ctxHeaders(ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie),
-                    playlist: rd.playlist)
+                    playlist: rd.playlist,
+                    requestURL: src)
                 ffmpegDone = (ffmpegMP4 != nil)
                 // 回落：ffmpeg 那条不成 → 走"自己解密 + 自己拼接"的老路（分片都在，只需拼接）
                 if !ffmpegDone {
@@ -1028,9 +1029,11 @@ final class DownloadJob: ObservableObject, Identifiable {
     ///
     /// 返回成品 mp4 的地址（成功）；nil = 这条路没走通，调用方回落到老路。
     private func remuxViaFFmpeg(partsDir: URL, mp4URL: URL, partsBytes: Int64,
-                                headers: [String: String]?, playlist: M3U8Playlist?) async -> URL? {
-        let (plOpt, why, skippedAds) = await PlaylistRelay.localPlaylistURL(
-            playlist: playlist ?? M3U8Playlist(), partsDir: partsDir, headers: headers)
+                                headers: [String: String]?, playlist: M3U8Playlist?,
+                                requestURL: URL) async -> URL? {
+        let (plOpt, why, skippedAds, anchorNote) = await PlaylistRelay.localPlaylistURL(
+            playlist: playlist ?? M3U8Playlist(), partsDir: partsDir, headers: headers,
+            requestURL: requestURL)
         guard let pl = plOpt else {
             // ★ v1.0.142：把**具体是哪一步不行**写进记录。以前只说"凑不成清单"，
             //   真机上根本看不出卡在哪 —— 我自己都因此白猜了一轮。
@@ -1042,6 +1045,10 @@ final class DownloadJob: ObservableObject, Identifiable {
             //   不只是"干净"：广告和真片的**视频参数不一样**（实测 1280×720 vs 1280×2276），
             //   拼在一起播到第二段就"只出声音、画面停在广告最后一帧"。
             notes.append("· 这份清单里混着别的片子 —— 已跳过 \(skippedAds) 个分片，只留你要的那部。")
+        } else if let note = anchorNote {
+            // ★ v1.0.148：没跳过分片时也要说清**为什么没跳**（锚点没找到），
+            //   不然真机上"头尾还有广告"就又成了一笔糊涂账。
+            notes.append("· \(note)")
         }
         notes.append("· 把「解密 + 拼接 + 转 MP4」整段交给内置 ffmpeg 做（它支持逐段换钥匙）。")
         if let cur = Self.stageName(stage) { stageEnd(cur) }
