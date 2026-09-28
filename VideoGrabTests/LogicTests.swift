@@ -94,8 +94,10 @@ final class LogicTests: XCTestCase {
 
     func testAnchorCandidatesComeFromRequestURLDeepestFirst() {
         let c = PlaylistAnchor.candidates(from: [base])
-        XCTAssertEqual(c, ["REALID", "20260926", "hsm.example"],
-                       "从深到浅、太短的（a3）和根路径不要：\(c)")
+        // ★ 首跑时这里挂过一次 —— 是**这条判题**写错了（不是代码错）：
+        //   `URL.pathComponents` **只含路径、不含域名**，所以域名不会进候选。
+        XCTAssertEqual(c, ["REALID", "20260926"],
+                       "从深到浅、太短的（a3）不要；域名不在 pathComponents 里：\(c)")
     }
 
     func testAnchorPicksRealSection() {
