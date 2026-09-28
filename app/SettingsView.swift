@@ -296,6 +296,8 @@ struct SettingsView: View {
                     ? "已清理下载临时文件，释放约 \(max(1, freed / 1048576))MB"
                         + (active.isEmpty ? "。" : "（正在下载的 \(active.count) 个任务已跳过）")
                     : "没有需要清理的临时文件。"
+                // ★ v1.0.154：清理改的是磁盘，顺手把"已用空间"刷新（下载列表那行才准）
+                downloads.refreshUsedSpace()
                 isCleaning = false
             }
         }

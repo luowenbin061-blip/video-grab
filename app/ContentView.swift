@@ -62,10 +62,53 @@ final class DownloadCenter: ObservableObject {
 
     func save() {
         JobStore.save(jobs.map { $0.snapshot() })
+        // ★ v1.0.154：任务增删都会改已用空间 —— 顺手刷一次（后台做，不卡界面）
+        refreshUsedSpace()
+        keepUsedSpaceFreshWhileBusy()
     }
 
     var activeCount: Int { jobs.filter { $0.isActive }.count }
-    var usedSpace: Int64 { JobStore.totalSize() }
+
+    // ══ ★★ v1.0.154：已用空间改成「**后台统计 + 结果带回来**」══
+    //   以前这里是 `var usedSpace: Int64 { JobStore.totalSize() }` —— 一个**计算属性**。
+    //   而 `totalSize()` 要**递归遍历整个下载目录**（分片目录里上千个文件，
+    //   三条任务就是两三千次 stat）。下载列表（占用那行 + 顶部存储条）每次重渲染
+    //   都会求值一次 → **全在界面线程上扫盘** → 滚动发涩、删完顿一下。
+    //   现在：真正统计在**后台线程**做，结果回主线程；同一时刻只允许一个在跑（天然节流）。
+    //   ★ 数字仍是**真值**（只是晚几十毫秒出现）—— 故意不做"假缓存"：
+    //     缓存要接一堆失效点，漏一个就显示旧数字，那种错比卡顿更难发现。
+    @Published private(set) var usedSpace: Int64 = 0
+    private var usedSpaceBusy = false
+    private var usedSpaceLoop = false
+
+    /// 重新统计已用空间（后台做，结果回主线程）
+    func refreshUsedSpace() {
+        guard !usedSpaceBusy else { return }        // 上一轮还没完就跳过（节流）
+        usedSpaceBusy = true
+        Task.detached(priority: .utility) {
+            let n = JobStore.totalSize()
+            await MainActor.run {
+                self.usedSpace = n
+                self.usedSpaceBusy = false
+            }
+        }
+    }
+
+    /// 有任务在跑时每 2 秒自动刷一次；都停了就退出（**空闲时零开销**）。
+    /// 只允许存在一条循环链，重复调用不会叠加。
+    func keepUsedSpaceFreshWhileBusy() {
+        guard !usedSpaceLoop else { return }
+        guard jobs.contains(where: { $0.isActive }) else { return }
+        usedSpaceLoop = true
+        Task { @MainActor in
+            while jobs.contains(where: { $0.isActive }) {
+                refreshUsedSpace()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+            refreshUsedSpace()                       // 最后一个任务停下后再补一次（把成品算进去）
+            usedSpaceLoop = false
+        }
+    }
 
     // MARK: - 后台保活（画中画进度窗）
 
@@ -1638,6 +1681,11 @@ struct DownloadList: View {
                         }
                         .listStyle(.insetGrouped)
                         .searchable(text: $query, prompt: "搜标题或地址")
+                        // ★ v1.0.154：进下载列表时统计一次；有任务在跑就自动跟着刷
+                        .task {
+                            center.refreshUsedSpace()
+                            center.keepUsedSpaceFreshWhileBusy()
+                        }
                     }
                     // ★ v1.0.127 多选：底部操作条（只在多选态出现，平时完全不占地方）
                     .safeAreaInset(edge: .bottom) {
