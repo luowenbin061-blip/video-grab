@@ -34,11 +34,15 @@ enum FFmpegConverter {
     static let faststartLimit: Int64 = 400 * 1024 * 1024
 
     /// 返回体检结果文本（写进过程记录）
-    static func toMP4(ts: URL, mp4: URL,
+    ///
+    /// ★ v1.0.141：输入从"拼好的本地 .ts"改成**任意可读输入** —— 因为新的主路径
+    ///   是直接喂它一份"全本地清单"（分片与钥匙都在本地），解码/解密/拼接都由它做。
+    ///   `inputBytes` 传"喂进去的那堆东西总共多大"（清单路径传分片总字节），用于体检。
+    static func toMP4(input: URL, inputBytes: Int64, mp4: URL,
                       onProgress: @escaping (Double, String) -> Void) async throws -> String {
         try? FileManager.default.removeItem(at: mp4)
 
-        let inSize = size(of: ts)
+        let inSize = inputBytes > 0 ? inputBytes : size(of: input)
         let useFaststart = inSize < faststartLimit
 
         onProgress(0, "正在转成 MP4…")
@@ -66,7 +70,7 @@ enum FFmpegConverter {
             "ffmpeg",
             "-hide_banner", "-loglevel", "error",
             "-y",
-            "-i", ts.path,
+            "-i", input.path,
             "-map", "0:v:0",      // 第一条视频流
             "-map", "0:a:0?",     // 第一条音频流（? = 没有也不报错）
             "-sn", "-dn",         // 字幕/数据流不要（mp4 装不下会整单失败）
@@ -118,6 +122,26 @@ enum FFmpegConverter {
             throw NSError(domain: "VideoGrab.FFmpeg", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "输出里没有视频轨（这一步没成功）"])
         }
+
+        // ★★ v1.0.141：**成品体检**（本机实测得出的必要条件，不是保险起见）。
+        //
+        // 实测：清单里钥匙用错时，ffmpeg 的**退出码照样是 0**，只是内容只剩三分之一。
+        // 真实事故里成品 2.0 MB 而输入 212.7 MB，就这么一路报成了「成功」，
+        // 然后原始数据还被删掉 —— 片子彻底没了。所以"没报错"根本不等于"转对了"。
+        //
+        // 为什么放宽到 50%~150%：`-c copy` 只换容器，正常只差几个百分点；
+        // 留这么宽是**为了不误伤**（容器开销、不同封装的细微差异）。
+        let outSize = size(of: mp4)
+        if inSize > 0 {
+            let ratio = Double(outSize) / Double(inSize)
+            guard ratio >= 0.5, ratio <= 1.5 else {
+                throw NSError(domain: "VideoGrab.FFmpeg", code: -2,
+                              userInfo: [NSLocalizedDescriptionKey: String(
+                                format: "成品大小不对劲：输入 %.1f MB、成品 %.1f MB（只有 %.0f%%）"
+                                      + " —— 多半是解密或拼接没成功，所以这次不算成功（原始分片都给你留着）",
+                                Double(inSize) / 1_048_576, Double(outSize) / 1_048_576, ratio * 100)])
+            }
+        }
         let dur = (try? await asset.load(.duration).seconds) ?? 0
         var info = String(format: "视频轨 %d 条 · 时长 %.0f 秒", vTracks.count, dur)
         if aTracks.isEmpty {
@@ -131,7 +155,6 @@ enum FFmpegConverter {
             }
         }
         info += useFaststart ? " · 已优化开头" : " · 大文件跳过开头优化（省一遍读写）"
-        let outSize = size(of: mp4)
         if outSize > 0 {
             info += String(format: " · 成品 %.1f MB", Double(outSize) / 1_048_576)
         }

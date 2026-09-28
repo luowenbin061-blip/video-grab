@@ -203,6 +203,116 @@ enum PlaylistRelay {
         return String(String(format: "%016llx", h).prefix(8))
     }
 
+    /// ★★ v1.0.141：把"已下好的分片 + 取下来的钥匙"写成一份**本地清单**，
+    /// 交给内嵌 ffmpeg 去做**解密 / 拼接 / 换封装**。
+    ///
+    /// ══ 为什么要这么干（实测得出的结论，不是推想）══
+    ///   · 我们自己那套"一把钥匙解全片 + 自己拼接"，遇到**逐段换钥匙**的清单必废：
+    ///     真实事故里 409 个分片有 401 个解密错 → 成品 2MB 而输入 212.7MB，**界面还报成功**。
+    ///   · 而 ffmpeg 的 hls 解复用器**本来就按段切钥匙**、fMP4 也会处理 —— 这是它的本职工作。
+    ///
+    /// ══ 命名与协议：本机跑真 ffmpeg 试了三种组合才定下来 ══
+    ///   · 分片 `.ts` + 钥匙走 http        → ❌ 钥匙协议不在白名单（只允许 file/crypto/data）
+    ///   · 分片 `.ts` + 钥匙 `.part`（本地）→ ❌ `.part` 不在文件后缀白名单
+    ///   · **分片与钥匙都叫 `.ts`、清单放同目录写相对名** → ✅ 通过（退出码 0、轨齐全）
+    ///   → 所以清单里**不出现任何绝对地址**，也**不需要起本机 HTTP 服务**。
+    ///
+    /// 返回 nil = 这条路走不通（缺分片、钥匙取不到、清单是空的），调用方回落到老路。
+    static func localPlaylistURL(playlist: M3U8Playlist, partsDir: URL,
+                                 headers: [String: String]?) async -> URL? {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: partsDir, withIntermediateDirectories: true)
+
+        var out: [String] = []
+        var segIndex = 0
+        var keyIndex = 0
+        var keyCache: [String: String] = [:]          // 远端钥匙地址 → 本地文件名（同一把只取一次）
+        let base = playlist.baseURL
+
+        for raw in playlist.rawText.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+
+            if line.hasPrefix("#") {
+                guard line.hasPrefix("#EXT-X-KEY") else {
+                    // ★ `#EXT-X-MAP`（fMP4 的初始化段）现在**故意不处理** ——
+                    //   那种流还没验证过，宁可让 ffmpeg 直接报错，也不假装能做。
+                    out.append(line)
+                    continue
+                }
+                guard let info = keyAttr(line) else { out.append(line); continue }
+                if info.method.uppercased() == "NONE" {
+                    out.append("#EXT-X-KEY:METHOD=NONE")
+                    continue
+                }
+                if let cached = keyCache[info.uri] {
+                    out.append(replacingURI(line, with: cached))
+                    continue
+                }
+                // 钥匙地址可能是相对路径 → 按**清单的基准地址**解析（不是分片的）
+                let resolved: URL?
+                if let b = base {
+                    resolved = M3U8Playlist.resolve(info.uri, relativeTo: b)
+                } else {
+                    resolved = URL(string: M3U8Playlist.sanitizeURLString(info.uri))
+                }
+                guard let ku = resolved else { return nil }
+                var req = URLRequest(url: ku, timeoutInterval: 20)
+                if let headers {
+                    for (k, v) in headers where !v.isEmpty { req.setValue(v, forHTTPHeaderField: k) }
+                }
+                guard let (kd, resp) = try? await URLSession.shared.data(for: req),
+                      let http = resp as? HTTPURLResponse,
+                      (200...299).contains(http.statusCode),
+                      kd.count >= 16 else { return nil }
+                let name = DLName.key(keyIndex)
+                do {
+                    try kd.write(to: partsDir.appendingPathComponent(name), options: .atomic)
+                } catch { return nil }
+                keyCache[info.uri] = name
+                keyIndex += 1
+                out.append(replacingURI(line, with: name))
+                continue
+            }
+
+            // 分片行 → 本地相对名（按出现顺序，从 seg_000000.ts 起）
+            let name = DLName.segment(segIndex)
+            guard fm.fileExists(atPath: partsDir.appendingPathComponent(name).path) else { return nil }
+            out.append(name)
+            segIndex += 1
+        }
+        guard segIndex > 0 else { return nil }
+
+        let dst = partsDir.appendingPathComponent(DLName.playlist)
+        guard let body = out.joined(separator: "\n").appending("\n").data(using: .utf8) else { return nil }
+        do {
+            try body.write(to: dst, options: .atomic)
+        } catch { return nil }
+        return dst
+    }
+
+    /// 从 `#EXT-X-KEY` 行里取出 METHOD 与 URI（没有 URI 就返回 nil）
+    private static func keyAttr(_ line: String) -> (method: String, uri: String)? {
+        guard let r = line.range(of: "URI=\"") else { return nil }
+        let rest = line[r.upperBound...]
+        guard let r2 = rest.range(of: "\"") else { return nil }
+        let uri = String(rest[..<r2.lowerBound])
+        guard !uri.isEmpty else { return nil }
+        var method = ""
+        if let mr = line.range(of: "METHOD=") {
+            method = String(line[mr.upperBound...].prefix { $0 != "," })
+                .trimmingCharacters(in: .whitespaces)
+        }
+        return (method, uri)
+    }
+
+    /// 把 `#EXT-X-KEY` 行里的 URI 换成给定名字
+    private static func replacingURI(_ line: String, with name: String) -> String {
+        guard let info = keyAttr(line) else { return line }
+        return line.replacingOccurrences(of: "URI=\"" + info.uri + "\"",
+                                        with: "URI=\"" + name + "\"")
+    }
+
     /// 把一行 `#` 标签里**所有** `URI="…"` 都重写成绝对远端地址。
     ///
     /// ★★ 为什么必须"所有"，而不是只认 `#EXT-X-KEY`、更不能只动含非 ASCII 的：

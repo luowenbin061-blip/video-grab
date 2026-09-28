@@ -803,6 +803,26 @@ final class DownloadJob: ObservableObject, Identifiable {
                 // 再 stageBegin("转码")，多起一次会让阶段耗时对不上（埋点就白做了）。
                 notes.append("· 上次已经拼好了（\(Self.mb(m.bytes))MB）→ 跳过下载与拼接，直接转码")
             } else {
+                // ★★ v1.0.141：**主路径** —— 先只把分片下齐（不解密、不拼接），
+                //   然后把「解密 + 拼接 + 换封装」整个交给内置 ffmpeg。
+                //   为什么（本机实测）：我们自己那套是"一把钥匙解全片"，遇到**逐段换钥匙**必废
+                //   （真实事故：409 片里 401 片解密错 → 成品 2MB 而输入 212.7MB，界面还报成功）；
+                //   而 ffmpeg 的 hls 解复用器本来就按段切钥匙。
+                opt.skipJoin = true
+                let rd = try await dl.run(sourceURL: src)
+                if Task.isCancelled { paused = true; onUpdate?(); return }
+                duration = rd.duration
+                let partsBytes = Self.dirSize(tempDir)
+                notes.append("✓ 分片下齐 \(rd.segmentCount) 个 · 合计 \(Self.mb(partsBytes))MB")
+                let ffmpegMP4 = await remuxViaFFmpeg(
+                    partsDir: tempDir,
+                    mp4URL: JobStore.file(named: baseName + ".mp4"),
+                    partsBytes: partsBytes,
+                    headers: Self.ctxHeaders(ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie),
+                    playlist: rd.playlist)
+                let ffmpegDone = (ffmpegMP4 != nil)
+                // 回落：ffmpeg 那条不成 → 走"自己解密 + 自己拼接"的老路（分片都在，只需拼接）
+                if !ffmpegDone {
                 let r = try await dl.run(sourceURL: src)
                 if Task.isCancelled { paused = true; onUpdate?(); return }
 
@@ -833,6 +853,7 @@ final class DownloadJob: ObservableObject, Identifiable {
                                  + "（成品 \(Self.mb(fileSize))MB / 写进 \(Self.mb(joinedBytes))MB）"
                                  + "，分片保留待重试")
                 }
+                }
             }
 
             // ── 写一条只含这个 .ts 的 m3u8 ──────────────────────────
@@ -851,6 +872,8 @@ final class DownloadJob: ObservableObject, Identifiable {
                                 + "先清一下空间（设置 → 浏览数据 → 清理下载临时文件），再点重试。")
             }
 
+            var thumbSource: URL? = ffmpegMP4    // 新路(Ffmpeg)成功时就是它
+            if !ffmpegDone {
             // ── 自动转 MP4（留在程序内，不外发）────────────────────
             if let cur = Self.stageName(stage) { stageEnd(cur) }
             stageBegin("转成 MP4")
@@ -884,7 +907,6 @@ final class DownloadJob: ObservableObject, Identifiable {
             if Task.isCancelled { paused = true; onUpdate?(); return }
             notes.append(contentsOf: log.map(\.line))
 
-            var thumbSource: URL?          // 转成功了才有片子可抽
             if ok {
                 mp4Ready = true
                 outputName = mp4URL.lastPathComponent
@@ -927,6 +949,7 @@ final class DownloadJob: ObservableObject, Identifiable {
             onUpdate?()
             // 缩略图放在「完成」之后抽：界面立刻变成完成态，图晚一两秒自己出现。
             // 抽不出来也没关系 —— 列表显示占位图，功能一点不受影响。
+            }
             if let s = thumbSource { await makeThumbnail(from: s) }
 
         } catch {
@@ -968,6 +991,76 @@ final class DownloadJob: ObservableObject, Identifiable {
             finished = true
             onUpdate?()
         }
+    }
+
+    // MARK: - ★ v1.0.141 交给 ffmpeg 去解密 / 拼接 / 换封装
+
+    /// 把「解密 + 拼接 + 换封装」整段交给内置 ffmpeg。
+    ///
+    /// ══ 为什么不再自己解密 / 自己拼接 ══
+    /// 我们那套是"从清单里取**一把**钥匙，然后解全部" —— 遇到**逐段换钥匙**的清单必废：
+    /// 真实事故里 409 个分片有 401 个解密错，成品 **2.0MB 而输入 212.7MB**，
+    /// 界面还报「成功」，紧接着原始数据被删掉，片子彻底没了。
+    /// 而 ffmpeg 的 hls 解复用器**本来就按段切钥匙** —— 本机实测：
+    /// **3 把钥匙 → 输出 38.9 秒完整；故意只用一把 → 只剩 12 秒**。
+    /// 所以这件事该交给它做，而不是我再手写一遍。
+    ///
+    /// 返回成品 mp4 的地址（成功）；nil = 这条路没走通，调用方回落到老路。
+    private func remuxViaFFmpeg(partsDir: URL, mp4URL: URL, partsBytes: Int64,
+                                headers: [String: String]?, playlist: M3U8Playlist?) async -> URL? {
+        guard let pl = await PlaylistRelay.localPlaylistURL(playlist: playlist ?? M3U8Playlist(),
+                                                           partsDir: partsDir,
+                                                           headers: headers) else {
+            notes.append("· 分片/钥匙凑不成一份本地清单，改走老路（自己解密 + 拼接）。")
+            return nil
+        }
+        notes.append("· 把「解密 + 拼接 + 转 MP4」整段交给内置 ffmpeg 做（它支持逐段换钥匙）。")
+        if let cur = Self.stageName(stage) { stageEnd(cur) }
+        stageBegin("转成 MP4")
+        loggedTranscodeStep = -1
+        phase = "正在转成 MP4…"
+        do {
+            let detail = try await FFmpegConverter.toMP4(
+                input: pl, inputBytes: partsBytes, mp4: mp4URL,
+                onProgress: { [weak self] p, msg in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.stage = .convert
+                        self.convertProgress = p
+                        self.phase = msg.isEmpty ? "正在转成 MP4…" : msg
+                        let step = min(10, Int(p * 10))
+                        if step > self.loggedTranscodeStep {
+                            self.loggedTranscodeStep = step
+                            if step < 10 { self.notes.append("· 正在转成 MP4… \(step * 10)%") }
+                        }
+                    }
+                })
+            notes.append("✓ 转成 MP4（ffmpeg）：\(detail)")
+            return mp4URL
+        } catch {
+            notes.append("✗ 交给 ffmpeg 没成：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// 目录里所有文件的总字节数 —— 体检时拿它当"输入体积"（成品体积要跟它比）
+    private static func dirSize(_ dir: URL) -> Int64 {
+        guard let list = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.fileSizeKey], options: []) else { return 0 }
+        var n: Int64 = 0
+        for f in list {
+            n += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return n
+    }
+
+    /// 取清单/取钥匙要带的页面上下文（防盗链站少一个就 403）
+    private static func ctxHeaders(ua: String, referer: String?, cookie: String?) -> [String: String]? {
+        var h: [String: String] = [:]
+        if !ua.isEmpty { h["User-Agent"] = ua }
+        if let r = referer, !r.isEmpty { h["Referer"] = r }
+        if let c = cookie, !c.isEmpty { h["Cookie"] = c }
+        return h.isEmpty ? nil : h
     }
 
     // MARK: - 拼接完成标记（v1.0.101）

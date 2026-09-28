@@ -10,6 +10,27 @@ import Foundation
 ///    provisioning profile，URLSession 的 background session 回调没保证。所以这里
 ///    不依赖后台，而是把「已下好的分片文件」当作断点，支持再次启动时跳过。
 ///  · 支持 AES-128-CBC 解密（CryptoKit 不做 CBC，用 CommonCrypto）。
+/// 分片/钥匙的文件命名 —— **只在这里定义一份**（下载器与边下边播都取这里的）。
+///
+/// ★★ v1.0.141：后缀从 `.part` 改成 `.ts`。为什么必须改（**本机跑真 ffmpeg 实测出来的，不是猜**）：
+///   FFmpeg 的 hls 解复用器有一份「允许的分片后缀」白名单，另外对**钥匙**还有协议白名单
+///   （只允许 `file/crypto/data`）。实测三种组合：
+///     · 分片 `.ts` + 钥匙走 http              → ❌ `Protocol 'http' not on whitelist 'file,crypto,data'`
+///     · 分片 `.ts` + 钥匙 `.part`（本地）      → ❌ `.part` 不在文件后缀白名单
+///     · **分片和钥匙都叫 `.ts`、清单放同目录用相对名** → ✅ 通过（退出码 0、轨齐全、38.96 秒）
+///   所以统一用 `.ts` —— 这也是**在老版本 ffmpeg 上同样安全**的写法（新版的白名单在老版里不存在）。
+///   而**升级前已经下好的 `.part` 分片仍然认**（见 `oldSegment`），不会让它们白下。
+enum DLName {
+    /// 现在的分片名
+    static func segment(_ i: Int) -> String { String(format: "seg_%06d.ts", i) }
+    /// 升级前的老分片名（只在"读"的时候兜底找它）
+    static func oldSegment(_ i: Int) -> String { String(format: "seg_%06d.part", i) }
+    /// 本地钥匙文件名（同样 `.ts` 后缀 —— 原因见上面实测）
+    static func key(_ n: Int) -> String { String(format: "key_%d.ts", n) }
+    /// 本地清单名：**放在分片同目录**，里面的地址写相对名
+    static let playlist = "local.m3u8"
+}
+
 struct HLSDownloader {
 
     struct Options {
@@ -26,6 +47,13 @@ struct HLSDownloader {
         var outputURL: URL
         /// Cookie —— 防盗链/需登录的站要带；取 AES key 的请求也用它
         var cookie: String? = nil
+        /// ★ v1.0.141：只下分片、**不解密也不拼接**。
+        ///
+        /// 为什么要这个开关：新的主路径是"把分片和钥匙整个交给 ffmpeg"——
+        /// 它解密比我们全（**支持逐段换钥匙**、fMP4 的初始化段等，都是本机实测过的）。
+        /// 所以先只把分片下齐，交给它去拼；只有它那条路失败时，才回来走
+        /// "自己解密 + 自己拼接"的老路（那条路仍然保留，但会经过同一套成品体检）。
+        var skipJoin = false
     }
 
     enum Fail: LocalizedError {
@@ -111,6 +139,9 @@ struct HLSDownloader {
         ///   现在缺分片会直接抛错，DownloadJob 还会再核对一次
         ///   "写入个数 == 期望个数"，**两处独立计数**才算真的对上。
         let writtenSegments: Int
+        /// ★ v1.0.141：`skipJoin` 模式下把清单带回去 —— 调用方要靠它（含 `rawText` 原文）
+        /// 生成"喂给 ffmpeg 的本地清单"。正常模式为 nil。
+        let playlist: M3U8Playlist?
     }
 
     // MARK: - 主流程
@@ -208,6 +239,20 @@ struct HLSDownloader {
             throw Fail.badStatus(0, "有 \(total - done) 个分片没下完，已保留已下载的部分，可再点一次继续")
         }
 
+        // ★ v1.0.141：只要分片（新的主路径）——**不解密、不拼接**，把清单带回去交给 ffmpeg。
+        //   分片本来就是**密文原样落盘**的（解密一直发生在拼接阶段），所以这里天然就是
+        //   "我已经把要的东西搬下来了"，ffmpeg 拿到清单+钥匙就能自己拼。
+        if options.skipJoin {
+            onProgress(Progress(stage: .finished, done: total, total: total,
+                                bytes: bytesDone, message: "分片已下齐"))
+            return Output(fileURL: options.outputURL,
+                          duration: playlist.totalDuration,
+                          segmentCount: total,
+                          joinedBytes: 0,
+                          writtenSegments: 0,
+                          playlist: playlist)
+        }
+
         // 2) 按顺序拼接
         //
         // ★ v1.0.89：**不再边拼边删分片**。
@@ -271,7 +316,8 @@ struct HLSDownloader {
                       duration: playlist.totalDuration,
                       segmentCount: total,
                       joinedBytes: written,
-                      writtenSegments: writtenCount)
+                      writtenSegments: writtenCount,
+                      playlist: nil)
     }
 
     // MARK: - 网络
@@ -339,7 +385,11 @@ struct HLSDownloader {
     }
 
     private func partURL(_ i: Int) -> URL {
-        options.tempDir.appendingPathComponent(String(format: "seg_%06d.part", i))
+        options.tempDir.appendingPathComponent(DLName.segment(i))
+    }
+
+    private func oldPartURL(_ i: Int) -> URL {
+        options.tempDir.appendingPathComponent(DLName.oldSegment(i))
     }
 
     /// ★ v1.0.133：把每个分片的**真实时长**落盘（一行一个，按分片序号）。
@@ -376,6 +426,15 @@ struct HLSDownloader {
 
     private func downloadSegment(index: Int, url: URL, playlist: M3U8Playlist) async throws -> Int64 {
         let dest = partURL(index)
+        // ★ v1.0.141：老任务的分片还叫 `.part` —— 见到就地**改名**成新的 `.ts`
+        //   （否则后面"生成本地清单"按新名去找会找不到，等于白下）。只做一次，零成本。
+        let old = oldPartURL(index)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dest.path), fm.fileExists(atPath: old.path) {
+            try? fm.moveItem(at: old, to: dest)
+            try? fm.moveItem(at: old.appendingPathExtension("ok"),
+                             to: dest.appendingPathExtension("ok"))
+        }
         // 已经下过就跳过（断点续传 / 重复点击不重下）。
         // ★ v1.0.140：判据从"文件存在"升级成"**标记存在且字节数对得上**"。
         //   兼容处理：没有标记的**老文件**（升级前下的）先认它一次、并补写标记 ——

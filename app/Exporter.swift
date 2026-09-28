@@ -51,7 +51,8 @@ enum Exporter {
         // ★ v1.0.138：界面用词统一成「转成 MP4」（用户指出「重封装」这个说法不对）
         onProgress(0, "正在转成 MP4…")
         do {
-            let detail = try await FFmpegConverter.toMP4(ts: ts, mp4: mp4, onProgress: onProgress)
+            let detail = try await FFmpegConverter.toMP4(input: ts, inputBytes: 0,
+                                                         mp4: mp4, onProgress: onProgress)
             log.append(Attempt(name: "转成 MP4（FFmpeg）", ok: true, detail: detail))
             return (true, log)
         } catch {
@@ -67,6 +68,11 @@ enum Exporter {
                                                  onProgress: { p, msg in
                                                      onProgress(p, msg)
                                                  })
+            // ★★ v1.0.141：**这条路也要过体检**。
+            //   它就是历史上"产出垃圾却报成功"的那个惯犯（自研换封装只认 TS，
+            //   拿到解密失败的数据也会硬认几百帧然后说成功 —— 真实事故里成品 2MB / 输入 212.7MB）。
+            //   所以：产出体积跟输入差太多的，**当失败处理**，继续往下试，别报成功。
+            try checkSize(out: mp4, input: ts)
             log.append(Attempt(name: "转成 MP4（备用方式）", ok: true, detail: stats.note))
             return (true, log)
         } catch {
@@ -155,6 +161,34 @@ enum Exporter {
     private static func short(_ u: URL) -> String {
         if u.isFileURL { return u.lastPathComponent }
         return "\(u.host ?? "?")/\(u.lastPathComponent)"
+    }
+
+    /// ★★ v1.0.141：**成品体检** —— 产出体积必须跟输入在一个量级。
+    ///
+    /// 依据是实测，不是"保险起见"：钥匙用错时 ffmpeg 的**退出码照样是 0**（只是内容剩 1/3），
+    /// 而自研换封装更狠 —— 完全解不开的数据它也能产出 1% 大小、然后报成功。
+    /// 真实事故：成品 2.0 MB / 输入 212.7 MB，一路报"成功"，随后原始数据被删。
+    /// 所以"没报错"根本不等于"转对了"：体积差得离谱（超出 50%~150%）一律当失败。
+    private static func checkSize(out: URL, input: URL) throws {
+        let o = fileSize(out)
+        let i = fileSize(input)
+        guard i > 0, o > 0 else {
+            throw NSError(domain: "VideoGrab.Exporter", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "产出是空的"])
+        }
+        let ratio = Double(o) / Double(i)
+        guard ratio >= 0.5, ratio <= 1.5 else {
+            throw NSError(domain: "VideoGrab.Exporter", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: String(
+                            format: "产出大小不对劲：输入 %.1f MB、产出 %.1f MB（只有 %.0f%%）—— 这次不算成功",
+                            Double(i) / 1_048_576, Double(o) / 1_048_576, ratio * 100)])
+        }
+    }
+
+    private static func fileSize(_ u: URL) -> Int64 {
+        guard let n = (try? FileManager.default.attributesOfItem(atPath: u.path))?[.size] as? NSNumber
+        else { return 0 }
+        return n.int64Value
     }
 
     /// 把错误写得具体一点 —— 只显示一句「无法打开」是没法定位的

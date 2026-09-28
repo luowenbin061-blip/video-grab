@@ -34,6 +34,10 @@ struct M3U8Playlist {
     /// 「它 + 该分片的下标」推出来，所以要带出去给下载器用。
     var mediaSequence = 0
     var rawText = ""
+    /// ★ v1.0.141：这份清单**实际是从哪个地址取到的**。
+    ///   为什么需要：`#EXT-X-KEY` 的 URI 也可能是**相对路径**，要按"清单的地址"解析
+    ///   （不是按分片的地址）—— 外部审查专门点过这一条。放在这里就不用在各处猜了。
+    var baseURL: URL?
 
     /// #EXT-X-MAP 的原样文本（fMP4/CMAF 的初始化段）。
     /// 记下来**不是为了用它**，是为了能明确告诉用户「这种格式我们拼不出来」。
@@ -161,6 +165,7 @@ struct M3U8Playlist {
     static func parse(text: String, baseURL: URL) -> M3U8Playlist {
         var p = M3U8Playlist()
         p.rawText = text
+        p.baseURL = baseURL          // ★ v1.0.141：钥匙的相对地址要按它解析
 
         var pendingVariant: (bandwidth: Int?, resolution: String?)?
         var pendingDuration: Double?

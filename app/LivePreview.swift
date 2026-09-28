@@ -62,11 +62,24 @@ enum LivePreview {
         let fm = FileManager.default
         var out: [String] = []
         for i in 0..<cap {
-            let name = String(format: "seg_%06d.part", i)
+            // ★ v1.0.141：分片改名成 `.ts`（原因见 `DLName` 的实测说明）。
+            //   老任务里还叫 `.part` 的那批**照样认** —— 新的找不到就找旧的，
+            //   找到哪个就用哪个（播放器不在乎后缀，它只看清单里写的名字）。
+            let name = DLName.segment(i)
+            let alt = DLName.oldSegment(i)
             let f = dir.appendingPathComponent(name)
-            guard fm.fileExists(atPath: f.path),
-                  ((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 else { break }
-            out.append(name)
+            let fa = dir.appendingPathComponent(alt)
+            let use: String
+            if fm.fileExists(atPath: f.path),
+               ((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 {
+                use = name
+            } else if fm.fileExists(atPath: fa.path),
+                      ((try? fa.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 {
+                use = alt
+            } else {
+                break
+            }
+            out.append(use)
         }
         return out
     }
