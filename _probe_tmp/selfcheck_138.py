@@ -78,6 +78,12 @@ chk('W3 进度按输出/输入大小算', 'Double(out) / Double(inSize)' in ffc)
 chk('W4 进度文案带百分比', '"正在转成 MP4… \\(Int(p * 100))%"' in ffc)
 chk('W5 大文件不开 faststart', 'faststartLimit' in ffc and 'useFaststart' in ffc)
 chk('W6 体检结果里说明有没有优化开头', '大文件跳过开头优化' in ff)
+# ★★ run #138 就挂在这：用 `var args` 拼完参数、再在 Task.detached 里引用它 →
+#    `error: reference to captured var 'args' in concurrently-executing code`（白烧一轮）。
+#    同一个坑 Downloader.run 里踩过；这条判据把它钉死，以后本地就能拦。
+chk('W14 进并发闭包的参数是 let（不能再是 var）',
+    'let args = argList' in ffc and 'var args:' not in ffc,
+    '仍是 var 声明' if 'var args:' in ffc else '')
 ex = read('Exporter.swift')
 chk('W7 Exporter 里不再写「FFmpeg 重封装」', 'FFmpeg 重封装' not in ex)
 chk('W8 Exporter 用「转成 MP4（FFmpeg）」', '转成 MP4（FFmpeg）' in ex)

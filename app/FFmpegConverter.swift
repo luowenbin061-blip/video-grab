@@ -62,7 +62,7 @@ enum FFmpegConverter {
             }
         }
 
-        var args: [String] = [
+        var argList: [String] = [
             "ffmpeg",
             "-hide_banner", "-loglevel", "error",
             "-y",
@@ -73,9 +73,15 @@ enum FFmpegConverter {
             "-c", "copy",         // 只换容器，不重新编码 → 快 + 无损
         ]
         if useFaststart {
-            args += ["-movflags", "+faststart"]
+            argList += ["-movflags", "+faststart"]
         }
-        args.append(mp4.path)
+        argList.append(mp4.path)
+        // ★★ 必须是 `let` 之后再进并发闭包。
+        //   run #138 就挂在这：上面用 `var args` 拼参数，下面 `Task.detached` 里引用它 →
+        //   `error: reference to captured var 'args' in concurrently-executing code`。
+        //   （同一个坑 `Downloader.run` 里踩过一次，注释就写在那边；这次换了个文件又踩。）
+        //   规矩：**要进并发闭包的集合，先在外面拼完再绑成 `let`。**
+        let args = argList
 
         // ffmpeg 的 CLI main 是阻塞调用，丢到后台线程跑。
         // 返回 0 = 成功，非 0 = ffmpeg 自己的退出码。
