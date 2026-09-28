@@ -98,10 +98,13 @@ struct CompressSheet: View {
                                     }
                                     Spacer(minLength: 6)
                                     // ★ 选中标记不只靠颜色：用图标本身（对色觉障碍也清楚）
+                                    // ★ 三元里两边必须是**同一种类型**：
+                                    //   `.tertiary` 是 ShapeStyle、`Color.accentColor` 是 Color ——
+                                    //   混着写编译不过（run #155 就死在这一行）。
                                     Image(systemName: job.id == selectedID
                                           ? "checkmark.circle.fill" : "circle")
                                         .font(.system(size: 18))
-                                        .foregroundStyle(job.id == selectedID ? Color.accentColor : .tertiary)
+                                        .foregroundStyle(job.id == selectedID ? Color.accentColor : Color.secondary)
                                 }
                                 .contentShape(Rectangle())
                             }
@@ -128,7 +131,7 @@ struct CompressSheet: View {
                                     Spacer(minLength: 6)
                                     Image(systemName: t == tier ? "checkmark.circle.fill" : "circle")
                                         .font(.system(size: 18))
-                                        .foregroundStyle(t == tier ? Color.accentColor : .tertiary)
+                                        .foregroundStyle(t == tier ? Color.accentColor : Color.secondary)
                                 }
                                 .contentShape(Rectangle())
                             }
