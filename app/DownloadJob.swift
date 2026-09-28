@@ -529,10 +529,19 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     /// 删掉任务的同时把文件也删掉
+    ///
+    /// ★★ v1.0.149：文件删除改成**后台线程**。
+    ///   以前这条在**界面线程**上同步删 —— 删一个几百 MB 的成品，系统要逐块释放，
+    ///   这几秒里整个界面（包括滑动）都是死的，用户报的「删除时页面卡死」就是它。
+    ///   现在任务记录的移除是即时的（界面立刻响应），文件在后台慢慢删。
+    ///   ★ `JobStore` 是 enum + 静态方法、不碰任何 UI，后台调用安全（下载器一直在这么用）。
     func deleteFiles() {
         task?.cancel()
         task = nil
-        JobStore.remove([outputName, playlistName, baseName + ".ts", thumbName])
+        let names = [outputName, playlistName, baseName + ".ts", thumbName]
+        Task.detached(priority: .utility) {
+            JobStore.remove(names)
+        }
     }
 
     var baseName: String { "\(Self.safeFileName(title))_\(Self.stamp(createdAt))" }

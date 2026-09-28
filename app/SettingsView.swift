@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var confirmClearHistory = false
     @State private var showHelp = false
     @State private var note: String?
+    /// ★ v1.0.149：清理临时文件进行中（防连点 + 按钮显示"清理中…"）
+    @State private var isCleaning = false
     /// ★ v1.0.133：两个播放相关开关，都放在新起的「播放」Section 里。
     /// 键与 `WatchProgress.enabledKey` / `PlayerBox.autoLandscapeKey` 一致 —— 两边天然同步。
     /// **两个都默认关**（用户 2026-09-28 选的）。
@@ -124,7 +126,15 @@ struct SettingsView: View {
                     Button("清空浏览历史", role: .destructive) { confirmClearHistory = true }
                     Button("清除网页缓存") { clearWebCache() }
                     // ★ v1.0.101：以前失败的任务把分片一直留在磁盘上，却**没有任何清理入口**
-                    Button("清理下载临时文件") { cleanupTemp() }
+                    Button {
+                        cleanupTemp()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isCleaning { ProgressView().controlSize(.small) }
+                            Text(isCleaning ? "清理中…" : "清理下载临时文件")
+                        }
+                    }
+                    .disabled(isCleaning)
                     // 标签存档：清了之后下次启动就是干净的空白页（组也一起没）
                     Button("清空标签存档（下次启动是空白页）", role: .destructive) {
                         model.wipeSavedTabs()
@@ -271,13 +281,24 @@ struct SettingsView: View {
 
     /// 清理下载临时分片（v1.0.101）。正在下载的任务会跳过 —— 清了会把它们弄坏。
     /// 成品视频、回收站、记录都不动。
+    ///
+    /// ★★ v1.0.149：挪到**后台线程** + 「清理中…」提示。
+    ///   以前这条在**界面线程**上同步扫整个下载目录再逐个删 —— 临时分片多的时候
+    ///   （几百上千个文件）整个设置页都是死的，用户报的"清除缓存时卡死"就是它。
     private func cleanupTemp() {
+        guard !isCleaning else { return }        // 防连点：上一次还没完
+        isCleaning = true
         let active = Set(downloads.jobs.filter { $0.isActive }.map { $0.id.uuidString })
-        let freed = JobStore.cleanupTemp(keeping: active)
-        note = freed > 0
-            ? "已清理下载临时文件，释放约 \(max(1, freed / 1048576))MB"
-                + (active.isEmpty ? "。" : "（正在下载的 \(active.count) 个任务已跳过）")
-            : "没有需要清理的临时文件。"
+        Task.detached(priority: .userInitiated) {
+            let freed = JobStore.cleanupTemp(keeping: active)
+            await MainActor.run {
+                note = freed > 0
+                    ? "已清理下载临时文件，释放约 \(max(1, freed / 1048576))MB"
+                        + (active.isEmpty ? "。" : "（正在下载的 \(active.count) 个任务已跳过）")
+                    : "没有需要清理的临时文件。"
+                isCleaning = false
+            }
+        }
     }
 
     /// 只清缓存文件，**不动 Cookie** —— 免得一清就把各站的登录状态清掉
