@@ -75,3 +75,69 @@ var usedSpace: Int64 { JobStore.totalSize() }
 
 **审查过程中的一个自我纠正**：我最初的粗扫得出"非 Lazy 列表 15 处"，复查后发现**判据本身无效**
 （正则只是匹配了所有 `VStack/HStack`，没区分是不是长列表）—— **这条不作为发现**，已剔除。
+
+
+---
+
+# 第二轮：设计规范 + 无障碍（design / accessibility 两个分册）
+
+**范围**：`app/*.swift` 46 个文件 · 扫描脚本 `_probe_tmp/scan_design_a11y.py`
+★ 说明：这轮先出现了**两次我自己的误报**，逐条核实后已剔除（见文末"自我纠正"）。
+
+## 一、成立、建议改（2 条）
+
+### ① `TabGrid.swift:107-117` —— 关闭标签页的 ✕，可点区域只有 **40×40**，不到 44
+
+```swift
+Button { model.closeTab(id: t.id) } label: {
+    Image(systemName: "xmark")
+        .frame(width: 26, height: 26)     // ← 26
+        .background(.thinMaterial, in: Circle())
+}
+.padding(7)                                // ← 26 + 7×2 = 40，仍 < 44
+```
+- **手册依据**：design.md —— "Apple 对 iOS 交互的最小可点区域是 **44×44**，必须严格保证"。
+- **实际感受**：真机上点标签页右上角那个小 ✕ 要瞄准，容易点空（尤其单手/走动时）。
+- **修法**：把 `.frame(width: 26, height: 26)` 改成 44×44（图标本身大小不变，只是可点范围变大）；
+  或保留视觉 26，外面加 `.frame(width: 44, height: 44).contentShape(Rectangle())`。**改一行。**
+- 它已经有 `.accessibilityLabel("关闭这个标签")` ✔ 无障碍标签这块是合格的。
+
+### ② `Toolbox.swift:194 / 200` —— 工具箱的状态标记**只靠颜色**（← **这是我三小时前刚引入的**）
+
+```swift
+.background(Capsule().fill(Color.red))                  // 嗅探数量徽标：只有红色
+Circle().fill(Color.green).frame(width: 8, height: 8)    // 开关"已开"：只有绿点
+```
+- **手册依据**：accessibility.md —— "如果颜色是界面上重要的区分方式，要尊重系统的
+  `accessibilityDifferentiateWithoutColor` 设置，**给出颜色之外的差异**（图标、纹理、描边）"。
+- **谁会受影响**：色觉障碍用户（红绿难分）——**包括红绿色盲，比例不低**；另外在强光下看屏幕时，
+  纯色小圆点也比"形状差异"更难辨认。
+- **修法（1~2 行）**：开着时不要只换颜色，**换个形状**——例如把绿点改成小勾
+  `Image(systemName: "checkmark")`，或"空心圈 = 关、实心点 = 开"。
+- 顺带：这两处**都没有** `accessibilityLabel`，加一句更稳（"开着" / "3 条地址"）。
+
+## 二、成立、但**建议不改**（记录边界，不折腾）
+
+| 项 | 数量 | 为什么不动 |
+|---|---|---|
+| **硬写字号 `.font(.system(size: N))`** | **185 处**（11~13 占大头） | 这些文字**不跟随系统的"文字大小"设置**。手册的补救是 `@ScaledMetric`（我们 0 处使用）。要动就是**全工程改字号体系**的大工程，而这是自用 App、你自己不会去调系统字号 —— **收益极低**。★ 但记住：**哪天要给别人用/给长辈用，这是第一件要做的事** |
+| 硬编码 `.padding(数值)` | 116 处 | 纯风格统一问题，改动收益 ≈ 0，还得大范围回归 |
+| `RoundedRectangle(..., style: .continuous)` 多写 | 13 处 | 手册说"默认就是它，不用写"——删了**没有任何视觉变化**，纯噪音 |
+| `onTapGesture` 无无障碍标记 | 8 处（0 处带标记） | 其中多数是"点空白关闭弹层"这类修饰性手势（手册也允许）。真正该改成 `Button` 的只有 **1 处**：`ContentView:1642 .onTapGesture { togglePick(job) }`（点任务行勾选）→ 归入 P2 |
+
+## 三、**不适用**（手册提到，但我们这样是对的）
+
+| 手册规则 | 我们的实际情况 |
+|---|---|
+| 别用 `Color(UIColor.xxx)`，改用 SwiftUI 语义色 | 2 处（`LongPressMenu`、`PagePDF`）。`Color(UIColor.systemBackground)` 在 **iOS 15 上就是取系统背景色的常规写法**（`PagePDF` 那处是 CoreGraphics 画 PDF，本来就得用 UIColor） |
+| 别用 `UIScreen.main` 读可用空间 | 2 处都在 `ThumbLoader`，读的是**屏幕缩放比**用来算缩略图像素，不是拿 bounds 当布局基准 —— 手册针对的是后者 |
+| 用 `ContentUnavailableView` 做空状态 | 需要 **iOS 17+**，我们目标 15 → 用不了 |
+| 用 `Label` 代替 `HStack`、`bold()` 代替 `fontWeight(.bold)` | `fontWeight(.medium/.semibold)` 全工程 **0 处** ✔ 这条我们本来就干净 |
+
+## 四、自我纠正（这轮我误报了两次）
+
+1. **"5 处图标按钮缺 VoiceOver 标签"→ 实际 4 处都有** `.accessibilityLabel`（`BookmarksView` 57-84 行）。
+   原因：我的正则块在第一个 `}` 处截断，没读到紧跟其后的那一行。
+2. **"非 Lazy 长列表 15 处"（上一轮）→ 判据本身无效**：正则只是匹配了所有 `VStack/HStack`，没区分是不是长列表。
+
+★ 这两次都印证了那条老规矩：**AI 审查的结论必须逐条回源码核实** —— 我自己的粗扫误报率，比它抓到的真问题还高。

@@ -36,6 +36,8 @@ struct ToolboxView: View {
     @State private var showPDFOptions = false
     /// ★ v1.0.127 备份：点"备份数据"先问一句（备份 / 恢复）
     @State private var showBackupOptions = false
+    /// ★ v1.0.155：「压画质省空间」那张卡
+    @State private var showCompress = false
     /// 从备份恢复：选那个 json 文件
     @State private var showRestorePicker = false
     /// 备份好了 → 直接弹**文件夹选择器**（用户要的是"存到哪儿"，不是再点一次分享面板）
@@ -91,6 +93,13 @@ struct ToolboxView: View {
                     //   重装 IPA / 换机 / 手滑删了 App，攒的书签·记录·首页·进度就全没了。
                     //   点开弹一句"备份 还是 恢复"，不在这一页上摊两个按钮。
                     cell("externaldrive.badge.timemachine", "备份数据", .cyan) { showBackupOptions = true }
+
+                    // ★★ v1.0.155：压画质省空间 —— 把已下载的成品重新编码成更小的文件。
+                    //   它和「转成 MP4」（换封装、秒级、无损）**不是一回事**：
+                    //   这个要重新编码，**有损、要几分钟**，所以是独立入口、独立一张卡。
+                    cell("arrow.down.right.and.arrow.up.left", "压画质省空间", .teal) {
+                        showCompress = true
+                    }
                 }
                 .padding(16)
 
@@ -135,6 +144,10 @@ struct ToolboxView: View {
             } message: {
                 // ★ 必须是**单个字面量**：Text(拼接出来的 String) 不渲染 markdown，会露出 **
                 Text("打包：书签、下载记录、首页入口、播放进度、已放行网站、设置。**不含 Cookie**（登录态不外带）。\n恢复前会自动把当前数据另存一份，能回滚。")
+            }
+            // ★ v1.0.155：压画质省空间
+            .sheet(isPresented: $showCompress) {
+                CompressSheet(center: center, isPresented: $showCompress)
             }
             .sheet(isPresented: $showRestorePicker) {
                 FilePickerBox(onPicked: { files in doRestore(files) }, types: [.json])
