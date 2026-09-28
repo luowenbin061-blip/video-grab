@@ -57,7 +57,7 @@ enum TSRemuxer {
             case .noParameterSets(let d): return "没法建视频格式：\(d)"
             case .writer(let s): return "写入 MP4 失败：\(s)"
             case .cancelled: return "已取消"
-            case .empty: return "重封装出来是空的"
+            case .empty: return "转成 MP4 后是空的"
             }
         }
     }
@@ -288,7 +288,7 @@ extension TSRemuxer {
                 try await pump()
 
                 let pct = Double(done) / Double(total)
-                onProgress(pct, "正在重封装… \(done / 1_048_576)MB / \(total / 1_048_576)MB")
+                onProgress(pct, "正在转成 MP4… \(done / 1_048_576)MB / \(total / 1_048_576)MB")
             }
 
             // 收尾

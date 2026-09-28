@@ -209,7 +209,14 @@ struct ContentView: View {
     ///   长按菜单是 overlay（不是 sheet），但同一帧里"先关 overlay + 再抬 fullScreenCover"照样会撞：
     ///   overlay 的淡出动画还在跑，新 cover 就跟着这棵正在消失的视图树挂上去了。
     ///   → 统一走「先关菜单 → 隔一帧（160ms，和挑档那条路一样的等待）→ 再抬播放器」。
-    @State private var lpPlay: LongPressMenuInfo?
+    ///
+    /// ★★ v1.0.138 改成 `PlayTarget`（不再直接放 `LongPressMenuInfo`）：
+    ///   因为地址要先经过一次**异步**的「清单本地化」才能定下来 ——
+    ///   自己取远端清单、把每一行洗成绝对地址、写成本地清单、用本机 HTTP 提供。
+    ///   根因（实测铁证）见 `PlaylistRelay` 开头的长注释：
+    ///   **AVPlayer 对"分片名是原生中文的相对路径"那份清单解析错了**，
+    ///   把 `<名称>0.ts` 请求成了 `<名称>.ts` → 404。
+    @State private var lpPlay: PlaylistRelay.PlayTarget?
     /// ★ v1.0.119 首页快捷入口（单例：存档 + 图标缓存都在它手里）
     @ObservedObject private var homeStore = HomeStore.shared
     /// ★ v1.0.119 系统分享面板：要分享的东西（当前网址 / 下载好的文件 / 截出来的长图）
@@ -308,12 +315,20 @@ struct ContentView: View {
                                   },
                                   // ★ v1.0.134：点预览卡 = 用内置播放器播。
                                   //   跟挑档同一条「先关菜单、隔一帧再抬卡片」的路 —— 理由见 lpPlay 的声明处。
+                                  // ★ v1.0.138：中间多一步**清单本地化**（异步，见 PlaylistRelay）。
                                   onPlay: {
                                       model.closeLongPressMenu()
                                       let m = info
                                       Task { @MainActor in
                                           try? await Task.sleep(nanoseconds: 160_000_000)
-                                          lpPlay = m
+                                          if let t = await PlaylistRelay.target(
+                                                remote: m.url,
+                                                title: m.title.isEmpty ? "视频" : m.title,
+                                                headers: lpHeaders(m)) {
+                                              lpPlay = t
+                                          } else {
+                                              model.showToast("这个地址读不懂，播不了。可以换个源，或者直接下载试试。")
+                                          }
                                       }
                                   },
                                   onClose: { model.closeLongPressMenu() })
@@ -345,32 +360,19 @@ struct ContentView: View {
         //
         // 地址：`URL(string:)` 对带中文/全角的地址会返回 nil（v1.0.134 修的那类站），
         // 所以先走 M3U8.sanitizeURLString 洗一遍 —— 跟下载器用同一套洗法，两边行为一致。
+        // ★ v1.0.138：清洗之后**还要再走一步「清单本地化」**（自己在 onPlay 里异步做完才赋值，
+        //   所以这里拿到的 `t.url` 已经是"能播的那个"，直接用）。
         //
         // 播不出来怎么办（用户原话「实在播不出来就给提示」）：
         // PlayerSheet 自身就有明确报错路径 —— 拿不到 ready 会走 `.failed` 分支显示
-        // "具体错误 + 地址"，另有 60 秒超时兜底。所以这里**不需要另加提示**，
-        // 但要保证异常地址能进到那一层：URL 实在拼不出来时给一句 toast，别静默什么都不发生。
-        .fullScreenCover(item: $lpPlay) { m in
-            let raw = M3U8Playlist.sanitizeURLString(m.url)
-            if let u = URL(string: raw) {
-                PlayerSheet(url: u,
-                            title: m.title.isEmpty ? "视频" : m.title,
-                            // 键固定成 "lp"：跟"预览"同一个道理 —— 长按随手点开不该污染
-                            // 任何真实下载任务的续看进度（各任务的键是任务 id）。
-                            key: "lp",
-                            headers: lpHeaders(m))
-            } else {
-                // 极少数：地址脏到洗都洗不出来。给一句人话，别让人对着黑屏猜。
-                Color.black.ignoresSafeArea()
-                    .overlay(
-                        Text("这个地址读不懂，播不了。\n可以换个源，或者直接下载试试。")
-                            .font(.system(size: 15))
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.white)
-                            .padding(28)
-                    )
-                    .onTapGesture { lpPlay = nil }
-            }
+        // "具体错误 + 地址"，另有 60 秒超时兜底。地址拼不出来时在 onPlay 里给一句 toast。
+        .fullScreenCover(item: $lpPlay) { t in
+            PlayerSheet(url: t.url,
+                        title: t.title,
+                        // 键固定成 "lp"：跟"预览"同一个道理 —— 长按随手点开不该污染
+                        // 任何真实下载任务的续看进度（各任务的键是任务 id）。
+                        key: "lp",
+                        headers: t.headers)
         }
         // ★ v1.0.119：系统分享面板（当前网页 / 拼好的长图 / 下载好的文件都走它）
         .sheet(item: $shareBundle) { b in
@@ -922,7 +924,9 @@ struct SniffPanel: View {
     /// ★ v1.0.115 挑清晰度：要打开"挑清晰度"卡片的那一条（懒解析的入口）
     @State private var variantItem: SniffItem?
     /// ★ v1.0.127 预览：要"先看一眼"的那一条（点了播放器盖上来）
-    @State private var previewItem: SniffItem?
+    /// ★ v1.0.138：类型换成 `PlayTarget` —— 地址要先经过一次异步的「清单本地化」才定得下来
+    ///   （跟长按播放同一条路，根因见 `PlaylistRelay` 开头）。
+    @State private var previewItem: PlaylistRelay.PlayTarget?
     @State private var showAll = false
     /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
     @State private var tab = 0
@@ -1082,13 +1086,12 @@ struct SniffPanel: View {
         // ★ v1.0.127：嗅探结果的"下载前预览" —— 先看一眼是不是正片，别下完才发现不对。
         //   走同一套播放器，但**带上 Referer/UA/Cookie**（防盗链站不带就 403）。
         //   键固定成 "preview"：**不污染真实任务的续看键**（各任务的进度是按任务 id 记的）。
-        .fullScreenCover(item: $previewItem) { it in
-            if let u = URL(string: it.url) {
-                PlayerSheet(url: u,
-                            title: it.fileName.isEmpty ? "预览" : it.fileName,
-                            key: "preview",
-                            headers: previewHeaders(it))
-            }
+        // ★ v1.0.138：地址在点按钮时就已经"本地化"过了，这里直接用。
+        .fullScreenCover(item: $previewItem) { t in
+            PlayerSheet(url: t.url,
+                        title: t.title,
+                        key: "preview",
+                        headers: t.headers)
         }
         .sheet(item: $variantItem) { it in
             VariantPickerSheet(model: model, url: it.url,
@@ -1270,7 +1273,19 @@ struct SniffPanel: View {
                 //   只给视频类 —— 图片/音频/文档没什么好"预览前几秒"的。
                 if item.kind == "hls" || item.kind == "file" {
                     Button {
-                        previewItem = item
+                        // ★ v1.0.138：先"清单本地化"再播 —— 自己取远端清单、把每一行洗成
+                        //   绝对地址、写成本地清单、用本机 HTTP 提供。根因见 PlaylistRelay。
+                        let it = item
+                        Task { @MainActor in
+                            if let t = await PlaylistRelay.target(
+                                    remote: it.url,
+                                    title: it.fileName.isEmpty ? "预览" : it.fileName,
+                                    headers: previewHeaders(it)) {
+                                previewItem = t
+                            } else {
+                                model.showToast("这个地址读不懂，播不了。可以换个源，或者直接下载试试。")
+                            }
+                        }
                     } label: {
                         Label("预览", systemImage: "play.circle")
                             .font(.system(size: 12.5))
@@ -2081,6 +2096,25 @@ struct JobRow: View {
             }
 
             if showLog {
+                // ★ v1.0.138：整份记录一键复制 —— 用户要能把它发我 / 自己留档。
+                //   以前只能靠截图，长记录要截好几张，还漏字。
+                HStack(spacing: 6) {
+                    Text("共 \(job.notes.count) 行")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 4)
+                    Button {
+                        UIPasteboard.general.string = logText
+                        job.show("整份记录已复制，可以直接发我")
+                    } label: {
+                        Label("复制记录", systemImage: "doc.on.doc")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                }
+                .padding(.horizontal, 2)
+
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(job.notes.enumerated()), id: \.offset) { _, n in
                         Text(n)
@@ -2183,8 +2217,29 @@ struct JobRow: View {
         }
     }
 
-    private func meta(_ icon: String, _ text: String) -> some View {
-        HStack(spacing: 3) {
+    /// ★ v1.0.138：整份过程记录拼成一段纯文本（带头部信息）。
+    ///
+    /// 为什么要有它：用户要「一个完整的超详细的下载日志」，而且要能**拿出去**——
+    /// 出问题时把这一整段发我，我就不用再靠截图猜。
+    /// 所以头部把"我是谁、哪一版、什么时候、下的是哪个地址、最后什么结果"都写上，
+    /// 单独看这段文本就能定位。
+    private var logText: String {
+        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+        var s = "【VideoGrab 任务记录】\n"
+        s += "App 版本：\(ver)\n"
+        s += "导出时间：\(ISO8601DateFormatter().string(from: Date()))\n"
+        s += "标题：\(job.title)\n"
+        s += "状态：\(job.phase)\n"
+        if let f = job.failed { s += "失败原因：\(f)\n" }
+        s += "地址：\(job.sourceURL)\n"
+        if job.fileSize > 0 { s += "成品大小：\(DownloadJob.sizeText(job.fileSize))\n" }
+        if job.duration > 0 { s += "时长：\(Int(job.duration)) 秒\n" }
+        s += "———————————————\n"
+        s += job.notes.joined(separator: "\n")
+        return s
+    }
+
+    private func meta(_ icon: String, _ text: String) -> some View {        HStack(spacing: 3) {
             Image(systemName: icon).font(.system(size: 9.5))
             Text(text).font(.system(size: 11).monospacedDigit())
         }

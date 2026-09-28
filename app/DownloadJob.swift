@@ -91,13 +91,17 @@ final class DownloadJob: ObservableObject, Identifiable {
     private var memPeak: Int64 = 0
     private var mainStallMs: Int = 0
     private var heartbeat: Task<Void, Never>?
+    /// ★ v1.0.138：转 MP4 的进度按 10% 一档记进过程记录（-1 = 这一轮还没记过）
+    private var loggedTranscodeStep: Int = -1
 
     private static func stageName(_ s: HLSDownloader.Stage) -> String? {
         switch s {
         case .prepare:  return nil
-        case .download: return "下载"
-        case .join:     return "拼接"
-        case .convert:  return "转码"
+        case .download: return "下载分片"
+        case .join:     return "拼成一整段"
+        // ★ v1.0.138：用户指出「重封装 / 转码」这个词不对 ——
+        //   这一步只是**换封装**（`-c copy` 不重新编码），所以统一叫「转成 MP4」。
+        case .convert:  return "转成 MP4"
         case .finished: return nil
         }
     }
@@ -715,6 +719,15 @@ final class DownloadJob: ObservableObject, Identifiable {
         let tsURL = JobStore.file(named: baseName + ".ts")
         let tempDir = JobStore.dir.appendingPathComponent("parts_\(id.uuidString)")
 
+        // ★ v1.0.138：开头先说清楚"这条任务打算怎么干、干到哪一步了"。
+        //   用户原话：「任务过程中其实不够细，我能看懂的部分真的很少……
+        //   要有一个完整的超详细的下载日志，通俗易懂，这样用户就能大致判断
+        //   下载失败还是成功、后台到底在干什么」。
+        //   → 所以下面这些都用大白话写，不出现只有我懂的词。
+        notes.append("· 要处理的是：\(Self.short(sourceURL))")
+        notes.append("· 它是从哪个页面来的：\(referrer.isEmpty ? "没记录到（有些站不校验，不影响）" : Self.short(referrer))")
+        notes.append("· 接下来会：先看一眼这个地址是什么 → 是分片清单就把分片下齐 → 拼成一整段 → 转成 MP4")
+
         // 优先用嗅探时抓到的真实页面上下文；抓不到才退到猜测值。
         // 之前 referer 只是 "https://源站域名/" 猜的 —— 防盗链站照样 403。
         let fallbackUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
@@ -831,8 +844,10 @@ final class DownloadJob: ObservableObject, Identifiable {
 
             // ── 自动转 MP4（留在程序内，不外发）────────────────────
             if let cur = Self.stageName(stage) { stageEnd(cur) }
-            stageBegin("转码")
+            stageBegin("转成 MP4")
+            loggedTranscodeStep = -1        // ★ v1.0.138：这一轮重新计
             phase = "正在转成 MP4…"
+            notes.append("· 这一步只是把内容**换个容器**装进 MP4（不重新编码）—— 所以快、画质不变。")
             let mp4URL = JobStore.file(named: baseName + ".mp4")
             let (ok, log) = await Exporter.toMP4(
                 ts: tsURL,
@@ -845,6 +860,15 @@ final class DownloadJob: ObservableObject, Identifiable {
                         self.stage = .convert
                         self.convertProgress = p
                         self.phase = msg.isEmpty ? "正在转成 MP4…" : msg
+                        // ★ v1.0.138：进度**按 10% 一档**记进过程记录。
+                        //   以前这一步只有「开始」和「结束」两条 —— 出问题时完全看不出
+                        //   它卡在哪一段、卡了多久。故意不做"每 1% 一条"：那会把记录
+                        //   刷成几百行，反而没法看。
+                        let step = min(10, Int(p * 10))
+                        if step > self.loggedTranscodeStep {
+                            self.loggedTranscodeStep = step
+                            if step < 10 { self.notes.append("· 正在转成 MP4… \(step * 10)%") }
+                        }
                     }
                 })
 
@@ -882,6 +906,14 @@ final class DownloadJob: ObservableObject, Identifiable {
             if let cur = Self.stageName(stage) { stageEnd(cur) }
             stageEnd("探测")
             try? FileManager.default.removeItem(at: tempDir)
+            // ★ v1.0.138：收尾用一句人话说清"这条任务最后到底是什么结果"，
+            //   不用往上翻整份日志。（用户要的就是一眼能判断成功还是失败。）
+            if mp4Ready {
+                notes.append("· 结果：成功 —— MP4 已就绪，可以在 App 里播，也可以存相册 / 存文件夹。")
+            } else {
+                notes.append("· 结果：没完全成功 —— 视频内容已经下齐并拼好（在 App 里能播），"
+                             + "只是没能转成 MP4，所以相册 / 微信这类地方用不了。原因见上面带 ✗ 的那几行。")
+            }
             finished = true
             onUpdate?()
             // 缩略图放在「完成」之后抽：界面立刻变成完成态，图晚一两秒自己出现。
@@ -920,6 +952,10 @@ final class DownloadJob: ObservableObject, Identifiable {
             failed = error.localizedDescription
             phase = "失败"
             notes.append("✗ 下载失败：\(error.localizedDescription)")
+            // ★ v1.0.138：失败时给"下一步能干什么"，不要只丢一句错就完事。
+            notes.append("· 结果：失败 —— 上面带 ✗ 的那一行就是原因。"
+                         + "可以试试：① 换个线路 / 清晰度再来一次；② 回网页让它多播几秒再长按一次；"
+                         + "③ 把这份记录整段发我（记录里已经带上了地址、上下文和每一步的耗时）。")
             finished = true
             onUpdate?()
         }

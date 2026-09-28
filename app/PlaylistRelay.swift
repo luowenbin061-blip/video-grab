@@ -1,0 +1,190 @@
+import Foundation
+
+/// 把「远端清单」变成一份**洗干净、地址绝对化**的本地清单，再交给播放器播。
+///
+/// ══ 为什么必须有这一步（2026-09-28 拿真机那条地址实测出来的铁证）══
+/// 用户报「内置播放器播放失败 / HTTP 400」，我把那条地址拿下来做了对照实验：
+///
+///   | 请求 | 服务端返回 |
+///   |---|---|
+///   | 清单本身 `<名称>.m3u8` | **200** · 7745 B · 合法 UTF-8 · 103 个分片 |
+///   | 清单里的真实分片 `<名称>0.ts` | **200 / 206**（百分号编码、原生中文、带 Range 都试了，**都行**） |
+///   | 带不带 `Referer` | **无差别** —— 这个站对分片**不校验**防盗链 |
+///   | 播放器实际请求的那条 `<名称>.ts` | **404** |
+///
+/// 结论：**站上东西是好的；是 AVPlayer 把分片名解析错了** ——
+/// 它把清单一行的 `<名称>0.ts` 变成了 `<名称>.ts`（**丢掉了序号**），
+/// 给出的地址还是 `https:///4x1.ekcvn.com/…`（`https://` 后面多一个斜杠 = **主机名为空**）。
+///
+/// 而那份清单里唯一的"异常"就是：**分片行是「原生中文 + 全角括号」的相对路径**
+/// （`苍井樱的打手枪2番号HEYZO-2008（口交）0.ts`）。能正常播放的站，分片名都是纯 ASCII。
+///
+/// ★ 这和 v1.0.134~136 是**同一个病根的第三个表现**：
+///   下载路径之所以没这个毛病，正是因为**我们自己把清单每一行都清洗过**（`sanitizeURLString`）；
+///   而播放路径以前是把远端的原始清单**直接**交给 AVPlayer —— 它自己没有清洗这一步。
+///
+/// ══ 做法 ══
+///   ① 我们自己取清单（带上 UA / Referer / Cookie）
+///   ② 逐行清洗：分片行 → 百分号编码 + **解析成绝对地址**。
+///      给了绝对地址，播放器就只剩"照抄"这一件事，不再需要它自己做任何 URL 解析。
+///   ③ 写成本地 `.m3u8`（放进本机 HTTP 服务的 root）
+///   ④ 播放器播 `http://127.0.0.1:<端口>/<这份清单>`（HLS 必须来自 http，`file://` 不行）
+///
+/// ══ 为什么不能只用本地文件（`file://`）══
+/// `Exporter.swift` 里已经实测记着：本地 `.m3u8` 用 `file://` 会报
+/// `CoreMediaErrorDomain -12865 / 12881` —— **HLS 必须是 http/https**。
+/// 所以必须借本机 HTTP 服务那一层（跟「边下边播」用的是同一套机制）。
+///
+/// ══ 只用在这一种情况：VOD ══
+/// 清单里带 `#EXT-X-ENDLIST`（有头有尾）才走这里。
+/// **直播清单是"活的"** —— 快照一份就会播完即停，那是把一个能用的功能搞坏。
+/// 所以直播一律保持原样直连，宁可维持现状。
+///
+/// ══ 失败就退回原样（重要）══
+/// 任何一步不顺（取不到 / 解不出 / 写不下 / 服务起不来）→ 返回 nil，
+/// 调用方用**原来的远端地址**照旧播 —— **绝不比现在更差**。
+enum PlaylistRelay {
+
+    /// 临时清单的文件名前缀（带点，尽量不碍眼；存盘前会清掉旧的）
+    static let filePrefix = ".vgplay_"
+
+    /// 旧清单保留多久（秒）。播完就没用了，但留着也不碍事，一小时足够。
+    static let staleAge: TimeInterval = 3600
+
+    /// 要交给内置播放器的**一条东西**：地址已经是"能播的那个"。
+    ///
+    /// 为什么要单独一个类型：地址要先经过异步的"清单本地化"才能定下来，
+    /// 而 `PlayerSheet` 需要一个 `Identifiable` 的值来驱动 `fullScreenCover`。
+    struct PlayTarget: Identifiable {
+        let id = UUID()
+        let url: URL
+        let title: String
+        let headers: [String: String]?
+    }
+
+    /// 统一入口：把"网页/嗅探拿到的那条地址"变成一个能播的目标。
+    ///
+    /// 顺序：清洗（非 ASCII 转百分号）→ **试清单本地化** → 不成或不是 http(s) 就用原地址。
+    /// 返回 nil 只表示"连合法 URL 都不是"，那时调用方给一句提示就行。
+    static func target(remote: String,
+                       title: String,
+                       headers: [String: String]?) async -> PlayTarget? {
+        let cleaned = M3U8Playlist.sanitizeURLString(remote)
+        guard let raw = URL(string: cleaned) else { return nil }
+        let final = await localPlaybackURL(remote: raw, headers: headers, root: JobStore.dir) ?? raw
+        return PlayTarget(url: final, title: title, headers: headers)
+    }
+
+    /// 生成一份本地清单并返回它的本机 http 地址。
+    /// 返回 nil = 这一步没成，调用方请用原来的远端地址。
+    ///
+    /// - Parameters:
+    ///   - remote: 远端清单地址（我们已经 `sanitizeURLString` 洗过的那个）
+    ///   - headers: 取清单要带的头（UA / Referer / Cookie，防盗链站必需）
+    ///   - root: 本机 HTTP 服务的根目录（和下载目录一致，见 `JobStore.dir`）
+    static func localPlaybackURL(remote: URL,
+                                 headers: [String: String]?,
+                                 root: URL,
+                                 timeout: TimeInterval = 20) async -> URL? {
+        // ★ 只管 http/https。
+        //   本地文件（下好的 mp4 / 本机那份 .ts 清单）本来就是 `file://` 或 `127.0.0.1`，
+        //   它们**已经是能播的**，不该再被"取一遍" —— 而且 URLSession 也取不了 `file://`。
+        guard let scheme = remote.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+
+        // ① 自己取清单
+        var req = URLRequest(url: remote, timeoutInterval: timeout)
+        if let headers {
+            for (k, v) in headers where !v.isEmpty {
+                req.setValue(v, forHTTPHeaderField: k)
+            }
+        }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              !data.isEmpty else { return nil }
+        // 相对地址要相对**最终**地址解析（中间可能有一次跳转）
+        let base = resp.url ?? remote
+
+        // ② 解码：跟下载器同一套兜底（严格 UTF-8 会败在 GBK 站 / 切片切断汉字上）
+        let text: String
+        if let u = String(data: data, encoding: .utf8) {
+            text = u
+        } else if let g = String(data: data, encoding: HLSDownloader.gb18030) {
+            text = g
+        } else {
+            text = String(data: data, encoding: .isoLatin1) ?? ""
+        }
+        guard !text.isEmpty, text.contains("#EXTM3U") else { return nil }
+
+        // ③ 只处理 VOD。直播是"活的"，快照会播完即停 —— 那种情况退回原地址直连。
+        guard text.contains("#EXT-X-ENDLIST") else { return nil }
+
+        // ④ 逐行清洗：数据行 → 绝对地址；`#EXT-X-KEY` 的 URI 也顺手洗（同一个病根）
+        var out: [String] = []
+        var dataLines = 0
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if line.hasPrefix("#") {
+                out.append(line.hasPrefix("#EXT-X-KEY") ? rewriteKeyURI(line, base: base) : line)
+                continue
+            }
+            guard let abs = M3U8Playlist.resolve(line, relativeTo: base) else { return nil }
+            out.append(abs.absoluteString)
+            dataLines += 1
+        }
+        guard dataLines > 0 else { return nil }
+
+        // ⑤ 写盘（原子写）
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let name = filePrefix + String(UUID().uuidString.prefix(8)) + ".m3u8"
+        let dst = root.appendingPathComponent(name)
+        guard let body = out.joined(separator: "\n").appending("\n").data(using: .utf8) else { return nil }
+        do {
+            try body.write(to: dst, options: .atomic)
+        } catch {
+            return nil
+        }
+
+        // ⑥ 起本机服务、拿地址
+        guard LocalHTTPServer.shared.start(root: root) != nil else {
+            try? FileManager.default.removeItem(at: dst)
+            return nil
+        }
+        cleanOld(root: root, keep: name)
+        return LocalHTTPServer.shared.url(name)
+    }
+
+    /// 清掉之前留下的临时清单（保留刚写的那一份）
+    private static func cleanOld(root: URL, keep: String) {
+        let fm = FileManager.default
+        guard let list = try? fm.contentsOfDirectory(at: root,
+                                                    includingPropertiesForKeys: [.contentModificationDateKey],
+                                                    options: []) else { return }
+        let now = Date()
+        for f in list where f.lastPathComponent.hasPrefix(filePrefix) {
+            if f.lastPathComponent == keep { continue }
+            let mod = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+            if now.timeIntervalSince(mod) > staleAge {
+                try? fm.removeItem(at: f)
+            }
+        }
+    }
+
+    /// 重写 `#EXT-X-KEY` 里的 `URI="…"`。
+    ///
+    /// ★ 只动**含非 ASCII** 的那种 —— 纯 ASCII 的 URI 原样留着，
+    ///   零风险（避免我在这里把本来能播的加密流弄坏）。
+    private static func rewriteKeyURI(_ line: String, base: URL) -> String {
+        guard let r1 = line.range(of: "URI=\"") else { return line }
+        let rest = line[r1.upperBound...]
+        guard let r2 = rest.range(of: "\"") else { return line }
+        let uri = String(rest[..<r2.lowerBound])
+        guard !uri.isEmpty else { return line }
+        guard uri.contains(where: { !$0.isASCII }) else { return line }
+        guard let abs = M3U8Playlist.resolve(uri, relativeTo: base) else { return line }
+        return line.replacingOccurrences(of: "URI=\"" + uri + "\"",
+                                        with: "URI=\"" + abs.absoluteString + "\"")
+    }
+}
