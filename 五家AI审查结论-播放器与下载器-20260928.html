@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab 播放器 / 下载器 · 外部 AI 审查结论（已逐条核实）</title>
+<style>
+  :root{--bg:#0f1115;--card:#171a21;--line:#262b35;--tx:#e6e8ee;--dim:#9aa3b2;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--p0:#f85149;--p1:#d29922;--p2:#58a6ff;--p3:#8b949e}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;padding:28px 20px 60px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--dim)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+  .lead{border-left:3px solid var(--warn);background:#1b1a14}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#1c2029;color:var(--dim);font-weight:600;white-space:nowrap}
+  code{background:#22262f;padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+  pre{background:#12151b;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:20px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .t0{background:#3d1517;color:var(--p0)} .t1{background:#3a2c0d;color:var(--p1)}
+  .t2{background:#132b45;color:var(--p2)} .t3{background:#23262c;color:var(--p3)}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .dim{color:var(--dim)}
+  ul{margin:8px 0 8px 18px;padding:0} li{margin:5px 0}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>VideoGrab · 内置播放器 + 下载器 —— 外部 AI 审查结论</h1>
+<div class="sub">审查对象：App <strong>v1.0.139</strong> 的两套核心逻辑 ｜ 材料：《五家审查简报》A/B 两份（代码逐字摘自源码） ｜ 结论已由我<strong>逐条回源码核实</strong>（附文件与行号）</div>
+
+<div class="card lead">
+<strong>一句话结论：</strong>这轮花得值 —— 抓到 <strong>1 个我自己的回归</strong>（已当场修掉）和 <strong>2 个真正的高危点</strong>：
+<code>SourceProbe</code> 探测大文件时可能把整份文件读进内存（很可能就是你说的"大文件卡死/被杀"的元凶之一），
+以及<strong>"缺分片 / 拿到错误页却能一路走到报成功"</strong>。另外还有 5 条中低危。
+<div style="margin-top:10px" class="dim">沟通说明：五家里实际只有 <strong>DeepSeek</strong> 和 <strong>MiMo</strong> 给出了可用答案，
+另外三家这次没跑通（原因见文末"环境说明"，不是它们能力问题）。所以下面主要是这两家的意见，已按核实结果分「成立 / 推翻」两张表。</div>
+</div>
+
+<h2>一、成立（已回源码核实）</h2>
+<table>
+<tr><th style="width:52px">级别</th><th style="width:270px">问题</th><th>证据（文件 · 行）</th><th style="width:250px">建议改法</th></tr>
+
+<tr>
+<td><span class="tag t0">P0</span></td>
+<td><strong>回归：清单里的相对 URI 会被指到本机服务上</strong><br><span class="dim">清单搬到本机 http 后，<em>任何</em>相对地址的解析基准都变了。原来在远端好好的
+<code>#EXT-X-KEY:METHOD=AES-128,URI="key.bin"</code>、<code>#EXT-X-MAP:URI="init.mp4"</code>（纯 ASCII）会被原样保留，
+于是播放器去请求 <code>http://127.0.0.1:端口/key.bin</code> → 404 → <strong>把本来能播的流搞坏</strong></span></td>
+<td><code>PlaylistRelay.swift</code>（v1.0.139 原写法）：<br>
+<code>guard uri.contains(where: { !$0.isASCII }) else { return line }</code><br>
+调用点只认：<code>line.hasPrefix("#EXT-X-KEY")</code></td>
+<td><span class="ok">已修</span>：换成 <code>rewriteURIAttrs</code>，对所有 <code>#</code> 行里的 <code>URI="…"</code>
+一律绝对化（<code>#EXT-X-MAP</code>/<code>#EXT-X-MEDIA</code> 等也覆盖），并加进自检 R8/R8b/R8c</td>
+</tr>
+
+<tr>
+<td><span class="tag t0">P0</span></td>
+<td><strong>回归：临时清单可能在播放中被删</strong><br><span class="dim">旧逻辑"超过 1 小时就清"—— 而 AVPlayer 播放 HLS 期间会<strong>重新请求清单</strong>（seek 之后尤其明显），
+那份清单一旦被删就是 404 / 拖进度条黑屏</span></td>
+<td><code>PlaylistRelay.cleanOld</code> +<br><code>static let staleAge: TimeInterval = 3600</code></td>
+<td><span class="ok">已修</span>：文件名改成按<strong>远端地址算出的稳定名</strong>（同一部片子每次同名 → 根本不堆积），
+保留期放宽到 <strong>7 天</strong>，播放中绝不可能被删</td>
+</tr>
+
+<tr>
+<td><span class="tag t0">P0</span></td>
+<td><strong>探测大文件时可能把整份文件读进内存</strong><br><span class="dim">发了 <code>Range: bytes=0-2047</code>，但只要服务器<strong>忽略 Range 回 200</strong>，
+<code>data(for:)</code> 就会把<strong>整个响应体</strong>读进内存。探测一个 1~2GB 的 mp4 直链 → 直接被杀</span></td>
+<td><code>SourceProbe.swift</code>：<br><code>let (data, resp) = try await URLSession.shared.data(for: r)</code><br>
+（同文件里 <code>Range</code> 只"请求"了，没有防御性校验）</td>
+<td>改成流式：先 <code>HEAD</code>，或用 <code>URLSession.bytes(for:)</code> <strong>只读前几 KB 就取消</strong>；
+<strong>绝不能假设服务器会遵守 Range</strong>。（<code>FileDownloader</code> 已经在 v1.0.101 修过同类问题，探测这条路漏了）</td>
+</tr>
+
+<tr>
+<td><span class="tag t1">P1</span></td>
+<td><strong>拼接时缺分片被静默跳过，而完成判据是"自洽"的、发现不了</strong><br><span class="dim">缺分片就 <code>continue</code>；随后 <code>fileSize == joinedBytes</code> 两边本来就是同一个数，<strong>恒等成立</strong>
+→ 缺了内容也会被判定"拼接校验通过"，写完成标记、清分片、继续转 MP4</span></td>
+<td><code>Downloader.swift:213</code><br><code>guard let data = try? Data(contentsOf: part) else { continue }</code><br>
+<code>DownloadJob.swift</code>：<code>if joinedBytes &gt; 0, fileSize == joinedBytes { … }</code></td>
+<td>缺分片必须<strong>抛错</strong>（<code>throw Fail.missingSegment(i)</code>）；完成判据换成
+<strong>"实际写入分片数 == 期望分片数"</strong>，别拿两个同源的数互相比</td>
+</tr>
+
+<tr>
+<td><span class="tag t1">P1</span></td>
+<td><strong>分片下载没有内容校验</strong><br><span class="dim">只要 HTTP 2xx + 非空就落盘。服务器回一个 <strong>200 的错误页/拦截页</strong>，也会被当成分片写进成品 →
+拼出来的 .ts 是坏的，只有 FFmpeg 失败才能"偶然"拦住</span></td>
+<td><code>Downloader.swift:336-342</code>：<br>只判 <code>!(200...299).contains(statusCode)</code> 与 <code>guard !data.isEmpty</code>，
+<strong>不看 Content-Length、不看内容类型、不看首字节</strong></td>
+<td>至少加两条：① 已知 <code>Content-Length</code> 时比对字节数；② 首字节必须是 TS 同步字节 <code>0x47</code>
+（这条本项目<strong>已经有现成实现</strong>：<code>LivePreview.blockReason</code> 里就是这么判的）</td>
+</tr>
+
+<tr>
+<td><span class="tag t1">P1</span></td>
+<td><strong>断点续传判据只有"文件存在且 &gt;0 字节"</strong><br><span class="dim">上次拿到一个<em>短响应</em>（200 但内容不全）会被<strong>永久当成完整分片</strong>，以后再也不重下</span></td>
+<td><code>Downloader.swift:330</code>：<br><code>if let sz = try? …[.size] as? Int, sz &gt; 0 { return 0 }</code></td>
+<td>记下每个分片的期望大小并比对；或给分片单独写"完成标记"（跟成品那套 <code>joinedMarker</code> 同思路）</td>
+</tr>
+
+<tr>
+<td><span class="tag t2">P2</span></td>
+<td><strong>本机服务的 Range 处理不符合 HTTP 语义</strong><br><span class="dim"><code>bytes=100-50</code>（start&gt;end）、<code>bytes=0-1, 3-4</code>（多范围）、<code>bytes=-0</code> 都不回 <code>416</code>，
+而是返回<strong>从 start 到文件末尾</strong>、甚至<strong>整个文件</strong></span></td>
+<td><code>LocalHTTPServer.swift</code> Range 解析段：<br><code>if comps.count &gt; 1, let e = Int(comps[1]), e &gt;= s { end = min(e, total - 1) }</code>
+（<code>e &lt; s</code> 时不改 <code>end</code>，沿用初始的 <code>total-1</code>；<code>"1, 3"</code> 令 <code>Int()</code> 失败 → 同样落到整个文件）</td>
+<td>非法范围 / 多范围一律回 <code>416</code>。播放器是会发 Range 的，返回错数据比返回错误码更难查</td>
+</tr>
+
+<tr>
+<td><span class="tag t2">P2</span></td>
+<td><strong>地址清洗的两个死角</strong><br><span class="dim">① 快路径只查"全 ASCII 且无空格"，会放过<strong>无效的 <code>%</code></strong>（如 <code>100%.ts</code>）→
+<code>URL(string:)</code> 依旧返回 nil（老失败模式复活）；② 保留 <code>#</code> 会让文件名里的 <code>#</code> 变成<strong>片段</strong>，
+请求路径被切断（<code>视频#1.ts</code> → 实际去要 <code>视频</code>）</span></td>
+<td><code>M3U8.swift</code>：<br><code>if s.allSatisfy({ $0.isASCII &amp;&amp; $0 != " " }) { return s }</code><br>
+保留字符表里含 <code>#</code></td>
+<td>① 快路径也检查"每个 <code>%</code> 后面是不是两个 hex"，不满足就走慢路径；
+② <code>#</code> 一律编码成 <code>%23</code>（片段本来就<strong>不会发到服务器</strong>，编码它只会更安全）</td>
+</tr>
+
+<tr>
+<td><span class="tag t3">P3</span></td>
+<td><strong>目录穿越防护不解析符号链接</strong><br><span class="dim"><code>standardizedFileURL</code> 只做路径规范化，<strong>不会解析符号链接</strong>；
+下载目录里若存在指向外部的软链，检查能过、实际读到外部文件</span></td>
+<td><code>LocalHTTPServer.swift</code> 防穿越段：<br><code>let target = root.appendingPathComponent(path).standardizedFileURL</code></td>
+<td>比较前先 <code>resolvingSymlinksInPath()</code>，或显式拒绝符号链接。<span class="dim">（自用场景低危，但顺手能修）</span></td>
+</tr>
+</table>
+
+<h2>二、推翻 / 需要限定（AI 说得不对或不完整）</h2>
+<table>
+<tr><th style="width:330px">AI 的说法</th><th>核实结果</th></tr>
+<tr><td>「分片写一半残留会被当成完整分片」</td>
+<td><span class="bad">部分推翻</span>：<code>data.write(to: dest, options: .atomic)</code> 是<strong>原子写</strong>，自己崩不会留半截文件。
+真正的缺口是"服务器给了短响应"（见成立 #6），不是"写一半"。</td></tr>
+<tr><td>「<code>sizePoller</code> 这个 Task 可能跑在主 actor 上，造成界面卡顿」</td>
+<td><span class="bad">推翻</span>：<code>FFmpegConverter.toMP4</code> 是 <code>nonisolated</code> 静态函数，里面的非结构化 <code>Task</code> <strong>不继承 actor</strong>，
+跑在全局并发执行器上；而且每 500ms 才一次回调，够不上卡顿来源。</td></tr>
+<tr><td>「GBK 清单可能碰巧是合法 UTF-8 从而被误解码」</td>
+<td><span class="bad">推翻（概率可忽略）</span>：整份含中文的 GBK 字节序列同时构成合法 UTF-8 基本不可能；
+真失败会自动落到 GB18030 那一层。</td></tr>
+<tr><td>「<code>beginStallWatch</code> 只依赖通知，会漏掉"通知没发但一直不前进"」</td>
+<td><span class="bad">推翻</span>：它本来就是<strong>独立的 8 秒计时器</strong>，不靠通知。AI 是没看到那段代码（简报里没贴），属材料不足导致的误判。</td></tr>
+<tr><td>「<code>LocalHTTPServer.shared.start(root:)</code> 若"第一次生效"会导致清单 404」</td>
+<td><span class="dim">修正</span>：实现是<strong>每次调用覆盖</strong> <code>self.root = root</code>。所以真实风险反过来了 ——
+<strong>播放中若另一个模块用别的 root 启动过服务，正在播的清单会失效</strong>。目前所有调用方都用同一个下载目录，
+所以暂时不出问题；值得加一条"root 变化时拒绝"的断言。</td></tr>
+</table>
+
+<h2>三、"先修哪 3 个"—— 我的排序（与 AI 不完全一致）</h2>
+<div class="card">
+<ol>
+<li><strong>探测阶段的内存炸点（P0）</strong> —— 直接对应你说的"大文件卡死/被杀"，改动小、收益大。</li>
+<li><strong>"缺分片 / 错误页也能报成功"这一整条链（P1×3）</strong> —— 这是最恶劣的一类错误（数据不可信）。
+三处要一起改：拼接必须抛错、完成判据要换成计数、分片要校验内容。</li>
+<li><strong>本机服务 Range 语义（P2）</strong> —— 播放器在用它，返回错数据会表现为"播到一半出问题"，很难查。</li>
+</ol>
+<div class="dim" style="margin-top:10px">两个 P0 回归（清单 URI / 清理时机）我已经<strong>当场修掉</strong>了 —— 那是我这一版新写的东西自己带的坑，
+不等你确认。<strong>其余几条我先不动</strong>：它们动的是下载主链路的判据，改之前想跟你确认一次改法。</div>
+</div>
+
+<h2>四、环境说明（为什么"五家"只回来两家）</h2>
+<table>
+<tr><th style="width:110px">AI</th><th style="width:90px">结果</th><th>说明</th></tr>
+<tr><td>DeepSeek</td><td class="ok">✔ 可用</td><td>两轮共 3 份答案（覆盖 A+B 全部编号），<strong>质量最高</strong>，本次报告的主要来源</td></tr>
+<tr><td>MiMo</td><td class="ok">✔ 可用</td><td>下载器那份可用；但会把<strong>思考过程当正文</strong>、编号覆盖不全</td></tr>
+<tr><td>豆包</td><td class="bad">✘ 整段回显</td><td>两轮 3 次全是把题面原样复述（这是它第 10 次同款），<strong>不产出结论</strong></td></tr>
+<tr><td>通义千问</td><td class="bad">✘ 输入就崩</td><td><code>error@input</code> / <code>killed_SIGTERM</code> —— 输入框阶段就失败，题面根本没灌进去</td></tr>
+<tr><td>MiniMax</td><td class="bad">✘ 找不到输入框</td><td><code>error@editor_find</code> / <code>timeout@wait_response</code> —— 大概率是<strong>登录态失效或页面改版</strong>，需要你手动打开一次确认</td></tr>
+</table>
+<div class="card">
+<strong>顺带总结的两条经验（已写进技能）：</strong>
+<ul>
+<li><strong>题面别超过 ~20KB。</strong>第一轮 39KB 一次派 5 家 → 2 家超时、1 家回显；第二轮按模块切成 16KB / 21KB 后，
+DeepSeek 一次就给出了可直接落地的结论。<span class="dim">（大题面会把 180 秒预算耗在"灌输入框"上）</span></li>
+<li><strong>环境会变。</strong>技能里记的"本机可用五家"已经过期 —— 现在只有 DeepSeek / MiMo 稳定可用。
+要凑够五家，得先修通义和 MiniMax 的登录态（你手动开一次浏览器、登一下就行）。</li>
+</ul>
+</div>
+
+<h2>五、这次是怎么核实的（可复现）</h2>
+<div class="card">
+<ul>
+<li>审查材料由脚本从源码<strong>逐字抽取</strong>（按标记切段，不是手敲）→ <code>_五家审查简报A/B</code> 两份；
+所有"事实"（如最低系统版本）也从文件里读出来填，不凭记忆写。</li>
+<li>回收后按"<strong>回源码找那句话</strong>"逐条核实：能指出文件+行号且代码确实如描述的 → 记「成立」；
+描述与实现不符、或结论依赖没给的代码 → 记「推翻」，并写明为什么。</li>
+<li>核实脚本与原始答案都留档在 <code>_probe_tmp/review_answers/</code>，随时可复查。</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>

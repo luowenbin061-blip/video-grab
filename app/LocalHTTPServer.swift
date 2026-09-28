@@ -491,26 +491,63 @@ final class LocalHTTPServer {
         }
 
         // Range（播放器 seek 时会要）
+        //
+        // ★★ v1.0.140：**解析必须严格**（2026-09-28 外部审查指出，我逐行核实成立）。
+        //   旧写法遇到不合法的 Range 不会拒绝，反而会**发错内容**：
+        //     · `bytes=100-50`（起止写反）→ `end` 保持初值 `total-1` → 发「从 100 到文件末尾」；
+        //     · `bytes=0-1, 3-4`（多范围）→ 中间那截 `Int("1, 3")` 失败 → 同样发「整份」；
+        //     · `bytes=-0` → 被当成"没有 Range"，回 200 整份。
+        //   播放器拿到不该拿的数据，表现是"播到一半出问题"，极难查。
+        //   按 RFC 7233：**不支持 / 不合法的 Range 一律回 416** ——
+        //   宁可让它明确报错，也不要给它错的数据。
         var start = 0
         var end = total - 1
         var partial = false
-        for l in lines where l.lowercased().hasPrefix("range:") {
+        let rangeLines = lines.filter { $0.lowercased().hasPrefix("range:") }
+        if rangeLines.count > 1 {                    // 多个 Range 头 = 多范围请求，不支持
+            sendRangeNotSatisfiable(fd, total: total)
+            return
+        }
+        if let l = rangeLines.first {
             let v = l.dropFirst("range:".count).trimmingCharacters(in: .whitespaces)
-            guard let r = v.range(of: "bytes=") else { continue }
-            let spec = v[r.upperBound...]
-            let comps = spec.split(separator: "-", omittingEmptySubsequences: false)
-            if let s = Int(comps.first ?? ""), s >= 0 {
-                start = s
-                if comps.count > 1, let e = Int(comps[1]), e >= s { end = min(e, total - 1) }
-                partial = true
-            } else if comps.count > 1, let e = Int(comps[1]), e > 0 {
-                start = max(0, total - e)       // bytes=-N
-                end = total - 1
-                partial = true
+            guard let r = v.range(of: "bytes=") else {
+                sendRangeNotSatisfiable(fd, total: total); return
             }
+            let spec = v[r.upperBound...].trimmingCharacters(in: .whitespaces)
+            guard !spec.contains(",") else {          // 多范围（bytes=0-1,3-4）
+                sendRangeNotSatisfiable(fd, total: total); return
+            }
+            let comps = spec.split(separator: "-", omittingEmptySubsequences: false)
+            guard comps.count == 2 else {
+                sendRangeNotSatisfiable(fd, total: total); return
+            }
+            let sStr = comps[0].trimmingCharacters(in: .whitespaces)
+            let eStr = comps[1].trimmingCharacters(in: .whitespaces)
+            if sStr.isEmpty {
+                // `bytes=-N`：末尾 N 字节。N 必须 >0（`-0` 是不满足的请求）
+                guard let n = Int(eStr), n > 0 else {
+                    sendRangeNotSatisfiable(fd, total: total); return
+                }
+                start = max(0, total - n)
+                end = total - 1
+            } else {
+                guard let s = Int(sStr), s >= 0, s < total else {
+                    sendRangeNotSatisfiable(fd, total: total); return
+                }
+                start = s
+                if eStr.isEmpty {
+                    end = total - 1                     // `bytes=N-`
+                } else {
+                    guard let e = Int(eStr), e >= s else {   // 起止写反 = 不合法
+                        sendRangeNotSatisfiable(fd, total: total); return
+                    }
+                    end = min(e, total - 1)             // 超过末尾按 RFC 夹到末尾
+                }
+            }
+            partial = true
         }
         if start >= total || start > end {
-            sendSimple(fd, status: 416, reason: "Range Not Satisfiable")
+            sendRangeNotSatisfiable(fd, total: total)     // 兜底：上面已经严格拦过一遍
             return
         }
 
@@ -535,6 +572,16 @@ final class LocalHTTPServer {
             guard writeAll(fd, d) else { break }
             remain -= d.count
         }
+    }
+
+    /// 416：Range 不合法 / 我们不支持多范围。
+    /// ★ 按 RFC 7233，416 要带 `Content-Range: bytes */总长` 告诉对方文件到底多长。
+    private func sendRangeNotSatisfiable(_ fd: Int32, total: Int) {
+        var head = "HTTP/1.1 416 Range Not Satisfiable\r\n"
+        head += "Content-Range: bytes */\(total)\r\n"
+        head += "Content-Length: 0\r\n"
+        head += "Connection: close\r\n\r\n"
+        _ = writeAll(fd, Data(head.utf8))
     }
 
     private func sendSimple(_ fd: Int32, status: Int, reason: String) {

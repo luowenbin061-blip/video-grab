@@ -62,11 +62,28 @@ struct SourceProbe {
         r.setValue(ua, forHTTPHeaderField: "User-Agent")
         if let referer, !referer.isEmpty { r.setValue(referer, forHTTPHeaderField: "Referer") }
         if let cookie, !cookie.isEmpty { r.setValue(cookie, forHTTPHeaderField: "Cookie") }
-        r.setValue("bytes=0-2047", forHTTPHeaderField: "Range")
+        r.setValue("bytes=0-4095", forHTTPHeaderField: "Range")
 
-        do {
-            let (data, resp) = try await URLSession.shared.data(for: r)
-            if let h = resp as? HTTPURLResponse {
+        // ★★ v1.0.140：**只读前几 KB，而且不依赖服务器遵守 Range**。
+        //
+        // 以前这里写的是：
+        //     let (data, resp) = try await URLSession.shared.data(for: r)
+        // 配合上面那个 `Range: bytes=0-2047` —— 逻辑是"只要前 2KB"。
+        // 但这个假设**靠不住**：只要服务器**忽略 Range 回 200**，`data(for:)` 就会把
+        // **整个响应体**读进内存。拿一个大文件直链去探测，就等于"整部片子进内存" →
+        // 直接撞 iOS 的内存上限被杀掉。（`FileDownloader` 在 v1.0.101 已经修过同类问题，
+        // **探测这条路当初漏了**。）
+        //
+        // 现在改成自己收：累计到 4096 字节就**立刻 cancel** ——
+        // 内存上限是死的，与服务器是否遵守 Range 无关。
+        let reader = HeadOnlyReader(limit: 4096)
+        let (data, netErr) = await reader.run(r)
+        if let netErr {
+            p.httpStatus = -1
+            p.headText = "请求出错：\(netErr.localizedDescription)"
+            return p
+        }
+        if let h = reader.httpResponse {
                 p.httpStatus = h.statusCode
                 p.contentType = (h.value(forHTTPHeaderField: "Content-Type") ?? "")
                     .components(separatedBy: ";").first?
@@ -83,74 +100,129 @@ struct SourceProbe {
                 }
             }
 
-            // ★★ v1.0.136：**解码绝不能整个失败** —— 这一条修的是用户报的「小部分视频下载失败」。
-            //
-            // 以前写的是 `String(data:data.prefix(2048), encoding:.utf8) ?? ""`：
-            // 严格 UTF-8 解码有两个**非常常见**的坑，一踩就把"取回的内容"当成**空串**：
-            //   ① 这份 m3u8 根本不是 UTF-8（中文站很常见 GBK/GB18030）→ 整段解不出来 → nil；
-            //   ② 我们只取了**前 2048 字节**，正好切在一个多字节汉字中间（中文名分片很常见）→ nil。
-            // 于是 `trimmed` 是空串 → `hasPrefix("#EXTM3U")` 为假 → 掉进下面"单个文件"那一支
-            // → `kind = .file` → 下载器**把清单本身当成一个文档存了下来**，
-            //   界面上就是「MP4 没转出来 …… 已保存（文件，不需要转码）」。
-            // 用户那条过程记录正好是这个签名：`application/x-mpegURL · 单个文件 · 文件`，
-            // 而且**没有「开头：」那一段**（因为 headText 是空的）—— 一查就中。
-            //
-            // `#EXTM3U` 是**纯 ASCII**：只要解码**别整个失败**，它一定读得出来。
-            // 所以改用 `String(decoding:as:)` —— 它**永不失败**，坏字节变 U+FFFD，ASCII 原样保留。
-            let text = String(decoding: data.prefix(4096), as: UTF8.self)
-            var probeText = text
-            if probeText.hasPrefix("\u{FEFF}") { probeText.removeFirst() }   // UTF-8 BOM 也会让 hasPrefix 落空
-            let trimmed = probeText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let ct = p.contentType.lowercased()
-            let head = trimmed.lowercased()
-            // 服务器自己说是清单，或地址后缀就是 .m3u8 → 也算清单（双保险，防"看内容"这一路失手）
-            let looksLikePlaylist = ct.contains("mpegurl") || url.pathExtension.lowercased() == "m3u8"
+        // ★★ v1.0.136：**解码绝不能整个失败** —— 这一条修的是用户报的「小部分视频下载失败」。
+        //
+        // 以前写的是 `String(data:data.prefix(2048), encoding:.utf8) ?? ""`：
+        // 严格 UTF-8 解码有两个**非常常见**的坑，一踩就把"取回的内容"当成**空串**：
+        //   ① 这份 m3u8 根本不是 UTF-8（中文站很常见 GBK/GB18030）→ 整段解不出来 → nil；
+        //   ② 我们只取了**前 2048 字节**，正好切在一个多字节汉字中间（中文名分片很常见）→ nil。
+        // 于是 `trimmed` 是空串 → `hasPrefix("#EXTM3U")` 为假 → 掉进下面"单个文件"那一支
+        // → `kind = .file` → 下载器**把清单本身当成一个文档存了下来**，
+        //   界面上就是「MP4 没转出来 …… 已保存（文件，不需要转码）」。
+        // 用户那条过程记录正好是这个签名：`application/x-mpegURL · 单个文件 · 文件`，
+        // 而且**没有「开头：」那一段**（因为 headText 是空的）—— 一查就中。
+        //
+        // `#EXTM3U` 是**纯 ASCII**：只要解码**别整个失败**，它一定读得出来。
+        // 所以改用 `String(decoding:as:)` —— 它**永不失败**，坏字节变 U+FFFD，ASCII 原样保留。
+        let text = String(decoding: data.prefix(4096), as: UTF8.self)
+        var probeText = text
+        if probeText.hasPrefix("\u{FEFF}") { probeText.removeFirst() }   // UTF-8 BOM 也会让 hasPrefix 落空
+        let trimmed = probeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ct = p.contentType.lowercased()
+        let head = trimmed.lowercased()
+        // 服务器自己说是清单，或地址后缀就是 .m3u8 → 也算清单（双保险，防"看内容"这一路失手）
+        let looksLikePlaylist = ct.contains("mpegurl") || url.pathExtension.lowercased() == "m3u8"
 
-            if trimmed.hasPrefix("#EXTM3U") {
-                // ① HLS 清单（视频的分片式）
-                p.kind = .hls
-                p.media = .video
-            } else if ct.hasPrefix("text/html") || head.hasPrefix("<!doctype") || head.hasPrefix("<html") {
-                // ② 网页本身 —— **唯一**"认出来了也故意不让下"的类型。
-                //    以前 unknown 一律拒，现在 unknown 也允许（见 ⑥），所以必须在这里显式拦。
-                //    ★ 顺序在 looksLikePlaylist **之前**：一个 .m3u8 地址如果返回的是网页（多半是
-                //      404 页 / 拦截页），那它就不是清单，不能因为后缀像就硬当清单处理。
-                p.kind = .unknown
+        if trimmed.hasPrefix("#EXTM3U") {
+            // ① HLS 清单（视频的分片式）
+            p.kind = .hls
+            p.media = .video
+        } else if ct.hasPrefix("text/html") || head.hasPrefix("<!doctype") || head.hasPrefix("<html") {
+            // ② 网页本身 —— **唯一**"认出来了也故意不让下"的类型。
+            //    以前 unknown 一律拒，现在 unknown 也允许（见 ⑥），所以必须在这里显式拦。
+            //    ★ 顺序在 looksLikePlaylist **之前**：一个 .m3u8 地址如果返回的是网页（多半是
+            //      404 页 / 拦截页），那它就不是清单，不能因为后缀像就硬当清单处理。
+            p.kind = .unknown
+            p.media = .unknown
+        } else if looksLikePlaylist {
+            // ②' ★ v1.0.136：内容没读成 `#EXTM3U`，但**服务器说它是 mpegurl / 地址是 .m3u8**
+            //    → 仍然走清单这条路。宁可进去之后报"清单里没有分片（附开头）"，
+            //    也不能把它当直链文件下下来（那是"静默下错东西"，比报错恶劣）。
+            p.kind = .hls
+            p.media = .video
+        } else {
+            // ③④⑤⑥ 依次往下试：Content-Type → 文件头 → 扩展名 → 都不认识也放行
+            //
+            // ★ v1.0.109 把顺序**反过来**了（原来是"扩展名优先"）。
+            //   这是"不带后缀的地址一律下不了"的根因：/media?id=8823 这种
+            //   明明 Content-Type 写着 image/jpeg，却因为没后缀被判"认不出"。
+            let ext = url.pathExtension.lowercased()
+            p.kind = .file
+            if let m = Self.byContentType(ct) {
+                p.media = m
+            } else if let m = Self.byMagic(Data(data.prefix(16))) {
+                // 文件头 —— 这 2KB 我们**本来就在取**，只是以前没拿去比对
+                p.media = m
+            } else if let m = Self.byExtension(ext) {
+                p.media = m
+            } else if ct.contains("octet-stream") {
                 p.media = .unknown
-            } else if looksLikePlaylist {
-                // ②' ★ v1.0.136：内容没读成 `#EXTM3U`，但**服务器说它是 mpegurl / 地址是 .m3u8**
-                //    → 仍然走清单这条路。宁可进去之后报"清单里没有分片（附开头）"，
-                //    也不能把它当直链文件下下来（那是"静默下错东西"，比报错恶劣）。
-                p.kind = .hls
-                p.media = .video
             } else {
-                // ③④⑤⑥ 依次往下试：Content-Type → 文件头 → 扩展名 → 都不认识也放行
-                //
-                // ★ v1.0.109 把顺序**反过来**了（原来是"扩展名优先"）。
-                //   这是"不带后缀的地址一律下不了"的根因：/media?id=8823 这种
-                //   明明 Content-Type 写着 image/jpeg，却因为没后缀被判"认不出"。
-                let ext = url.pathExtension.lowercased()
-                p.kind = .file
-                if let m = Self.byContentType(ct) {
-                    p.media = m
-                } else if let m = Self.byMagic(Data(data.prefix(16))) {
-                    // 文件头 —— 这 2KB 我们**本来就在取**，只是以前没拿去比对
-                    p.media = m
-                } else if let m = Self.byExtension(ext) {
-                    p.media = m
-                } else if ct.contains("octet-stream") {
-                    p.media = .unknown
-                } else {
-                    // 什么都不认识 —— 仍然允许下载（存成文件总比"直接失败"有用）
-                    p.media = .unknown
-                }
+                // 什么都不认识 —— 仍然允许下载（存成文件总比"直接失败"有用）
+                p.media = .unknown
             }
-            p.headText = Self.oneLine(String(trimmed.prefix(160)))
-        } catch {
-            p.httpStatus = -1
-            p.headText = "请求出错：\(error.localizedDescription)"
         }
+        p.headText = Self.oneLine(String(trimmed.prefix(160)))
         return p
+    }
+
+    /// 只读前 `limit` 字节的"探测器"：**收够了立刻断**，多余的一个字节都不收。
+    ///
+    /// ══ 为什么不用 `URLSession.shared.data(for:)`（v1.0.140 换掉它的原因）══
+    /// 它会把**整个响应体**读进内存。我们虽然带了 `Range` 头，但服务器完全可能忽略它
+    /// 而回 200 + 整份内容 —— 那一刻内存就按**文件大小**分配。探测大文件直链会被直接杀掉。
+    ///
+    /// ══ 为什么不用 `URLSession.bytes(for:)` ══
+    /// 它没有稳定的办法让我**确认**底层传输已经被掐断（`AsyncBytes` 上没有公开的 task 句柄）。
+    /// 而这里用 `dataTask.cancel()` 是**确定的**：收满就断，绝不多收。
+    ///
+    /// 注意：这是"自用且只读"的探测，`delegateQueue: nil`（系统给的串行队列）足够；
+    /// 用完 `invalidateAndCancel()` 解开 session ↔ delegate 的互相持有。
+    private final class HeadOnlyReader: NSObject, URLSessionDataDelegate {
+        private let limit: Int
+        private var buf = Data()
+        private var http: HTTPURLResponse?
+        private var failure: Error?
+        private var cont: CheckedContinuation<Void, Never>?
+        private var session: URLSession?
+
+        init(limit: Int) { self.limit = limit }
+
+        /// 响应头（收完才能读）
+        var httpResponse: HTTPURLResponse? { http }
+
+        /// 跑完一次探测。返回 (收到的前若干字节, 网络错误)
+        func run(_ req: URLRequest) async -> (Data, Error?) {
+            let s = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+            session = s
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                self.cont = c
+                s.dataTask(with: req).resume()
+            }
+            let out = (buf, failure)
+            s.invalidateAndCancel()
+            session = nil
+            return out
+        }
+
+        func urlSession(_ s: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            http = response as? HTTPURLResponse
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ s: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            buf.append(data)
+            if buf.count >= limit { dataTask.cancel() }   // ★ 收够了就断，剩下的一个字节都不收
+        }
+
+        func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            // 我们自己 cancel 引发的 -999 是**预期**结果，不算失败
+            if let e = error as NSError?, e.code != NSURLErrorCancelled { failure = error }
+            cont?.resume()
+            cont = nil
+        }
     }
 
     /// Content-Type → 类型（最权威，服务器自己说的）

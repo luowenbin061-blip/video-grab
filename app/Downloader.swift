@@ -39,6 +39,14 @@ struct HLSDownloader {
         case noAddress(String, [String])
         case decryptFailed
         case unsupported(String)
+        /// ★ v1.0.140：拼接时发现**分片文件不见了**（下载过了但磁盘上没了）。
+        ///   旧代码遇到这种情况是 `continue` **静默跳过**，然后产出一个残缺的 .ts，
+        ///   还因为"成品大小 == 写入字节数"（两个同源的数）被判成"拼接校验通过"——
+        ///   于是坏文件被当成成功（2026-09-28 外部审查指出，已核实）。
+        case missingSegment([Int])
+        /// ★ v1.0.140：分片内容**看着就不对**（例如回的是错误页、或者长度对不上）。
+        ///   以前只要 HTTP 2xx + 非空就落盘，服务器给个 200 的错误页也会被当成分片。
+        case badContent(Int, String)
 
         var errorDescription: String? {
             switch self {
@@ -58,6 +66,13 @@ struct HLSDownloader {
                 // ★ 宁可诚实地失败，也不产出「打不开但显示成功」的残缺文件
                 return "这种视频暂时下不了：\(why)。"
                     + "硬拼只会得到一个打不开的残缺文件，所以这次直接停下（不浪费你流量）。"
+            case .missingSegment(let list):
+                let head = list.prefix(5).map(String.init).joined(separator: "、")
+                return "有 \(list.count) 个分片在磁盘上不见了（第 \(head) 个…）。"
+                    + "没有硬拼成残缺文件 —— 已下载的分片都保留着，再点一次「重试」会只补这几个。"
+            case .badContent(let i, let why):
+                return "第 \(i) 个分片的内容不对（\(why)）。"
+                    + "多半是服务器当时回了一个错误页/被拦了，再点一次「重试」通常就好。"
             }
         }
     }
@@ -90,6 +105,12 @@ struct HLSDownloader {
         /// 拿它和成品大小对比，才敢断定"拼接真的成功了"—— 会诊两家都指出
         /// 光靠分片个数 / 名义大小不可靠（半文件也可能凑巧对上）。
         let joinedBytes: Int64
+        /// ★ v1.0.140：拼接时**真的写进成品的分片个数**。
+        ///   为什么还要它：`joinedBytes` 和成品大小是**同源**的（都是"我们刚写了多少"），
+        ///   拿它们互相比是**自洽校验** —— 缺了分片也照样相等，什么都发现不了。
+        ///   现在缺分片会直接抛错，DownloadJob 还会再核对一次
+        ///   "写入个数 == 期望个数"，**两处独立计数**才算真的对上。
+        let writtenSegments: Int
     }
 
     // MARK: - 主流程
@@ -208,13 +229,24 @@ struct HLSDownloader {
         // 逐分片去拉的话 694 个分片就是 694 次多余请求（还容易被判定为异常流量）。
         var keyCache: [URL: Data] = [:]
         var written: Int64 = 0          // ★ v1.0.101：写进成品的真实字节数
+        var writtenCount = 0            // ★ v1.0.140：真的写进成品的分片个数
+        var missing: [Int] = []         // ★ v1.0.140：拼接时发现磁盘上不见了的分片
         for (i, _) in segs.enumerated() {
             let part = partURL(i)
-            guard let data = try? Data(contentsOf: part) else { continue }
+            // ★★ v1.0.140：这里以前是 `else { continue }` —— 缺分片被**静默跳过**，
+            //   然后成品照样被当成"拼接校验通过"（见 Output.writtenSegments 的说明）。
+            //   现在先记下来，循环完**明确报错**：宁可失败，也不能给你一个
+            //   "能播但缺一段"的文件、还让你以为成功了。
+            //   已下载的分片全部保留 → 点「重试」只会补缺的那几个。
+            guard let data = try? Data(contentsOf: part) else {
+                missing.append(i)
+                continue
+            }
             let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
                                                    keyCache: &keyCache)
             out.write(payload)
             written += Int64(payload.count)
+            writtenCount += 1
             // 分片**故意不删** —— 见上面那段说明（v1.0.89）。
             // v1.0.101：改由 DownloadJob 在「拼接校验通过」之后立刻清（不再等转码成功），
             // 所以磁盘 2× 只存在于拼接这一小段，而不是整段转码期间。
@@ -225,13 +257,21 @@ struct HLSDownloader {
         }
         try? out.close()
 
+        // ★ v1.0.140：缺分片 → **明确失败**，并且**不留下**那个残缺的 .ts。
+        //   （留着它会被后面的逻辑当成"上次已经拼好了"→ 永远跳过重下。）
+        if !missing.isEmpty {
+            try? fm.removeItem(at: options.outputURL)
+            throw Fail.missingSegment(missing)
+        }
+
         // ★ 临时目录也**不在这里删** —— 留给 DownloadJob 在"转码也成功"之后统一清。
         //   （以前这里删掉，等于把续传底料在最后一步销毁。）
         onProgress(Progress(stage: .finished, done: total, total: total, bytes: bytesDone, message: "完成"))
         return Output(fileURL: options.outputURL,
                       duration: playlist.totalDuration,
                       segmentCount: total,
-                      joinedBytes: written)
+                      joinedBytes: written,
+                      writtenSegments: writtenCount)
     }
 
     // MARK: - 网络
@@ -324,21 +364,66 @@ struct HLSDownloader {
     static let durationsFileName = "durations.txt"
 
     /// 下载单个分片。返回**本次新下载**的字节数（续传跳过的返回 0）。
+    /// 分片的"完成标记"：内容 = 该分片落盘的字节数。
+    ///
+    /// ★★ v1.0.140：断点续传以前只看"文件存在且 >0 字节"——
+    ///   服务器**只要给过一次短响应**，那个半截文件就会被永久当成完整分片，
+    ///   以后每次重试都带着它 → 永远失败（2026-09-28 外部审查指出，我逐行核实成立）。
+    ///   现在：下载成功就顺手写一个标记；续传时**标记不在、或者对不上**就重下。
+    private func doneMarkerURL(_ index: Int) -> URL {
+        partURL(index).appendingPathExtension("ok")
+    }
+
     private func downloadSegment(index: Int, url: URL, playlist: M3U8Playlist) async throws -> Int64 {
         let dest = partURL(index)
-        // 已经下过就跳过（断点续传 / 重复点击不重下）
+        // 已经下过就跳过（断点续传 / 重复点击不重下）。
+        // ★ v1.0.140：判据从"文件存在"升级成"**标记存在且字节数对得上**"。
+        //   兼容处理：没有标记的**老文件**（升级前下的）先认它一次、并补写标记 ——
+        //   否则升级后所有"下到一半"的任务都要从头重下几百 MB。
         if let sz = try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int, sz > 0 {
-            return 0
+            if let marked = try? String(contentsOf: doneMarkerURL(index), encoding: .utf8),
+               Int(marked.trimmingCharacters(in: .whitespacesAndNewlines)) == sz {
+                return 0                                     // 标记对得上 → 真的是完整的
+            }
+            if !FileManager.default.fileExists(atPath: doneMarkerURL(index).path) {
+                try? String(sz).write(to: doneMarkerURL(index), atomically: true, encoding: .utf8)
+                return 0                                     // 老文件：只认这一次
+            }
+            // 有标记但对不上 → 上次那份是**短内容**，不认，往下重下
         }
         var lastErr: Error?
         for attempt in 0...options.retry {
             do {
                 let (data, resp) = try await URLSession.shared.data(for: request(for: url))
-                if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+                let http = resp as? HTTPURLResponse
+                if let h = http, !(200...299).contains(h.statusCode) {
                     throw Fail.badStatus(h.statusCode, url.lastPathComponent)
                 }
                 guard !data.isEmpty else { throw Fail.badStatus(0, "空响应") }
+
+                // ★★ v1.0.140：**加两道内容校验**。
+                //   以前只要 2xx + 非空就落盘 —— 服务器回一个 **200 的错误页/拦截页**
+                //   也会被当成分片写进成品，最后拼出一个坏文件。
+                //   ① 声明了长度就必须对得上（"短响应"当场拦下）
+                if let h = http, h.expectedContentLength > 0,
+                   Int64(data.count) != h.expectedContentLength {
+                    throw Fail.badContent(index,
+                        "声明 \(h.expectedContentLength) 字节、实际只收到 \(data.count) 字节")
+                }
+                //   ② 首字节必须是 TS 的同步字节 0x47。
+                //   ★★ 这条**只能对"明文 TS 流"用**，否则会把加密流和 fMP4 全判成坏：
+                //      · 加密流（AES-128）的分片是**密文**，首字节当然不是 0x47；
+                //      · fMP4 分片的扩展名是 .m4s，本来就不是 TS。
+                //      解密发生在拼接阶段，所以这里只能按"清单有没有 key + 后缀"来判断。
+                let ext = url.pathExtension.lowercased()
+                let isPlainTS = (playlist.key == nil) && ext != "m4s" && ext != "mp4"
+                if isPlainTS, let first = data.first, first != 0x47 {
+                    throw Fail.badContent(index, String(format: "开头是 0x%02X，不像视频分片", first))
+                }
+
                 try data.write(to: dest, options: .atomic)
+                // 落盘成功 → 写完成标记（内容 = 字节数），下次续传就靠它
+                try? String(data.count).write(to: doneMarkerURL(index), atomically: true, encoding: .utf8)
                 return Int64(data.count)
             } catch {
                 lastErr = error

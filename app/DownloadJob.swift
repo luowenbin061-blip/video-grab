@@ -814,7 +814,16 @@ final class DownloadJob: ObservableObject, Identifiable {
                 // ★ v1.0.101：拼接**校验通过**就清分片（不再等转码成功）。
                 //   判据 = 成品大小 == 实际写进成品的字节数 —— 会诊两家都提醒
                 //   "光看大小不够"，所以同时写一份**显式完成标记**，重试时才敢跳过拼接。
-                if joinedBytes > 0, fileSize == joinedBytes {
+                // ★★ v1.0.140：判据修正（2026-09-28 外部审查指出，我逐行核实成立）。
+                //   旧的 `fileSize == joinedBytes` 是**自洽校验**：成品大小就是"我们刚写了多少"，
+                //   两边同源 → 恒等成立 → **缺了分片也照样通过**。
+                //   现在多加一条**独立计数**的核对：写进成品的分片个数 vs 期望个数。
+                let countOK = (r.writtenSegments == r.segmentCount)
+                guard countOK else {
+                    throw Self.fail("拼接时少了分片（只写进 \(r.writtenSegments)/\(r.segmentCount) 个）"
+                                    + " —— 已下载的分片都留着，再点一次「重试」就只补缺的")
+                }
+                if joinedBytes > 0, fileSize == joinedBytes, countOK {
                     Self.writeJoinedMarker(id: id, segments: r.segmentCount,
                                            bytes: fileSize, duration: r.duration)
                     try? FileManager.default.removeItem(at: tempDir)

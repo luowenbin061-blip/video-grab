@@ -46,8 +46,17 @@ chk('R4 只处理 http/https（不碰本地 file:// 与 127.0.0.1）',
 chk('R5 只处理 VOD（有 ENDLIST 才走）', '"#EXT-X-ENDLIST"' in prc)
 chk('R6 逐行清洗走 M3U8Playlist.resolve', 'M3U8Playlist.resolve(line, relativeTo: base)' in prc)
 chk('R7 分片写成绝对地址', 'abs.absoluteString' in prc)
-chk('R8 #EXT-X-KEY 的 URI 也洗（含非 ASCII 才动）',
-    'rewriteKeyURI' in prc and 'rewriteKeyURI(line, base: base)' in prc)
+chk('R8 所有 # 标签里的 URI="…" 都绝对化（不只是 EXT-X-KEY，还有 EXT-X-MAP）',
+    'rewriteURIAttrs' in prc and 'rewriteKeyURI' not in prc
+    and 'out.append(rewriteURIAttrs(line, base: base))' in prc)
+# ★★ 2026-09-28 外部审查（DeepSeek）指出、我核实成立的一个**回归**：
+#   旧版只把「含非 ASCII」的 KEY URI 绝对化 → 纯 ASCII 的相对 URI（key.bin / init.mp4）
+#   在清单搬到本机 http 之后会解析到本机根目录 → 404 → **原来能播的反而播不了**。
+#   下面这两条把修法钉死，防止以后被"优化"回去。
+chk('R8b URI 重写不再挑"含非 ASCII"（那正是回归的根源）',
+    'uri.contains(where: { !$0.isASCII })' not in prc)
+chk('R8c 临时清单用**稳定文件名**（同一部片子同名，不会被清理掉正在播的）',
+    'stableKey(remote.absoluteString)' in prc and 'uuidString.prefix(8)' not in prc)
 chk('R9 借本机 HTTP 服务提供（HLS 必须 http）',
     'LocalHTTPServer.shared.start(root: root)' in prc and 'LocalHTTPServer.shared.url(name)' in prc)
 chk('R10 任何一步不成返回 nil（退回原地址，不比现在差）',

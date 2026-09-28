@@ -89,8 +89,18 @@ struct M3U8Playlist {
     ///   · **已经是 `%XX` 的不能重复编码**（`%` 后面跟两位十六进制就原样留着），
     ///     否则 `%E6` 会变成 `%25E6`，请求路径就错了。
     static func sanitizeURLString(_ s: String) -> String {
-        // 快路径：纯 ASCII 且没有空格 → 不用动（绝大多数站走这条，零开销）
-        if s.allSatisfy({ $0.isASCII && $0 != " " }) { return s }
+        // 快路径：纯 ASCII、没有空格、没有 `#`、且每个 `%` 都真的是两位十六进制
+        // → 不用动（绝大多数站走这条，零开销）。
+        //
+        // ★★ v1.0.140：快路径原来只查"全 ASCII 且无空格"，会漏两种**必须处理**的情况
+        //   （2026-09-28 外部审查指出，我逐行核实成立）：
+        //     ① **无效的 `%`**：像 `100%.ts` 这种，全 ASCII → 被原样放过，
+        //        而 `URL(string:)` 依旧返回 nil —— 于是回到"这行读不懂"的老失败模式；
+        //     ② **`#`**：它在 URL 里是"片段开始"，会把后面的文件名整段切掉。
+        //        （`视频#1.ts` 会被当成"请求 视频，片段是 1.ts"）
+        if s.allSatisfy({ $0.isASCII && $0 != " " && $0 != "#" }), percentEscapesLookOK(s) {
+            return s
+        }
 
         var out = ""
         out.reserveCapacity(s.count + 16)
@@ -105,8 +115,10 @@ struct M3U8Playlist {
                 i += 3
                 continue
             }
-            if let scalar = c.unicodeScalars.first, c.unicodeScalars.count == 1,
-               c.isASCII, c != " " {
+            // ★ v1.0.140：`#` 也进"要编码"那一类 —— 见上面快路径的说明。
+            //   （片段本来就**不会发到服务器**，把它编码成 %23 只会更安全；
+            //     而 `?` **必须保留**，它是查询串的开始，编码掉就取不到东西了。）
+            if c.isASCII, c != " ", c != "#" {
                 out.append(c)
             } else {
                 // 非 ASCII / 空格 / 杂七杂八 → 逐个 UTF-8 字节编码
@@ -117,6 +129,23 @@ struct M3U8Playlist {
             i += 1
         }
         return out
+    }
+
+    /// 每个 `%` 后面是不是真的跟着两位十六进制。
+    /// 只要有一个不是，就说明这串里存在**无效的百分号转义**（如 `100%.ts`），
+    /// 那就**不能走快路径** —— 必须交给慢路径把它编成 `%25`，否则 `URL(string:)` 还是 nil。
+    private static func percentEscapesLookOK(_ s: String) -> Bool {
+        let a = Array(s)
+        var i = 0
+        while i < a.count {
+            if a[i] == "%" {
+                guard i + 2 < a.count, a[i + 1].isHexDigit, a[i + 2].isHexDigit else { return false }
+                i += 3
+            } else {
+                i += 1
+            }
+        }
+        return true
     }
 
     /// 把一行地址解析成绝对 URL。**先用 `sanitizeURLString` 洗一遍**，

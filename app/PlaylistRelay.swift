@@ -48,8 +48,14 @@ enum PlaylistRelay {
     /// 临时清单的文件名前缀（带点，尽量不碍眼；存盘前会清掉旧的）
     static let filePrefix = ".vgplay_"
 
-    /// 旧清单保留多久（秒）。播完就没用了，但留着也不碍事，一小时足够。
-    static let staleAge: TimeInterval = 3600
+    /// 临时清单保留多久（秒）。
+    ///
+    /// ★ v1.0.140：从"1 小时"放宽到 **7 天**。
+    ///   文件名现在是按远端地址算的**稳定名字**（同一部片子每次同一个文件），
+    ///   压根不会堆积；而"1 小时就删"会在**播放中被删**——
+    ///   AVPlayer 播放 HLS 时会重新请求清单（seek 之后尤其明显），
+    ///   那时清单没了 → 直接 404 / 拖进度条黑屏。放宽之后这个坑就没了。
+    static let staleAge: TimeInterval = 7 * 24 * 3600
 
     /// 要交给内置播放器的**一条东西**：地址已经是"能播的那个"。
     ///
@@ -127,7 +133,9 @@ enum PlaylistRelay {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             if line.hasPrefix("#") {
-                out.append(line.hasPrefix("#EXT-X-KEY") ? rewriteKeyURI(line, base: base) : line)
+                // ★ 所有 `#` 标签里的 `URI="…"` 都要绝对化 —— 不只是 #EXT-X-KEY，
+                //   还有 #EXT-X-MAP（fMP4 初始化段）等。理由见 rewriteURIAttrs 的注释。
+                out.append(rewriteURIAttrs(line, base: base))
                 continue
             }
             guard let abs = M3U8Playlist.resolve(line, relativeTo: base) else { return nil }
@@ -138,7 +146,9 @@ enum PlaylistRelay {
 
         // ⑤ 写盘（原子写）
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let name = filePrefix + String(UUID().uuidString.prefix(8)) + ".m3u8"
+        // ★ 文件名由**远端地址**算出来（稳定）：同一部片子每次覆盖同一份，
+        //   既不堆积、也不会"播到一半清单被清理掉"（旧代码用随机 UUID，每次都是一份新的）。
+        let name = filePrefix + stableKey(remote.absoluteString) + ".m3u8"
         let dst = root.appendingPathComponent(name)
         guard let body = out.joined(separator: "\n").appending("\n").data(using: .utf8) else { return nil }
         do {
@@ -156,7 +166,14 @@ enum PlaylistRelay {
         return LocalHTTPServer.shared.url(name)
     }
 
-    /// 清掉之前留下的临时清单（保留刚写的那一份）
+    /// 清掉很久没用过的临时清单（保留刚写的那一份）。
+    ///
+    /// ★★ 为什么不是"1 小时就删"（v1.0.140 改）——
+    ///   文件名现在是**按远端地址算出来的稳定名字**（同一部片子每次都是同一个文件），
+    ///   所以根本不会堆积，清理可以放得很松。
+    ///   而"1 小时"那个阈值有个真问题：**AVPlayer 在播放中会重新请求清单**
+    ///   （seek 之后尤其明显），如果那份清单在播放期间被删掉，就会出现
+    ///   "播着播着 404 / 拖进度条黑屏"。→ 放宽到 7 天，播放中绝不会被删。
     private static func cleanOld(root: URL, keep: String) {
         let fm = FileManager.default
         guard let list = try? fm.contentsOfDirectory(at: root,
@@ -172,19 +189,47 @@ enum PlaylistRelay {
         }
     }
 
-    /// 重写 `#EXT-X-KEY` 里的 `URI="…"`。
+    /// 稳定短哈希（FNV-1a 64 位）—— 给临时清单起一个"同一部片子每次都一样"的名字。
     ///
-    /// ★ 只动**含非 ASCII** 的那种 —— 纯 ASCII 的 URI 原样留着，
-    ///   零风险（避免我在这里把本来能播的加密流弄坏）。
-    private static func rewriteKeyURI(_ line: String, base: URL) -> String {
-        guard let r1 = line.range(of: "URI=\"") else { return line }
-        let rest = line[r1.upperBound...]
-        guard let r2 = rest.range(of: "\"") else { return line }
-        let uri = String(rest[..<r2.lowerBound])
-        guard !uri.isEmpty else { return line }
-        guard uri.contains(where: { !$0.isASCII }) else { return line }
-        guard let abs = M3U8Playlist.resolve(uri, relativeTo: base) else { return line }
-        return line.replacingOccurrences(of: "URI=\"" + uri + "\"",
-                                        with: "URI=\"" + abs.absoluteString + "\"")
+    /// ★ 为什么不能用 `String.hashValue`：它带**每进程随机种子**，每次启动结果都不同，
+    ///   那样文件名又变回"每次新一份"，等于没解决问题。
+    ///   这里只要求"稳定 + 够散"，不需要抗攻击，所以用最朴素的 FNV-1a。
+    private static func stableKey(_ s: String) -> String {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for b in s.utf8 {
+            h ^= UInt64(b)
+            h = h &* 0x0000_0100_0000_01b3
+        }
+        return String(String(format: "%016llx", h).prefix(8))
+    }
+
+    /// 把一行 `#` 标签里**所有** `URI="…"` 都重写成绝对远端地址。
+    ///
+    /// ★★ 为什么必须"所有"，而不是只认 `#EXT-X-KEY`、更不能只动含非 ASCII 的：
+    ///   这份清单**被搬到了本机 http**（`http://127.0.0.1:端口/…`）——
+    ///   于是清单里**任何相对地址的解析基准都跟着变了**，相对 URI 会被解析到本机服务的根目录下，
+    ///   必然 404。原来在远端好好的 `#EXT-X-KEY:METHOD=AES-128,URI="key.bin"`（纯 ASCII）
+    ///   搬过来之后就废了，**属于"把本来能播的搞坏"的那一类**（2026-09-28 外部审查指出，已核实）。
+    ///   同类标签还有 `#EXT-X-MAP:URI="init.mp4"`（fMP4 的初始化段，漏了直接播不了）、
+    ///   `#EXT-X-MEDIA:…URI="…"`、`#EXT-X-I-FRAME-STREAM-INF:URI="…"`。
+    ///   → 所以：**凡是 `URI="…"`，一律换成绝对远端地址**（原本已是绝对的会原样返回）。
+    private static func rewriteURIAttrs(_ line: String, base: URL) -> String {
+        guard line.contains("URI=\"") else { return line }
+        var out = ""
+        var rest = Substring(line)
+        while let r = rest.range(of: "URI=\"") {
+            out += rest[..<r.upperBound]
+            rest = rest[r.upperBound...]
+            guard let r2 = rest.range(of: "\"") else { return line }   // 引号都没闭合 → 整行不动
+            let uri = String(rest[..<r2.lowerBound])
+            if let abs = M3U8Playlist.resolve(uri, relativeTo: base) {
+                out += abs.absoluteString
+            } else {
+                out += uri
+            }
+            rest = rest[r2.lowerBound...]
+        }
+        out += rest
+        return out
     }
 }
