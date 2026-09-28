@@ -244,24 +244,18 @@ enum PlaylistRelay {
         //   每个分片地址里都有 "hls" → 全都"匹配" → 过滤根本不生效（真机：一句跳过都没有）。
         //   现在的候选 = 请求地址 / 清单地址 路径里的目录名（从深到浅、长度≥4），
         //   **谁能把分片分成两堆**（有匹配也有不匹配）就用谁；都不行 → 全下并写明原因。
-        var candidates: [String] = []
-        for u in [requestURL, base].compactMap({ $0 }) {
-            for p in u.deletingLastPathComponent().pathComponents.reversed() {
-                if p.count >= 4, p != "/", !candidates.contains(p) { candidates.append(p) }
-            }
+        // ★ v1.0.152：这段逻辑抽到 `PlaylistAnchor`（纯函数）—— 这样它能在测试目标里
+        //   单独编译、被回归测试盯着（v1.0.147 就是在这里出过"锚点取错层级"的错）。
+        let candidates = PlaylistAnchor.candidates(from: [requestURL, base].compactMap { $0 })
+        let segStrings: [String] = playlist.rawText.components(separatedBy: .newlines).compactMap { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { return nil }
+            return M3U8Playlist.resolve(line, relativeTo: base ?? partsDir)?.absoluteString ?? line
         }
-        var anchor: String? = nil
-        var matched = 0, missed = 0
-        for cand in candidates {
-            var m = 0, x = 0
-            for raw in playlist.rawText.components(separatedBy: .newlines) {
-                let line = raw.trimmingCharacters(in: .whitespaces)
-                if line.isEmpty || line.hasPrefix("#") { continue }
-                let u = M3U8Playlist.resolve(line, relativeTo: base ?? partsDir)?.absoluteString ?? line
-                if u.contains(cand) { m += 1 } else { x += 1 }
-            }
-            if m > 0, x > 0 { anchor = cand; matched = m; missed = x; break }
-        }
+        let picked = PlaylistAnchor.pick(segmentURLStrings: segStrings, candidates: candidates)
+        let anchor = picked?.anchor
+        let matched = picked?.matched ?? 0
+        let missed = picked?.missed ?? 0
         let keepOnlyMatched = (anchor != nil)
         let anchorNote: String? = (anchor == nil && !candidates.isEmpty)
             ? "没找到能区分广告的锚点（试过：" + candidates.prefix(3).joined(separator: " / ")

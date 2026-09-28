@@ -128,6 +128,21 @@ targets:
         # FFmpeg 转码用的 C 入口（app/Hook.m）经桥接头暴露给 Swift
         SWIFT_OBJC_BRIDGING_HEADER: app/VideoGrab-Bridging-Header.h
 
+  # ★★ v1.0.152 离线回归集：只编译**纯逻辑**文件（M3U8 解析 + 锚点挑选），
+  #   不链 ffmpeg —— 那套静态库只有真机切片（ios-arm64），模拟器上链接不上。
+  #   所以这个测试目标能跑在 CI 的模拟器上，每次推送自动"做一遍题"。
+  VideoGrabTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: app/M3U8.swift
+      - path: app/PlaylistAnchor.swift
+      - path: VideoGrabTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.luowenbin.videograb.tests
+        GENERATE_INFOPLIST_FILE: YES
+
 # XcodeGen 不会自动生成 scheme（是 opt-in 的），必须显式声明，
 # 否则 xcodebuild -scheme 会找不到目标。
 schemes:
@@ -139,3 +154,12 @@ schemes:
       config: Release
     archive:
       config: Release
+
+  # ★ v1.0.152：回归测试的 scheme —— CI 用它跑 xcodebuild test
+  VideoGrabTests:
+    build:
+      targets:
+        VideoGrabTests: all
+    test:
+      targets:
+        - VideoGrabTests

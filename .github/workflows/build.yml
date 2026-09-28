@@ -55,6 +55,19 @@ jobs:
           echo "=== project format ===" | tee -a build.log
           grep -m1 objectVersion VideoGrab.xcodeproj/project.pbxproj 2>&1 | tee -a build.log || true
 
+      # ★★ v1.0.152 离线回归集：把这几天踩过的坑当考题，云端自动做一遍。
+      #   暂时 continue-on-error —— 第一次接上先让它跑通、把日志看清，
+      #   确认稳定之后再改成硬闸（失败就挡住发布）。
+      - name: Logic regression tests (simulator)
+        continue-on-error: true
+        run: |
+          echo "=== logic regression tests ===" | tee -a build.log
+          xcodebuild test \
+            -project VideoGrab.xcodeproj \
+            -scheme VideoGrabTests \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            2>&1 | tee -a build.log || echo "!! 回归测试没通过（原因见上面）" | tee -a build.log
+
       - name: Build (unsigned)
         id: build
         run: |
