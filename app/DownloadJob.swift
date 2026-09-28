@@ -936,6 +936,12 @@ final class DownloadJob: ObservableObject, Identifiable {
                 playlistName = wrotePlaylist ? playName : nil
                 phase = "可以播放；MP4 没转出来（原因见过程记录）"
             }
+            }   // ← 关闭 `if !ffmpegDone`（**只能包住"转成 MP4"这一段**！）
+                //    ★★ v1.0.143 的教训：这个 `}` 我一开始放到了"抽缩略图"之前，
+                //    于是 `failed = nil` / `stageEnd("探测")` / **`finished = true`** 全被包进来了 ——
+                //    新路成功时这几行**一行都不执行** → 任务永远显示"还在下载"
+                //    （界面上只剩暂停/边下边播，没有播放/存相册按钮），而且心跳不停。
+                //    括号是配平的，所以结构检查查不出来 —— 只能靠位置判据钉死（见自检 G12）。
 
             // ★ v1.0.89 三件事一起补（以前全漏了）：
             //   ① `failed = nil` —— 成功块原来**只设 finished/mp4Ready，不清 failed**，
@@ -958,7 +964,6 @@ final class DownloadJob: ObservableObject, Identifiable {
             onUpdate?()
             // 缩略图放在「完成」之后抽：界面立刻变成完成态，图晚一两秒自己出现。
             // 抽不出来也没关系 —— 列表显示占位图，功能一点不受影响。
-            }
             if let s = thumbSource { await makeThumbnail(from: s) }
 
         } catch {

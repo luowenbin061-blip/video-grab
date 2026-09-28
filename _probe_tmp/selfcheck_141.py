@@ -116,6 +116,21 @@ chk('G10 声明必须在分支外（在 joinedBytes 声明之前）—— run #1
 chk('G11 分支里是赋值、不是重新声明',
     'let ffmpegMP4 = await remuxViaFFmpeg(' not in djc
     and 'ffmpegMP4 = await remuxViaFFmpeg(' in djc)
+# ★★ v1.0.143 真机踩的坑：`if !ffmpegDone {` 的**闭合位置**放错了 ——
+#   我把它放到了"抽缩略图"之前，于是 `failed = nil` / `stageEnd("探测")` / **`finished = true`**
+#   全被包了进去；新路成功时这几行**一行都不执行** → 任务永远显示"还在下载"
+#   （界面上只剩暂停/边下边播，没有播放/存相册按钮），心跳也不停。
+#   括号是**配平**的 → 结构检查查不出；只能判"它在收尾那几行**之前**闭合"。
+#   ★ 判据本身要用**原文**（`read`）而不是 `code_of` —— 那个标记写在注释里，
+#     而 `code_of` 会剔掉注释（这个坑我已经踩第三次了）。
+#   ★ 判据本身要用**原文**（`read`）而不是 `code_of`（标记在注释里，会被剔掉）；
+#     而且锚点必须用**带缩进的真实代码行** —— 我那段注释里也写了 "failed = nil"，
+#     用裸词 index 会被自己的注释骗到（这坑也很经典）。
+_raw_dj = read('DownloadJob.swift')
+chk('G12 ★闭合位置：必须在收尾代码之前（只包住"转成 MP4"那一段）',
+    '关闭 `if !ffmpegDone`' in _raw_dj
+    and _raw_dj.index('关闭 `if !ffmpegDone`')
+        < _raw_dj.index('            failed = nil\n            if let cur = Self.stageName(stage) { stageEnd(cur) }'))
 
 print()
 print('=== H. 回归：前几版不能被碰掉 ===')
