@@ -168,6 +168,26 @@ chk('H8 转 MP4 有进度（v1.0.138）', 'sizePoller' in ff)
 chk('H9 详细日志 + 复制记录（v1.0.138）',
     '【VideoGrab 任务记录】' in read('ContentView.swift'))
 
+# ══ v1.0.150 四项 UI 改动（用户逐条确认过的）══
+lm = code_of(read('LongPressMenu.swift')); lm_raw = read('LongPressMenu.swift')
+bm = code_of(read('BookmarksView.swift'))
+tb = code_of(read('Toolbox.swift'))
+print()
+print('=== I. v1.0.150 四项 UI 改动 ===')
+chk('U1 大预览卡上的 ▶ 图标已去掉', 'play.circle.fill' not in lm_raw)
+chk('U2 预览卡仍可点播（Button(action: onPlay)）', 'Button(action: onPlay)' in lm)
+chk('U3 ★标题行可点 = 播放（用户指定的位置）',
+    '标题行**可点 = 用内置播放器播**' in lm_raw
+    and re.search(r'Button\(action: onPlay\) \{[^}]*info\.title', lm) is not None)
+cv2 = code_of(read('ContentView.swift'))
+chk('U4 功能卡去掉「下载管理」', 'menuCell("arrow.down.circle", "下载管理"' not in cv2)
+chk('U5 功能卡剩 8 格（2×4）', cv2.count('menuCell("') == 8, '实际 %d' % cv2.count('menuCell("'))
+chk('U6 工具箱 3 列', tb.count('GridItem(.flexible(), spacing: 10)') == 3)
+chk('U7 cell 支持徽标与开关绿点', 'badge: Int? = nil, isOn: Bool = false' in tb)
+chk('U8 副标题长文已去（detail 参数删除）', 'detail: String? = nil' not in tb)
+chk('U9 书签长按菜单「添加到首页」',
+    '添加到首页' in bm and 'HomeStore.shared.addURL' in bm)
+
 print()
 print('RESULT: %d PASS / %d FAIL' % (len(PASS), len(FAIL)))
 if FAIL:

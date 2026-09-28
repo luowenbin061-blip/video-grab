@@ -327,6 +327,17 @@ struct BookmarksView: View {
         row(title: m.label, host: m.host, extra: m.folder == nil ? m.timeText : "") {
             open(m.url)
         }
+        // ★★ v1.0.150：长按书签 → 「添加到首页」—— 收藏夹里的每条都能一键上首页。
+        //   入口选长按菜单而不是往行上塞图标（页面上东西越少越好）。
+        .contextMenu {
+            Button {
+                // addURL 返回 false = 地址无效或首页里已经有了
+                note = HomeStore.shared.addURL(m.url, title: m.label)
+                    ? "已添加到首页" : "首页里已经有这条了"
+            } label: {
+                Label("添加到首页", systemImage: "plus.square.on.square")
+            }
+        }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 store.removeMark(url: m.url)

@@ -80,12 +80,6 @@ struct LongPressMenuView: View {
                     Image(systemName: "video.fill")
                         .font(.system(size: 52, weight: .regular))
                         .foregroundStyle(Color(white: 0.35))
-                    // 小角标：右下角一颗播放三角 —— 暗示"这张卡能点开播"
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(Color(white: 0.35))
-                        .background(Circle().fill(Color(UIColor.systemBackground)).padding(1))
-                        .offset(x: 30, y: 20)
                 }
                 Text(info.host.isEmpty ? "视频" : info.host)
                     .font(.system(size: 14))
@@ -108,20 +102,25 @@ struct LongPressMenuView: View {
 
     private var actionCard: some View {
         VStack(spacing: 0) {
-            // 标题行只是「这是哪个视频」的说明，不可点 ——
-            // （以前点它会弹嗅探列表，容易误触；用户明确不希望嗅探面板自己冒出来）
-            HStack(spacing: 12) {
-                Image(systemName: "video.fill")
-                    .font(.system(size: 15))
-                    .frame(width: 22)
-                Text(info.title.isEmpty ? "视频" : info.title)
-                    .font(.system(size: 15))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 6)
+            // ★★ v1.0.150：标题行**可点 = 用内置播放器播**（用户指定的位置）。
+            //   大预览卡上的 ▶ 小图标已去掉 —— 图标压在缩略图上，还把"播"的位置带偏了；
+            //   现在播放的入口就在这一行：整行可点（远超 44px 点击标准），不加任何图标。
+            Button(action: onPlay) {
+                HStack(spacing: 12) {
+                    Image(systemName: "video.fill")
+                        .font(.system(size: 15))
+                        .frame(width: 22)
+                    Text(info.title.isEmpty ? "视频" : info.title)
+                        .font(.system(size: 15))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 6)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 48)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 14)
-            .frame(height: 48)
+            .buttonStyle(.plain)
 
             // 有情况才出现（例如「已改用抓到的真实地址」）—— 平时这一行不存在
             if let hint = info.hint {

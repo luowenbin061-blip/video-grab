@@ -49,12 +49,16 @@ struct ToolboxView: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
-                                    GridItem(.flexible(), spacing: 12)],
-                          spacing: 12) {
+                // ★★ v1.0.150：3 列 × 3 行 —— 9 个工具正好对称，卡片等高；
+                //   状态不再用副标题长文（参差不齐的根源），改用图标角标：
+                //   嗅探结果 = 数量徽标；桌面/无图模式 = 开着时绿点。
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
+                                    GridItem(.flexible(), spacing: 10),
+                                    GridItem(.flexible(), spacing: 10)],
+                          spacing: 10) {
                     cell("magnifyingglass", "页内查找", .blue) { find() }
                     cell("antenna.radiowaves.left.and.right", "嗅探结果", .orange,
-                         detail: sniffDetail) { onOpenSniff() }
+                         badge: model.items.count) { onOpenSniff() }
                     cell("square.and.arrow.down.on.square", "导入视频", .green) {
                         showImportSource = true
                     }
@@ -65,13 +69,13 @@ struct ToolboxView: View {
                     // ★ v1.0.119 新增四格
                     // 说明：桌面模式 / 无图模式都是「开关」——副标题直接写当前状态，
                     // 点一下切换（不是进二级页面）。
-                    cell("desktopcomputer", "桌面模式", .indigo,
-                         detail: desktopUA ? "已开 · 点一下关" : "已关 · 点一下开") {
+                    cell("desktopcomputer", "桌面模式", .indigo, isOn: desktopUA) {
                         model.toggleDesktopUA()
+                        note = model.desktopUA ? "桌面模式已开" : "桌面模式已关"
                     }
-                    cell("eye.slash", "无图模式", .gray,
-                         detail: noImage ? "已开 · 不下载图片" : "已关 · 点一下开") {
+                    cell("eye.slash", "无图模式", .gray, isOn: noImage) {
                         model.toggleNoImage()
+                        note = noImage ? "无图模式已开（图片不下载）" : "无图模式已关"
                     }
                     cell("square.and.arrow.up", "分享本页", .blue) { share() }
 
@@ -80,14 +84,12 @@ struct ToolboxView: View {
                     //     那条路一直拼不干净（接缝、固定栏重复、有些页干脆截不动），
                     //     而 PDF 能转出干净的长图，等于把它替代掉了。
                     //     点这格会问一句：只要 PDF，还是顺带也转一张图片。
-                    cell("doc.richtext", "导出 PDF", .red,
-                         detail: "可顺带转图片") { showPDFOptions = true }
+                    cell("doc.richtext", "导出 PDF", .red) { showPDFOptions = true }
 
                     // ★ v1.0.127 备份 / 恢复 —— 这是个单机 App（没 iCloud、没账号），
                     //   重装 IPA / 换机 / 手滑删了 App，攒的书签·记录·首页·进度就全没了。
                     //   点开弹一句"备份 还是 恢复"，不在这一页上摊两个按钮。
-                    cell("externaldrive.badge.timemachine", "备份数据", .cyan,
-                         detail: "一个文件带走全部") { showBackupOptions = true }
+                    cell("externaldrive.badge.timemachine", "备份数据", .cyan) { showBackupOptions = true }
                 }
                 .padding(16)
 
@@ -174,29 +176,40 @@ struct ToolboxView: View {
 
     /// 一个功能格：大图标 + 短标题（**故意不放长说明** —— 一行字最省地方）
     private func cell(_ icon: String, _ title: String, _ color: Color,
-                      detail: String? = nil,
+                      badge: Int? = nil, isOn: Bool = false,
                       tap: @escaping () -> Void) -> some View {
         Button(action: tap) {
-            VStack(spacing: 8) {
+            VStack(spacing: 7) {
                 Image(systemName: icon)
-                    .font(.system(size: 26))
+                    .font(.system(size: 24))
                     .foregroundStyle(color)
-                    .frame(height: 30)
+                    .frame(height: 28)
+                    .overlay(alignment: .topTrailing) {
+                        if let badge, badge > 0 {
+                            Text(badge > 99 ? "99+" : "\(badge)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.red))
+                                .offset(x: 9, y: -5)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if isOn {
+                            Circle().fill(Color.green).frame(width: 8, height: 8)
+                                .offset(x: 7, y: -3)
+                        }
+                    }
                 Text(title)
-                    .font(.system(size: 13.5, weight: .medium))
+                    .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                if let detail {
-                    Text(detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                    .minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
+            .frame(height: 78)
             .background(Color(.secondarySystemBackground),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

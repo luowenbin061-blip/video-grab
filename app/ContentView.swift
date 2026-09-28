@@ -657,16 +657,16 @@ struct ContentView: View {
 
     private var funcMenuCard: some View {
         VStack(spacing: 4) {
+            // ★★ v1.0.150：去掉「下载管理」—— 底栏那个下载图标就是入口，功能没丢；
+            //   8 格正好 2×4 对称。以后要加新功能：**开第二页**（左右滑动 + 页点），
+            //   不再往这两行里塞（塞了又回到参差不齐）。
             HStack(spacing: 0) {
                 menuCell("clock.arrow.circlepath", "收藏/历史") { showBookmarks = true }
                 menuCell("bookmark", "收藏网址") { toggleBookmark() }
-                menuCell("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
-                    showDownloads = true
-                }
                 menuCell("gearshape", "设置") { showSettings = true }
+                menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
             }
             HStack(spacing: 0) {
-                menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
                 menuCell("link", "复制URL") { copyCurrentURL() }
                 // ★ v1.0.119：系统分享面板（发给微信 / 存到别处）
                 menuCell("square.and.arrow.up", "分享") { shareCurrentPage() }
