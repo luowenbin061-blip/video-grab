@@ -254,21 +254,47 @@ struct HLSDownloader {
         let head: String
     }
 
+    /// GB18030（GBK 的超集）—— **中文站的 m3u8 很常是这种编码**。
+    /// Foundation 的 `String.Encoding` 没有内置 GBK 常量，得绕一圈 CoreFoundation 拿编码号。
+    /// （`BookmarkImporter.decode` 里已经这么用过一次，同一套写法。）
+    static let gb18030 = String.Encoding(
+        rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+
     /// 取 m3u8 文本。最终地址要作为相对路径的基准。
     private func loadPlaylist(url: URL) async throws -> Loaded {
         let (data, resp) = try await URLSession.shared.data(for: request(for: url))
         if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
             throw Fail.badStatus(h.statusCode, url.absoluteString)
         }
-        let text = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .isoLatin1) ?? ""
+        // ★ v1.0.136：文本解码要**给中文站兜底**（跟 v1.0.134 修中文分片地址是同一条线上的事）。
+        //
+        // 以前是 `utf8 ?? isoLatin1`。isoLatin1 的坏处不是"失败"，而是**悄悄把字节搞错**：
+        //   GBK 的 `牛` = 字节 `C5 A3` → isoLatin1 读成 "Å£" 两个字符 →
+        //   再经 `sanitizeURLString` 编码时，每个字符又展开成 **2 个 UTF-8 字节**
+        //   （`Å` = U+00C5 → `%C3%85`）→ 分片地址整体错位 → 必然 404，
+        //   而且报出来像"站上没有这个文件"，完全看不出是编码错了。
+        // 所以中间先插一层 GB18030，兜底才落到 isoLatin1（永不失败）。
+        let text: String
+        let wasUTF8: Bool
+        if let u = String(data: data, encoding: .utf8) {
+            text = u; wasUTF8 = true
+        } else if let g = String(data: data, encoding: Self.gb18030) {
+            text = g; wasUTF8 = false
+        } else {
+            text = String(data: data, encoding: .isoLatin1) ?? ""
+            wasUTF8 = false
+        }
         let finalURL = resp.url ?? url
         // 记下开头：万一一个分片都没解析出来，把这句带进错误里，
         // 立刻能看出取回的是清单、还是一个跳转页/HTML 错误页
-        let head = String(text.prefix(160))
+        var head = String(text.prefix(160))
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
             .trimmingCharacters(in: .whitespaces)
+        // ★ v1.0.136：不是 UTF-8 就**明说**。以后看到这句就知道分片地址是按 GB18030 解出来的，
+        //   省掉"到底是编码还是防盗链"的一轮猜。
+        if !wasUTF8 { head = "[这份清单不是 UTF-8，已按 GB18030 读] " + head }
         return Loaded(playlist: M3U8Playlist.parse(text: text, baseURL: finalURL), head: head)
     }
 

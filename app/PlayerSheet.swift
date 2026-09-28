@@ -693,7 +693,22 @@ final class PlayerBox: ObservableObject {
             return true
         case .failed:
             loading = false
-            error = PlayerBox.describe(item.error) ?? "系统没能打开这个视频"
+            var msg = PlayerBox.describe(item.error) ?? "系统没能打开这个视频"
+            // ★ v1.0.136：把 AVPlayer **自己的错误日志**贴上来。
+            //
+            // 为什么非要它：用户报「部分视频播不了」时，外层那句
+            // `CoreMediaErrorDomain -16845 - HTTP 400` **分不清是清单被拒还是分片被拒** ——
+            // 这两件事的修法完全不同（清单被拒 = 头/编码问题；分片被拒 = 地址解析或防盗链）。
+            // `errorLog()` 里有 HLS 每一跳请求的 uri + HTTP 状态码，是唯一能直接定案的东西。
+            //
+            // 故意写成 `item.errorLog()` **不声明类型**（靠推断），少一个类型名就少一个编译风险点。
+            if let log = item.errorLog(), let ev = log.events.first {
+                var line = "\n失败请求：\(ev.uri)"
+                if ev.errorStatusCode != 0 { line += " → HTTP \(ev.errorStatusCode)" }
+                if !ev.errorDomain.isEmpty { line += " [\(ev.errorDomain)]" }
+                msg += line
+            }
+            error = msg
             return true
         default:
             return false
@@ -727,6 +742,10 @@ final class PlayerBox: ObservableObject {
     }
 
     /// 把错误写得具体一点 —— 只显示"播放失败"没法判断是地址问题还是文件问题
+    ///
+    /// ★ v1.0.136：再加一条**出错地址**。系统错误里 `NSURLErrorFailingURLStringErrorKey`
+    ///   带着"是哪一条请求失败的"——清单还是某个分片，一眼就分得开。
+    ///   （界面上原来只显示 asset 的地址，那是我们**传进去**的那个，不是**出错**的那个。）
     private static func describe(_ e: Error?) -> String? {
         guard let e else { return nil }
         let ns = e as NSError
@@ -734,6 +753,9 @@ final class PlayerBox: ObservableObject {
         s += " [\(ns.domain)#\(ns.code)]"
         if let u = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
             s += " ← \(u.localizedDescription) [\(u.domain)#\(u.code)]"
+        }
+        if let bad = ns.userInfo[NSURLErrorFailingURLStringErrorKey] as? String, !bad.isEmpty {
+            s += "\n出错地址：\(bad)"
         }
         return s
     }

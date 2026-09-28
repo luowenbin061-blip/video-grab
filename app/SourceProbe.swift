@@ -83,10 +83,28 @@ struct SourceProbe {
                 }
             }
 
-            let text = String(data: Data(data.prefix(2048)), encoding: .utf8) ?? ""
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // ★★ v1.0.136：**解码绝不能整个失败** —— 这一条修的是用户报的「小部分视频下载失败」。
+            //
+            // 以前写的是 `String(data:data.prefix(2048), encoding:.utf8) ?? ""`：
+            // 严格 UTF-8 解码有两个**非常常见**的坑，一踩就把"取回的内容"当成**空串**：
+            //   ① 这份 m3u8 根本不是 UTF-8（中文站很常见 GBK/GB18030）→ 整段解不出来 → nil；
+            //   ② 我们只取了**前 2048 字节**，正好切在一个多字节汉字中间（中文名分片很常见）→ nil。
+            // 于是 `trimmed` 是空串 → `hasPrefix("#EXTM3U")` 为假 → 掉进下面"单个文件"那一支
+            // → `kind = .file` → 下载器**把清单本身当成一个文档存了下来**，
+            //   界面上就是「MP4 没转出来 …… 已保存（文件，不需要转码）」。
+            // 用户那条过程记录正好是这个签名：`application/x-mpegURL · 单个文件 · 文件`，
+            // 而且**没有「开头：」那一段**（因为 headText 是空的）—— 一查就中。
+            //
+            // `#EXTM3U` 是**纯 ASCII**：只要解码**别整个失败**，它一定读得出来。
+            // 所以改用 `String(decoding:as:)` —— 它**永不失败**，坏字节变 U+FFFD，ASCII 原样保留。
+            let text = String(decoding: data.prefix(4096), as: UTF8.self)
+            var probeText = text
+            if probeText.hasPrefix("\u{FEFF}") { probeText.removeFirst() }   // UTF-8 BOM 也会让 hasPrefix 落空
+            let trimmed = probeText.trimmingCharacters(in: .whitespacesAndNewlines)
             let ct = p.contentType.lowercased()
             let head = trimmed.lowercased()
+            // 服务器自己说是清单，或地址后缀就是 .m3u8 → 也算清单（双保险，防"看内容"这一路失手）
+            let looksLikePlaylist = ct.contains("mpegurl") || url.pathExtension.lowercased() == "m3u8"
 
             if trimmed.hasPrefix("#EXTM3U") {
                 // ① HLS 清单（视频的分片式）
@@ -95,8 +113,16 @@ struct SourceProbe {
             } else if ct.hasPrefix("text/html") || head.hasPrefix("<!doctype") || head.hasPrefix("<html") {
                 // ② 网页本身 —— **唯一**"认出来了也故意不让下"的类型。
                 //    以前 unknown 一律拒，现在 unknown 也允许（见 ⑥），所以必须在这里显式拦。
+                //    ★ 顺序在 looksLikePlaylist **之前**：一个 .m3u8 地址如果返回的是网页（多半是
+                //      404 页 / 拦截页），那它就不是清单，不能因为后缀像就硬当清单处理。
                 p.kind = .unknown
                 p.media = .unknown
+            } else if looksLikePlaylist {
+                // ②' ★ v1.0.136：内容没读成 `#EXTM3U`，但**服务器说它是 mpegurl / 地址是 .m3u8**
+                //    → 仍然走清单这条路。宁可进去之后报"清单里没有分片（附开头）"，
+                //    也不能把它当直链文件下下来（那是"静默下错东西"，比报错恶劣）。
+                p.kind = .hls
+                p.media = .video
             } else {
                 // ③④⑤⑥ 依次往下试：Content-Type → 文件头 → 扩展名 → 都不认识也放行
                 //

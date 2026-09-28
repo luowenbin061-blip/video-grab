@@ -5,7 +5,8 @@ import io, os, re, sys
 ROOT = r'E:/自用WIN10-最强没有之一/VideoGrab/app'
 FILES = ['WatchProgress.swift', 'SettingsView.swift', 'PlayerSheet.swift',
          'LivePreview.swift', 'Downloader.swift', 'DataBackup.swift',
-         'TrustedHosts.swift', 'Toolbox.swift', 'ContentView.swift', 'M3U8.swift']
+         'TrustedHosts.swift', 'Toolbox.swift', 'ContentView.swift', 'M3U8.swift',
+         'SourceProbe.swift']
 
 CLOSE = {'}': '{', ')': '(', ']': '['}
 
