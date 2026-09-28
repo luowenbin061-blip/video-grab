@@ -47,13 +47,6 @@ struct HLSDownloader {
         var outputURL: URL
         /// Cookie —— 防盗链/需登录的站要带；取 AES key 的请求也用它
         var cookie: String? = nil
-        /// ★ v1.0.141：只下分片、**不解密也不拼接**。
-        ///
-        /// 为什么要这个开关：新的主路径是"把分片和钥匙整个交给 ffmpeg"——
-        /// 它解密比我们全（**支持逐段换钥匙**、fMP4 的初始化段等，都是本机实测过的）。
-        /// 所以先只把分片下齐，交给它去拼；只有它那条路失败时，才回来走
-        /// "自己解密 + 自己拼接"的老路（那条路仍然保留，但会经过同一套成品体检）。
-        var skipJoin = false
     }
 
     enum Fail: LocalizedError {
@@ -146,7 +139,16 @@ struct HLSDownloader {
 
     // MARK: - 主流程
 
-    func run(sourceURL: URL) async throws -> Output {
+    /// 跑一次。
+    ///
+    /// ★★ `skipJoin` **必须是参数、不能是 `Options` 的字段**（v1.0.142 踩过这个坑）：
+    ///   调用方是 `var opt = Options(...)` → `var dl = HLSDownloader(options: opt)` → 再改 `opt.xxx`。
+    ///   而 `Options` 是 **struct**，构造时已经**复制了一份**进 `dl`；
+    ///   构造之后再改 `opt` 里的字段，**`dl` 手里那份完全不受影响**（静默不生效）。
+    ///   run #142 的真机日志就是这么废的：拼接照旧跑了 → 只用了最后一把钥匙 → 成品 1%，
+    ///   而且老路返回的清单是 nil → 新路拿到空清单自己放弃。
+    ///   做成参数就没有"哪份副本"的问题了。
+    func run(sourceURL: URL, skipJoin: Bool = false) async throws -> Output {
         try FileManager.default.createDirectory(at: options.tempDir,
                                                 withIntermediateDirectories: true)
 
@@ -242,7 +244,7 @@ struct HLSDownloader {
         // ★ v1.0.141：只要分片（新的主路径）——**不解密、不拼接**，把清单带回去交给 ffmpeg。
         //   分片本来就是**密文原样落盘**的（解密一直发生在拼接阶段），所以这里天然就是
         //   "我已经把要的东西搬下来了"，ffmpeg 拿到清单+钥匙就能自己拼。
-        if options.skipJoin {
+        if skipJoin {
             onProgress(Progress(stage: .finished, done: total, total: total,
                                 bytes: bytesDone, message: "分片已下齐"))
             return Output(fileURL: options.outputURL,

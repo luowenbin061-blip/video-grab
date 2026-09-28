@@ -42,9 +42,17 @@ chk('A5 本地清单名固定', 'local.m3u8' in dlc)
 chk('A6 partURL 走 DLName', 'options.tempDir.appendingPathComponent(DLName.segment(i))' in dlc)
 chk('A7 老分片会就地改名（不让已下的白费）',
     'try? fm.moveItem(at: old, to: dest)' in dlc)
-chk('A8 skipJoin 开关存在', 'var skipJoin = false' in dlc)
+# ★★ v1.0.142 真机踩的坑：`skipJoin` 曾是 Options 的字段 —— 而 Options 是 struct，
+#   调用方 `var dl = HLSDownloader(options: opt)` 之后再改 `opt.skipJoin` **静默不生效**，
+#   于是拼接照旧跑、只用最后一把钥匙、成品 1%。现在它是 run() 的参数，没有"哪份副本"问题。
+chk('A8 skipJoin 是 run() 的**参数**（不能是 Options 字段）',
+    'func run(sourceURL: URL, skipJoin: Bool = false)' in dlc
+    and 'var skipJoin' not in dlc and 'options.skipJoin' not in dlc)
 chk('A9 skipJoin 时只下分片、直接返回（不解密不拼接）',
-    'if options.skipJoin {' in dlc and 'writtenSegments: 0' in dlc)
+    'if skipJoin {' in dlc and 'writtenSegments: 0' in dlc)
+chk('A9b 调用点是用参数传的（不能写成 opt.skipJoin = true）',
+    'run(sourceURL: src, skipJoin: true)' in code_of(read('DownloadJob.swift'))
+    and 'opt.skipJoin' not in code_of(read('DownloadJob.swift')))
 chk('A10 Output 带出清单（生成清单要用原文）', 'let playlist: M3U8Playlist?' in dlc)
 
 lp = code_of(read('LivePreview.swift'))
@@ -61,7 +69,7 @@ chk('C3 钥匙现场取一次、存成本地文件', 'DLName.key(keyIndex)' in p
 chk('C4 钥匙地址按**清单的**基准地址解析（外部审查点过的）',
     'M3U8Playlist.resolve(info.uri, relativeTo: b)' in pr)
 chk('C5 分片写成相对名（不出现绝对地址）', 'out.append(name)' in pr)
-chk('C6 缺分片就返回 nil（回落老路）', 'guard fm.fileExists(atPath: partsDir.appendingPathComponent(name).path) else { return nil }' in pr)
+chk('C6 缺分片就带着**具体原因**回落老路（不是一句笼统的话）', 'why: String?' in pr and '个分片文件不在' in pr)
 chk('C7 不假装会处理 fMP4 的 EXT-X-MAP（先不做，让它报错）',
     '#EXT-X-MAP' in read('PlaylistRelay.swift') and '故意不处理' in read('PlaylistRelay.swift'))
 
@@ -90,7 +98,8 @@ chk('F3 调用点已适配新签名', 'input: ts, inputBytes: 0' in ex)
 dj = read('DownloadJob.swift'); djc = code_of(dj)
 print()
 print('=== G. 编排：主路 ffmpeg → 不成才回落到老路 ===')
-chk('G1 主路先只下分片', 'opt.skipJoin = true' in djc)
+chk('G1 主路先只下分片（用 run 的参数，不是改 Options）',
+    'run(sourceURL: src, skipJoin: true)' in djc and 'opt.skipJoin' not in djc)
 chk('G2 调用 remuxViaFFmpeg', 'await remuxViaFFmpeg(' in djc)
 chk('G3 老路被 if !ffmpegDone 包住', 'if !ffmpegDone {' in djc)
 chk('G4 转 MP4 那段也受同一条件控制', djc.count('if !ffmpegDone {') >= 2)

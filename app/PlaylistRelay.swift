@@ -217,9 +217,11 @@ enum PlaylistRelay {
     ///   · **分片与钥匙都叫 `.ts`、清单放同目录写相对名** → ✅ 通过（退出码 0、轨齐全）
     ///   → 所以清单里**不出现任何绝对地址**，也**不需要起本机 HTTP 服务**。
     ///
-    /// 返回 nil = 这条路走不通（缺分片、钥匙取不到、清单是空的），调用方回落到老路。
+    /// 返回 (清单地址, 放弃原因)：成了 why = nil；没成就 url = nil 而 why 是**具体是哪一步不行的**。
+    /// ★ v1.0.142：以前只返回 nil，调用方只能说一句"凑不成一份本地清单" —— 于是真机上
+    ///   根本看不出卡在哪（白猜一轮）。失败原因必须留痕，这一条是这个项目的铁律。
     static func localPlaylistURL(playlist: M3U8Playlist, partsDir: URL,
-                                 headers: [String: String]?) async -> URL? {
+                                 headers: [String: String]?) async -> (url: URL?, why: String?) {
         let fm = FileManager.default
         try? fm.createDirectory(at: partsDir, withIntermediateDirectories: true)
 
@@ -256,7 +258,7 @@ enum PlaylistRelay {
                 } else {
                     resolved = URL(string: M3U8Playlist.sanitizeURLString(info.uri))
                 }
-                guard let ku = resolved else { return nil }
+                guard let ku = resolved else { return (nil, "钥匙地址读不懂：\(info.uri.prefix(80))") }
                 var req = URLRequest(url: ku, timeoutInterval: 20)
                 if let headers {
                     for (k, v) in headers where !v.isEmpty { req.setValue(v, forHTTPHeaderField: k) }
@@ -264,11 +266,11 @@ enum PlaylistRelay {
                 guard let (kd, resp) = try? await URLSession.shared.data(for: req),
                       let http = resp as? HTTPURLResponse,
                       (200...299).contains(http.statusCode),
-                      kd.count >= 16 else { return nil }
+                      kd.count >= 16 else { return (nil, "钥匙取不到（状态码或内容不对）：\(ku.absoluteString.prefix(80))") }
                 let name = DLName.key(keyIndex)
                 do {
                     try kd.write(to: partsDir.appendingPathComponent(name), options: .atomic)
-                } catch { return nil }
+                } catch { return (nil, "钥匙写盘失败") }
                 keyCache[info.uri] = name
                 keyIndex += 1
                 out.append(replacingURI(line, with: name))
@@ -277,18 +279,22 @@ enum PlaylistRelay {
 
             // 分片行 → 本地相对名（按出现顺序，从 seg_000000.ts 起）
             let name = DLName.segment(segIndex)
-            guard fm.fileExists(atPath: partsDir.appendingPathComponent(name).path) else { return nil }
+            guard fm.fileExists(atPath: partsDir.appendingPathComponent(name).path) else {
+                return (nil, "第 \(segIndex) 个分片文件不在（\(name)）—— 分片没下齐或名字对不上")
+            }
             out.append(name)
             segIndex += 1
         }
-        guard segIndex > 0 else { return nil }
+        guard segIndex > 0 else { return (nil, "这份清单里没有分片行") }
 
         let dst = partsDir.appendingPathComponent(DLName.playlist)
-        guard let body = out.joined(separator: "\n").appending("\n").data(using: .utf8) else { return nil }
+        guard let body = out.joined(separator: "\n").appending("\n").data(using: .utf8) else {
+            return (nil, "清单文本编码失败")
+        }
         do {
             try body.write(to: dst, options: .atomic)
-        } catch { return nil }
-        return dst
+        } catch { return (nil, "清单写盘失败：\(error.localizedDescription)") }
+        return (dst, nil)
     }
 
     /// 从 `#EXT-X-KEY` 行里取出 METHOD 与 URI（没有 URI 就返回 nil）

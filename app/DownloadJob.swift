@@ -814,8 +814,11 @@ final class DownloadJob: ObservableObject, Identifiable {
                 //   为什么（本机实测）：我们自己那套是"一把钥匙解全片"，遇到**逐段换钥匙**必废
                 //   （真实事故：409 片里 401 片解密错 → 成品 2MB 而输入 212.7MB，界面还报成功）；
                 //   而 ffmpeg 的 hls 解复用器本来就按段切钥匙。
-                opt.skipJoin = true
-                let rd = try await dl.run(sourceURL: src)
+                //   ★ 注意：`skipJoin` 是 `run()` 的**参数**，不能写成 `opt.skipJoin = true` ——
+                //   `Options` 是 struct，`var dl = HLSDownloader(options: opt)` 那一刻就已经复制了一份，
+                //   之后再改 `opt` 对 `dl` 无效（v1.0.142 真机就是这么废的：拼接照旧跑，
+                //   只用了最后一把钥匙 → 成品 1%，界面还说"凑不成本地清单"）。
+                let rd = try await dl.run(sourceURL: src, skipJoin: true)
                 if Task.isCancelled { paused = true; onUpdate?(); return }
                 duration = rd.duration
                 let partsBytes = Self.dirSize(tempDir)
@@ -1014,10 +1017,13 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// 返回成品 mp4 的地址（成功）；nil = 这条路没走通，调用方回落到老路。
     private func remuxViaFFmpeg(partsDir: URL, mp4URL: URL, partsBytes: Int64,
                                 headers: [String: String]?, playlist: M3U8Playlist?) async -> URL? {
-        guard let pl = await PlaylistRelay.localPlaylistURL(playlist: playlist ?? M3U8Playlist(),
-                                                           partsDir: partsDir,
-                                                           headers: headers) else {
-            notes.append("· 分片/钥匙凑不成一份本地清单，改走老路（自己解密 + 拼接）。")
+        let (plOpt, why) = await PlaylistRelay.localPlaylistURL(playlist: playlist ?? M3U8Playlist(),
+                                                              partsDir: partsDir,
+                                                              headers: headers)
+        guard let pl = plOpt else {
+            // ★ v1.0.142：把**具体是哪一步不行**写进记录。以前只说"凑不成清单"，
+            //   真机上根本看不出卡在哪 —— 我自己都因此白猜了一轮。
+            notes.append("· 分片/钥匙凑不成一份本地清单（\(why ?? "原因不明")），改走老路（自己解密 + 拼接）。")
             return nil
         }
         notes.append("· 把「解密 + 拼接 + 转 MP4」整段交给内置 ffmpeg 做（它支持逐段换钥匙）。")
