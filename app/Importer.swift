@@ -23,9 +23,12 @@ struct SavedFile {
 final class FileBox {
     private(set) var saved: [SavedFile] = []
 
-    func take(from url: URL, suggestedName: String?) {
+    /// `defaultExt`：系统给的临时文件**偶尔没有扩展名**（尤其图片）。
+    /// 视频那边沿用原来的 "mov"；图片那边传 "jpg"（内容其实是啥无所谓 ——
+    /// ImageIO 按**内容**认格式，不看后缀）。
+    func take(from url: URL, suggestedName: String?, defaultExt: String = "mov") {
         let orig = suggestedName ?? url.lastPathComponent
-        let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+        let ext = url.pathExtension.isEmpty ? defaultExt : url.pathExtension
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("import_" + UUID().uuidString.prefix(8) + "." + ext)
         do {
@@ -43,10 +46,15 @@ final class FileBox {
 /// 相册多选
 struct PhotoPickerBox: UIViewControllerRepresentable {
     var onPicked: ([SavedFile]) -> Void
+    /// ★ v1.0.158：默认**只收视频**（原来就是这样，调用点一行都不用改）；
+    ///   「压画质省空间」的图片模式传 `.image` 就变成只收图片。
+    var kind: UTType = .movie
+
+    private var isImage: Bool { kind == .image }
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var cfg = PHPickerConfiguration()
-        cfg.filter = .videos          // 只要视频
+        cfg.filter = isImage ? .images : .videos    // 只要这类
         cfg.selectionLimit = 10       // 批量导入
         let vc = PHPickerViewController(configuration: cfg)
         vc.delegate = context.coordinator
@@ -55,11 +63,22 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
 
     func updateUIViewController(_ vc: PHPickerViewController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPicked: onPicked) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPicked: onPicked, typeID: kind.identifier,
+                    defaultExt: isImage ? "jpg" : "mov")
+    }
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
         let onPicked: ([SavedFile]) -> Void
-        init(onPicked: @escaping ([SavedFile]) -> Void) { self.onPicked = onPicked }
+        /// ★ 请求的类型必须跟 picker 的类型一致 —— 选图时用 `UTType.movie` 会一个都拿不到
+        let typeID: String
+        let defaultExt: String
+
+        init(onPicked: @escaping ([SavedFile]) -> Void, typeID: String, defaultExt: String) {
+            self.onPicked = onPicked
+            self.typeID = typeID
+            self.defaultExt = defaultExt
+        }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             picker.dismiss(animated: true)
@@ -67,12 +86,13 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
 
             let box = FileBox()
             let group = DispatchGroup()
+            let typeID = self.typeID, defaultExt = self.defaultExt
             for p in results.map(\.itemProvider) {
                 group.enter()
-                _ = p.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                _ = p.loadFileRepresentation(forTypeIdentifier: typeID) { url, _ in
                     defer { group.leave() }
                     guard let url else { return }
-                    box.take(from: url, suggestedName: p.suggestedName)
+                    box.take(from: url, suggestedName: p.suggestedName, defaultExt: defaultExt)
                 }
             }
             group.notify(queue: .main) { [onPicked] in

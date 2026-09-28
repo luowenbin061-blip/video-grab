@@ -44,6 +44,38 @@ final class DownloadCenter: ObservableObject {
         save()
     }
 
+    /// ★ v1.0.158：「压画质省空间」压完**自动**走这里（也支持他点「留在下载列表」）——
+    /// 当成一条新记录进下载页，跟「导入视频」同一个归宿。
+    /// · **不搬不改名**：刚压完那张卡上还有「先看看效果 / 存到相册」，
+    ///   这时候动文件会让那两个按钮扑空。文件叫什么叫什么，只登记。
+    /// · 唯一要处理的是"源在系统临时目录里"（从相册/文件选来的源）→ 那种必须先挪进
+    ///   程序目录，否则系统随时会清掉临时目录，记录就成了空壳。
+    @discardableResult
+    func adoptCompressed(_ url: URL, title: String, kind: DownloadJob.MediaKind) -> DownloadJob {
+        var name = url.lastPathComponent
+        let inOurDir = url.deletingLastPathComponent().standardizedFileURL ==
+                       JobStore.dir.standardizedFileURL
+        if !inOurDir {
+            let dest = JobStore.file(named: name)
+            do {
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try FileManager.default.removeItem(at: dest)
+                }
+                try FileManager.default.moveItem(at: url, to: dest)
+            } catch {
+                // 挪不动就退回"复制一份"（宁可多占一次，也别把成品丢在临时目录里等着消失）
+                try? FileManager.default.copyItem(at: url, to: dest)
+            }
+            name = dest.lastPathComponent
+        }
+        let job = DownloadJob.makeAdopted(name: name, title: title, kind: kind)
+        job.onUpdate = { [weak self] in self?.save() }
+        jobs.insert(job, at: 0)
+        save()
+        Task { await job.adoptInPlace(name: name) }
+        return job
+    }
+
     /// 删除任务时把文件也删掉（用户明确要删，就别留垃圾）
     func remove(at offsets: IndexSet) {
         for i in offsets { jobs[i].cancel() }
@@ -119,6 +151,41 @@ final class DownloadCenter: ObservableObject {
     /// 只记连带起的 —— 用户自己手动开的那个，关共享时不许替他收掉。
     private var pipByShare = false
 
+    // ══ ★★ v1.0.158：压缩期间也保活 ══
+    //   压一次要几分钟到十几分钟（重编码），要是只能"干等着别切走"，这个功能就废了一半。
+    //   系统只给一个小窗，所以压缩进度跟下载进度**共用同一个窗**：
+    //   有下载任务时下载优先，没有时显示压缩。也是"往前台时开、结束就收"。
+    /// 压缩进行中给画中画看的画面（不在压缩时是 nil）
+    @Published private(set) var compressSnap: PiPProgress.Snapshot?
+    /// 这个窗是「压缩」连带起的吗（用户自己开的不动）
+    private var pipByCompress = false
+
+    /// 压缩开始 —— **必须在前台调**（进了后台再起画中画必失败，跟共享同一个道理）
+    func beginCompressKeepAlive(title: String) {
+        preparePiP()
+        compressSnap = PiPProgress.Snapshot(title: title, detail: "正在压缩…",
+                                           progress: 0, activeCount: 1)
+        let wasRunning = pip.isRunning
+        pip.start()
+        if !wasRunning { pipByCompress = true }
+    }
+
+    func updateCompressKeepAlive(detail: String, progress: Double) {
+        guard let old = compressSnap else { return }
+        compressSnap = PiPProgress.Snapshot(title: old.title, detail: detail,
+                                           progress: progress, activeCount: 1)
+    }
+
+    /// 压缩结束：只把「这次连带起的小窗」收回去 ——
+    /// 用户自己手动开的不动；还有下载在跑 / 还开着共享也不动（那两个还要靠它活着）。
+    func endCompressKeepAlive() {
+        compressSnap = nil
+        if pipByCompress && activeCount == 0 && !lanOn {
+            pip.stop()
+            pipByCompress = false
+        }
+    }
+
     /// 局域网共享开着没有（给按钮上色用）
     @Published var lanOn = false
 
@@ -172,6 +239,8 @@ final class DownloadCenter: ObservableObject {
             let first = act.first
             // 没有下载任务时小窗也得有像样的画面（开关可能正开着）
             if act.isEmpty {
+                // ★ v1.0.158：没有下载但有压缩 → 显示压缩进度
+                if let cs = self.compressSnap { return cs }
                 return self.lanOn
                     ? PiPProgress.Snapshot(title: "局域网共享中",
                                            detail: "电脑可在同一 Wi-Fi 下下载",

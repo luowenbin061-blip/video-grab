@@ -1247,6 +1247,49 @@ final class DownloadJob: ObservableObject, Identifiable {
             return
         }
         notes.append("✓ 已复制进程序内（\(DownloadJob.sizeText(JobStore.size(of: dest.lastPathComponent)))）")
+        await finishIncoming(dest: dest)
+    }
+
+    /// ★ v1.0.158：把**程序目录里已经存在的一个成品**登记成一条任务
+    /// （「压画质省空间」压完自动走这里，或者他点「留在下载列表」）。
+    /// · 跟 `runImport` 的区别：那是"外面来的文件 → 复制进来"；这条**不复制、不改名**，
+    ///   只是"认领"一个现成文件 ——
+    ///   ★ 关键理由：刚压完那张卡上还有「先看看效果 / 存到相册」，要是这时把文件
+    ///     挪走/改名，那两个按钮就会扑空（文件已经不在那个地址了）。
+    /// · 真正要补的只有"成品字段"（时长 / 大小 / 分辨率 / 缩略图），见 `adoptInPlace`。
+    static func makeAdopted(name: String, title: String, kind: MediaKind) -> DownloadJob {
+        let j = DownloadJob(title: title, sourceURL: "local://compressed", kind: kind)
+        j.phase = "正在读这条成品…"
+        return j
+    }
+
+    /// 认领流程：文件已经在程序目录里、名字也不动 ——
+    /// 只把成品字段补齐（探测能不能播 → 该转才转 → 抽缩略图）。
+    func adoptInPlace(name: String) async {
+        await finishIncoming(dest: JobStore.file(named: name))
+    }
+
+    /// 「探测 → 能播就留 / 不能播就转成 MP4 → 抽缩略图」。
+    /// ★ **两个入口（外部导入 / 程序内收编）共用这一段，别各写一份** ——
+    ///   这个项目最贵的教训就是"加一条新路径时没把收尾动作抄全"，少一项就是一次真机返工。
+    private func finishIncoming(dest: URL) async {
+        // ★ 图片先分流：AVURLAsset **认不了图**（`loadTracks(.video)` 必然是空），
+        //   照视频那条路走会去"转成 MP4" → 把一张好图搞坏。所以先按扩展名判。
+        if let k = Self.kind(fromExtension: dest.pathExtension), k == .image {
+            outputName = dest.lastPathComponent
+            mp4Ready = true
+            duration = 0
+            fileSize = JobStore.size(of: outputName)
+            if let img = UIImage(contentsOfFile: dest.path) {
+                resolution = "\(Int(img.size.width))×\(Int(img.size.height))"
+            }
+            // 缩略图不用抽：列表里图片本来就**直接用那张图本身**当缩略图（ThumbLoader 降采样）
+            phase = "完成 · 本地导入"
+            notes.append("✓ 图片，原样留着（不转码）")
+            finished = true
+            onUpdate?()
+            return
+        }
 
         // ── 探测：系统认不认这个文件（比看扩展名准 —— 扩展名会骗人，
         //    有的 .mp4 其实是系统不认的编码，有的 .mkv 里装的是认的）──

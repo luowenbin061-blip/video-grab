@@ -137,6 +137,9 @@ targets:
     sources:
       - path: app/M3U8.swift
       - path: app/PlaylistAnchor.swift
+      # ★ v1.0.158：压缩的档位账（纯计算）也进回归集 ——
+      #   "预估体积比原片还大"那个真机事故，就是这类错。
+      - path: app/CompressPlan.swift
       - path: VideoGrabTests
     settings:
       base:
