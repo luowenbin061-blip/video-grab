@@ -1029,14 +1029,19 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// 返回成品 mp4 的地址（成功）；nil = 这条路没走通，调用方回落到老路。
     private func remuxViaFFmpeg(partsDir: URL, mp4URL: URL, partsBytes: Int64,
                                 headers: [String: String]?, playlist: M3U8Playlist?) async -> URL? {
-        let (plOpt, why) = await PlaylistRelay.localPlaylistURL(playlist: playlist ?? M3U8Playlist(),
-                                                              partsDir: partsDir,
-                                                              headers: headers)
+        let (plOpt, why, skippedAds) = await PlaylistRelay.localPlaylistURL(
+            playlist: playlist ?? M3U8Playlist(), partsDir: partsDir, headers: headers)
         guard let pl = plOpt else {
             // ★ v1.0.142：把**具体是哪一步不行**写进记录。以前只说"凑不成清单"，
             //   真机上根本看不出卡在哪 —— 我自己都因此白猜了一轮。
             notes.append("· 分片/钥匙凑不成一份本地清单（\(why ?? "原因不明")），改走老路（自己解密 + 拼接）。")
             return nil
+        }
+        if skippedAds > 0 {
+            // ★ v1.0.146：清单里混着别的片子（广告）—— 只留用户要的那部。
+            //   不只是"干净"：广告和真片的**视频参数不一样**（实测 1280×720 vs 1280×2276），
+            //   拼在一起播到第二段就"只出声音、画面停在广告最后一帧"。
+            notes.append("· 这份清单里混着别的片子 —— 已跳过 \(skippedAds) 个分片，只留你要的那部。")
         }
         notes.append("· 把「解密 + 拼接 + 转 MP4」整段交给内置 ffmpeg 做（它支持逐段换钥匙）。")
         if let cur = Self.stageName(stage) { stageEnd(cur) }
