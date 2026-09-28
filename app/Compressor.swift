@@ -136,7 +136,13 @@ enum Compressor {
         let dir = input.deletingLastPathComponent()
         let base = input.deletingPathExtension().lastPathComponent
         let outFinal = dir.appendingPathComponent(base + "_压缩.mp4")
-        let outTmp = dir.appendingPathComponent(base + "_压缩.mp4.partial")
+        // ★★ 临时文件名**必须以媒体后缀结尾**（这里以 `.mp4` 收尾，`partial` 放在中间）。
+        //   真机 2026-09-28 的事故：一开始写成 `xxx_压缩.mp4.partial` —— ffmpeg 认不出输出格式，
+        //   报 "Unable to choose an output format ... use a standard extension for the filename"，
+        //   **秒退**（三个档位全都秒失败）。
+        //   ★ 同一个坑**同一天踩了两次**：上午是"输入"名用了 `.part` 被 ffmpeg 白名单拒，
+        //     这次是"输出"名。**交给 ffmpeg 的文件名，两端都必须是它认识的媒体后缀。**
+        let outTmp = dir.appendingPathComponent(base + "_压缩.partial.mp4")
         let progressFile = dir.appendingPathComponent(".compress_progress.txt")
         try? fm.removeItem(at: outTmp)
         try? fm.removeItem(at: outFinal)
