@@ -323,7 +323,7 @@ enum PlaylistRelay {
         do {
             try body.write(to: dst, options: .atomic)
         } catch { return (nil, "清单写盘失败：\(error.localizedDescription)", 0) }
-        return (dst, nil)
+        return (dst, nil, skippedAds)
     }
 
     /// 从 `#EXT-X-KEY` 行里取出 METHOD 与 URI（没有 URI 就返回 nil）
