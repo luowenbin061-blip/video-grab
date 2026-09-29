@@ -2248,14 +2248,23 @@ struct JobRow: View {
                         Button {
                             // ★★ v1.0.166：改走**播放代理**（同一条毛病，根因见 `MediaProxy`）——
                             //   AVPlayer 自己带不上头（私有键对 HLS 不可靠）→ 防盗链的站必 403。
+                            // ★★ v1.0.167：跟回收站那条**走同一套** —— 先体检，死了说人话。
                             let hs = job.playbackHeaders
-                            if let proxied = MediaProxy.wrap(job.sourceURL, headers: hs) {
-                                playSheet = SheetURL(url: proxied, headers: nil)
-                            } else if let u = URL(string: job.sourceURL) {
-                                // 代理起不来 → 退回原地址直连（头照旧带上）
-                                playSheet = SheetURL(url: u, headers: hs)
-                            } else {
-                                job.show("地址不合法")
+                            let src = job.sourceURL
+                            job.show("正在检查这个地址…")
+                            Task { @MainActor in
+                                if let why = await MediaProxy.probe(src, headers: hs) {
+                                    job.show("播不了 —— " + why)
+                                    return
+                                }
+                                if let proxied = MediaProxy.wrap(src, headers: hs) {
+                                    playSheet = SheetURL(url: proxied, headers: nil)
+                                } else if let u = URL(string: src) {
+                                    // 代理起不来 → 退回原地址直连（头照旧带上）
+                                    playSheet = SheetURL(url: u, headers: hs)
+                                } else {
+                                    job.show("地址不合法")
+                                }
                             }
                         } label: {
                             Label("在线播放", systemImage: "play")

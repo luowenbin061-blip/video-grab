@@ -208,31 +208,58 @@ struct RecycleBinView: View {
         //   对 HLS 的内部请求不可靠）→ 真机上就是 403；而**下载**那条路
         //   （我们自己用 URLSession 取）一直是通的。根因见 `MediaProxy` 开头。
         //   代理起不来才退回原地址直连（头照旧带上，能带多少算多少）。
+        // ★★ v1.0.167：**先体检地址**（这类站直链带时效，死了就给一句人话，
+        //   别让播放器去报 -1102 / -12660 那种天书）。根因见 `MediaProxy.probe`。
         let headers = DownloadJob.ctxHeaders(ua: rec.job.ua ?? "",
                                             referer: rec.job.referrer,
                                             cookie: rec.job.cookie)
-        if let proxied = MediaProxy.wrap(rec.job.sourceURL, headers: headers) {
-            playItem = PlayReq(id: rec.id.uuidString, url: proxied, headers: nil)
-            return
+        let upstream = rec.job.sourceURL
+        let rid = rec.id.uuidString
+        note = "正在检查这个地址…"
+        Task { @MainActor in
+            if let why = await MediaProxy.probe(upstream, headers: headers) {
+                note = "播不了 —— " + why
+                return
+            }
+            if let proxied = MediaProxy.wrap(upstream, headers: headers) {
+                note = nil
+                playItem = PlayReq(id: rid, url: proxied, headers: nil)
+                return
+            }
+            guard let u = URL(string: upstream) else {
+                note = "这条的地址不合法，没法播"
+                return
+            }
+            note = nil
+            playItem = PlayReq(id: rid, url: u, headers: headers)
         }
-        guard let u = URL(string: rec.job.sourceURL) else {
-            note = "这条的地址不合法，没法播"
-            return
-        }
-        playItem = PlayReq(id: rec.id.uuidString, url: u, headers: headers)
     }
 
     /// **「重新下载」**：用存下来的地址 + Referer/UA/Cookie 再下一份。
     /// ★ 这条路**一直是通的**（那条「56 个分片 + AES 钥匙全拿到」的记录就是铁证）——
     ///   所以它是"真能把片子拿回来"的那个按钮，不依赖播放链路的任何改动。
     private func redownload(_ rec: BinRecord, kind: DownloadJob.MediaKind?) {
-        downloads.add(title: rec.job.title,
-                      url: rec.job.sourceURL,
-                      referrer: rec.job.referrer ?? "",
-                      ua: rec.job.ua ?? "",
-                      cookie: rec.job.cookie ?? "",
-                      kind: kind)
-        note = "已开始重新下载「\(rec.job.title)」—— 去下载页看进度"
+        // ★★ v1.0.167：同样**先体检** —— 地址已死就别建一条注定失败的下载任务，
+        //   直接在原地告诉用户为什么（根因见 `MediaProxy.probe`）。
+        let headers = DownloadJob.ctxHeaders(ua: rec.job.ua ?? "",
+                                            referer: rec.job.referrer,
+                                            cookie: rec.job.cookie)
+        let upstream = rec.job.sourceURL
+        let title = rec.job.title
+        note = "正在检查这个地址…"
+        Task { @MainActor in
+            if let why = await MediaProxy.probe(upstream, headers: headers) {
+                note = "下不回来 —— " + why
+                return
+            }
+            downloads.add(title: title,
+                          url: upstream,
+                          referrer: rec.job.referrer ?? "",
+                          ua: rec.job.ua ?? "",
+                          cookie: rec.job.cookie ?? "",
+                          kind: kind)
+            note = "已开始重新下载「\(title)」—— 去下载页看进度"
+        }
     }
 
     private func restore(_ rec: BinRecord) {

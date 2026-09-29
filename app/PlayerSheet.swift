@@ -775,11 +775,30 @@ final class PlayerBox: ObservableObject {
         s += " [\(ns.domain)#\(ns.code)]"
         if let u = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
             s += " ← \(u.localizedDescription) [\(u.domain)#\(u.code)]"
+            // ★ v1.0.167：内层 CoreMedia 那串码翻成人话。
+            //   用户报过的那一条：`-1102` + `-12660` —— 翻译过来就是 **HTTP 403**，
+            //   而界面上只有码，看不懂。
+            if u.domain == "CoreMediaErrorDomain", let human = coreMediaHuman(u.code) {
+                s += "\n→ " + human
+            }
         }
         if let bad = ns.userInfo[NSURLErrorFailingURLStringErrorKey] as? String, !bad.isEmpty {
             s += "\n出错地址：\(bad)"
         }
         return s
+    }
+
+    /// ★ v1.0.167：CoreMedia 错误码 → 人话。
+    /// 只列我们**真见过 / 有权威对照**的几个，不照抄整张表（抄了也没人维护）。
+    /// `-12660` = HTTP 403 这一条有出处：Apple 的 CoreMedia 错误对照，且实测同码。
+    private static func coreMediaHuman(_ code: Int) -> String? {
+        switch code {
+        case -12660: return "服务器拒绝了这个地址（HTTP 403）—— 站点多半下架了，或者这条链接过期了"
+        case -12938: return "服务器上找不到这个文件（HTTP 404）"
+        case -12661: return "服务器暂时不可用（HTTP 503），过会儿再试"
+        case -12642: return "清单半天没变化（直播流可能已经停了）"
+        default: return nil
+        }
     }
 }
 

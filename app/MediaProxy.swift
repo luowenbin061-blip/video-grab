@@ -79,6 +79,60 @@ enum MediaProxy {
         return URL(string: proxyString(for: u, key: register(hs)) ?? "")
     }
 
+    /// ★★ v1.0.167：**播放 / 重下之前先体检一次** —— 这条地址还活着吗？
+    ///
+    /// 为什么非要它：这类站的直链**带时效**（实测同一条地址，下载时好的，不到半小时
+    /// 就被网关 403 了）。地址一死，AVPlayer 只会吐一串天书：
+    ///   `NSURLErrorDomain -1102`（"没有访问许可"）+ `CoreMediaErrorDomain -12660`
+    /// —— 翻译过来就是 **HTTP 403 Forbidden**（Apple 的 CoreMedia 错误对照表里
+    /// `-12660` 写死就是 403；实测第三方播放器报的也是同一条）。用户看不懂，
+    /// 只会以为"程序坏了"。
+    ///
+    /// 所以：**自己能判断的事别推给播放器**。返回 nil = 地址能用；
+    /// 返回一句中文 = 直接把这句话显示给用户，**不要再建播放器 / 不要再建下载任务**。
+    static func probe(_ upstream: String, headers hs: [String: String]?) async -> String? {
+        let cleaned = M3U8Playlist.sanitizeURLString(upstream)
+        guard let u = URL(string: cleaned),
+              let scheme = u.scheme?.lowercased(), scheme == "http" || scheme == "https"
+        else { return "这条地址不完整，读不出来" }
+
+        // ★ 探两次：先带 Range 只要 1KB（快、省流量）；万一是那种**不喜欢 Range 的服务器**，
+        //   把 Range 去掉再探一次 —— 绝不因为"服务器挑剔"就把好地址判成坏地址
+        //   （那是最糟的失败模式：明明能播，程序说不能播）。
+        //   第二次只在第一次没通过时才发，正常情况零开销。
+        let withRange = await ask(u, headers: hs, range: "bytes=0-1023")
+        if withRange == nil { return nil }
+        let plain = await ask(u, headers: hs, range: nil)
+        if plain == nil { return nil }
+        return withRange
+    }
+
+    /// 探一次。返回 nil = 这个地址能用；否则返回一句中文（**直接拿给用户看**）。
+    ///
+    /// ★ 不用 `HEAD`：有的站对 HEAD 直接回 501，那会把好地址误判成坏地址。
+    private static func ask(_ u: URL, headers hs: [String: String]?, range: String?) async -> String? {
+        var req = URLRequest(url: u, timeoutInterval: 15)
+        for (k, v) in (hs ?? [:]) where !v.isEmpty { req.setValue(v, forHTTPHeaderField: k) }
+        if let range { req.setValue(range, forHTTPHeaderField: "Range") }
+
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { return "这个地址没有正常回应" }
+            switch http.statusCode {
+            case 200...299:
+                return nil
+            case 401, 403:
+                return "服务器不让取（HTTP \(http.statusCode)）—— 站点多半下架了，或者这条链接过期了"
+            case 404, 410:
+                return "站点上已经没有这个视频了（HTTP \(http.statusCode)）"
+            default:
+                return "服务器返回 HTTP \(http.statusCode)，现在取不到"
+            }
+        } catch {
+            return "取不到这个地址：" + error.localizedDescription
+        }
+    }
+
     /// 上游地址 → 本机代理地址（`wrap` 与清单改写**共用这一份**，不要写第二份）
     private static func proxyString(for up: URL, key: String) -> String? {
         guard let base = LocalHTTPServer.shared.url(prefix + key + "/" + urlName(up)) else { return nil }
