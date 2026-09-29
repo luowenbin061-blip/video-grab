@@ -543,8 +543,12 @@ final class DownloadJob: ObservableObject, Identifiable {
     func deleteFiles(keepThumb: Bool = false) {
         task?.cancel()
         task = nil
-        var names: [String?] = [outputName, playlistName, baseName + ".ts"]
-        if !keepThumb { names.append(thumbName) }
+        var list: [String?] = [outputName, playlistName, baseName + ".ts"]
+        if !keepThumb { list.append(thumbName) }
+        // ★★ 必须先定成 `let` 再进并发闭包 —— 直接把 `var` 捕获进 `Task.detached` 会编译不过：
+        //   `error: reference to captured var 'names' in concurrently-executing code`
+        //   （run #164 就挂在这；run #138 也踩过同一条，是同一个坑。）
+        let names = list
         Task.detached(priority: .utility) {
             JobStore.remove(names)
         }
