@@ -49,6 +49,8 @@ struct SettingsView: View {
     @AppStorage("homePageURL") private var homePage = ""
     /// 回收站（v1.0.97）
     @State private var showTrash = false
+    /// ★ v1.0.164：全局回收站（书签 + 已删的下载文件）—— 单例，只订阅它的计数变化
+    @ObservedObject private var bin = FileBin.shared
 
     var body: some View {
         NavigationView {
@@ -134,7 +136,7 @@ struct SettingsView: View {
                         HStack {
                             Text("回收站")
                             Spacer()
-                            Text(store.trash.isEmpty ? "空" : "\(store.trash.count) 条")
+                            Text(binSummary)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -252,11 +254,25 @@ struct SettingsView: View {
             }
             // 说明页自己带导航栏，所以用弹窗打开，别嵌进来（嵌了会套两层导航栏）
             .sheet(isPresented: $showHelp) { HelpView() }
-            .sheet(isPresented: $showTrash) { TrashView(store: store, isPresented: $showTrash) }
+            // ★ v1.0.164：书签 + 已删的下载文件合成**一个**入口、一张卡（用户要「全局」回收站）
+            .sheet(isPresented: $showTrash) {
+                RecycleBinView(store: store, downloads: downloads, isPresented: $showTrash)
+            }
         }
     }
 
     // MARK: - 零件
+
+    /// 回收站那一行右边的小字 —— 用户要「全局」一个入口，所以**书签和文件两样都要报**，
+    /// 不然点进去之前根本不知道里面有什么。
+    private var binSummary: String {
+        let m = store.trash.count, f = bin.count
+        if m == 0 && f == 0 { return "空" }
+        var parts: [String] = []
+        if m > 0 { parts.append("书签 \(m)") }
+        if f > 0 { parts.append("文件 \(f)") }
+        return parts.joined(separator: " · ")
+    }
 
     private func labeled(_ k: String, _ v: String) -> some View {
         HStack {

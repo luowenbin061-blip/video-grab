@@ -535,10 +535,16 @@ final class DownloadJob: ObservableObject, Identifiable {
     ///   这几秒里整个界面（包括滑动）都是死的，用户报的「删除时页面卡死」就是它。
     ///   现在任务记录的移除是即时的（界面立刻响应），文件在后台慢慢删。
     ///   ★ `JobStore` 是 enum + 静态方法、不碰任何 UI，后台调用安全（下载器一直在这么用）。
-    func deleteFiles() {
+    /// 删产物文件。
+    ///
+    /// ★ v1.0.164：加 `keepThumb` —— **进回收站的那条路要留缩略图**。
+    ///   它是回收站里唯一还能认出这条的东西（否则只剩一行字），而且只有几十 KB。
+    ///   默认 false → 别的调用点行为一个字都不变。
+    func deleteFiles(keepThumb: Bool = false) {
         task?.cancel()
         task = nil
-        let names = [outputName, playlistName, baseName + ".ts", thumbName]
+        var names: [String?] = [outputName, playlistName, baseName + ".ts"]
+        if !keepThumb { names.append(thumbName) }
         Task.detached(priority: .utility) {
             JobStore.remove(names)
         }
@@ -1114,12 +1120,19 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     /// 取清单/取钥匙要带的页面上下文（防盗链站少一个就 403）
-    private static func ctxHeaders(ua: String, referer: String?, cookie: String?) -> [String: String]? {
+    static func ctxHeaders(ua: String, referer: String?, cookie: String?) -> [String: String]? {
         var h: [String: String] = [:]
         if !ua.isEmpty { h["User-Agent"] = ua }
         if let r = referer, !r.isEmpty { h["Referer"] = r }
         if let c = cookie, !c.isEmpty { h["Cookie"] = c }
         return h.isEmpty ? nil : h
+    }
+
+    /// ★ v1.0.164：这条任务的页面上下文，**给播放用**（跟取清单/取钥匙要的是同一套）。
+    ///   回收站里的「播放」和下载条上的「在线播放」都靠它 —— 没有它防盗链的站必然放不出来，
+    ///   而界面上只会显示"加载不出来"，看不出真正原因（用户会误判成"地址过期了"）。
+    var playbackHeaders: [String: String]? {
+        Self.ctxHeaders(ua: ua, referer: referrer, cookie: cookie)
     }
 
     // MARK: - 拼接完成标记（v1.0.101）

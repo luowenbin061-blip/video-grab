@@ -81,19 +81,43 @@ final class DownloadCenter: ObservableObject {
         return job
     }
 
-    /// 删除任务时把文件也删掉（用户明确要删，就别留垃圾）
+    /// 删除：**文件删掉、记录进回收站**（★ v1.0.164）。
+    ///
+    /// ★ 为什么改成"记录留着"：用户要的是「删了原片，但还能找回那个点开就能播的地址」。
+    ///   以前这里把记录也从 `jobs` 里删了 → 重启后那条任务不存在 →
+    ///   下载条上那个「在线播放」按钮（文件不在时自动出现）跟着一起没了。
+    ///   现在记录进 `FileBin`：下载页看不到（他要入口藏在设置里），但找得回来。
+    /// ★ 这个函数目前**没有调用方**（左滑走的是 `.onDelete` → `remove(_:)`）。
+    ///   留着是为了万一有人再用它 —— 行为必须跟 `remove(_:)` 一致，别再分叉。
     func remove(at offsets: IndexSet) {
         for i in offsets { jobs[i].cancel() }
         let going = offsets.map { jobs[$0] }
+        for j in going { FileBin.shared.put(j) }
         jobs.remove(atOffsets: offsets)
-        for j in going { j.deleteFiles() }
+        for j in going { j.deleteFiles(keepThumb: true) }
         save()
     }
 
     func remove(_ job: DownloadJob) {
         job.cancel()
+        // ★ 顺序要紧：**先登记进回收站**（要拿 job 的完整快照），再移出列表、再删文件。
+        //   反过来就什么都留不下了。
+        FileBin.shared.put(job)
         jobs.removeAll { $0.id == job.id }
-        job.deleteFiles()
+        // ★ keepThumb：缩略图留着 —— 回收站里靠它认人（只有几十 KB）
+        job.deleteFiles(keepThumb: true)
+        save()
+    }
+
+    /// 从回收站「找回」：把记录放回下载列表。
+    /// 放回来那条会显示「文件已不在」（`DownloadJob(record:)` 自己会判），
+    /// **但下载条上会出现「在线播放」** —— 这就是"找回"能找回的全部内容
+    /// （产物文件是真回不来了；回来的是"点开就能播"的那条路）。
+    func restoreFromBin(_ record: JobRecord) {
+        guard !jobs.contains(where: { $0.id == record.id }) else { return }
+        let job = DownloadJob(record: record)
+        job.onUpdate = { [weak self] in self?.save() }
+        jobs.insert(job, at: 0)
         save()
     }
 
@@ -2027,6 +2051,12 @@ struct DownloadList: View {
 /// → 空视图 → 白屏。用 item 模式后这两个状态合成一个，不可能再错位。
 struct SheetURL: Identifiable {
     let url: URL
+    /// ★ v1.0.164：播放要带的页面上下文（Referer / UA / Cookie）。
+    ///   **默认 nil** → 原来那些只传 url 的调用点一个都不用改。
+    ///   为什么非要它：防盗链的站没有 Referer 直接 403，而回收站「找回」的那个
+    ///   "点开就能播"的地址正是靠它才播得出来。`PlayerSheet` 本来就收 headers
+    ///   （塞进 `AVURLAssetHTTPHeaderFieldsKey`），只是这条路上一直没传。
+    var headers: [String: String]? = nil
     var id: String { url.absoluteString }
 }
 
@@ -2217,7 +2247,9 @@ struct JobRow: View {
                         // 仍然走我们自己的播放器 —— 而不是丢给 Safari
                         Button {
                             if let u = URL(string: job.sourceURL) {
-                                playSheet = SheetURL(url: u)
+                                // ★ v1.0.164：带上这条记录的 Referer/UA/Cookie ——
+                                //   不带的话防盗链的站一律 403，用户只会以为"地址过期了"
+                                playSheet = SheetURL(url: u, headers: job.playbackHeaders)
                             } else {
                                 job.show("地址不合法")
                             }
@@ -2370,7 +2402,7 @@ struct JobRow: View {
             //   （用 id 而不是文件名：转码会把 .ts 换成 .mp4，名字会变，id 不会；
             //    同一条任务"本地播 / 在线播"也共用同一份进度）
             PlayerSheet(url: s.url, title: job.title, pip: pip,
-                        key: job.id.uuidString)
+                        key: job.id.uuidString, headers: s.headers)
         }
         .sheet(item: $exportSheet) { s in
             DocumentExporter(url: s.url, onFinish: { ok in
