@@ -91,19 +91,19 @@ enum LanPage {
         }
         body.lock{overflow:hidden}
         .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-        main{max-width:1180px;margin:0 auto;padding:var(--space-8) var(--space-6) var(--space-8)}
+        main{max-width:1180px;margin:0 auto;padding:1.25rem 1.25rem 4.5rem}
 
         .back{display:inline-block;margin-bottom:var(--space-4);font-size:var(--fs-sm);
           color:var(--text-2);text-decoration:none;transition:color var(--dur-fast) var(--ease-out)}
         .back:hover{color:var(--text-1)}
         .back:focus-visible{outline:2px solid var(--color-primary);outline-offset:3px;border-radius:4px}
 
-        header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin-bottom:var(--space-6)}
+        header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin-bottom:1.1rem}
         h1{font-size:var(--fs-lg);font-weight:500;letter-spacing:-.01em;margin:0;flex:1 1 12rem;min-width:0}
         h1 small{display:block;font-size:var(--fs-xs);font-weight:400;color:var(--text-3);letter-spacing:0;margin-top:2px;
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-        .search{flex:1 1 15rem;max-width:22rem;position:relative}
+        .search{flex:1 1 13rem;max-width:18rem;position:relative}
         .search input{
           width:100%;padding:.5rem .75rem .5rem 2.1rem;font:inherit;font-size:var(--fs-sm);
           background:var(--n-2);color:var(--text-1);border:1px solid var(--line-1);border-radius:var(--r-md);
@@ -127,7 +127,7 @@ enum LanPage {
         .seg .n{opacity:.6;font-variant-numeric:tabular-nums;margin-left:.15rem}
         .seg button[aria-pressed="true"] .n{opacity:.75}
 
-        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,15rem),1fr));gap:var(--space-4)}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,12rem),1fr));gap:.75rem}
 
         .card{
           background:var(--card-bg);border:1px solid var(--card-line);border-radius:var(--card-radius);
@@ -150,7 +150,7 @@ enum LanPage {
         .thumb img{width:100%;height:100%;object-fit:cover;display:block}
         .thumb .ph{color:var(--text-3)}
         .play{
-          position:absolute;left:50%;top:50%;width:2.4rem;height:2.4rem;border-radius:50%;
+          position:absolute;left:50%;top:50%;width:2.05rem;height:2.05rem;border-radius:50%;
           background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;
           opacity:0;transform:translate(-50%,-50%) scale(.9);
           transition:opacity var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out);
@@ -162,22 +162,21 @@ enum LanPage {
         .tick{position:absolute;left:.4rem;top:.4rem;width:1.15rem;height:1.15rem;border-radius:50%;
           background:var(--color-primary);display:none;align-items:center;justify-content:center}
         .card[aria-selected="true"] .tick{display:flex}
-        .dl{position:absolute;right:.4rem;top:.4rem;width:1.65rem;height:1.65rem;border-radius:6px;
+        .dl{position:absolute;right:.35rem;top:.35rem;width:1.5rem;height:1.5rem;border-radius:6px;
           display:flex;align-items:center;justify-content:center;text-decoration:none;
-          background:rgba(0,0,0,.58);color:#fff;opacity:0;
+          background:rgba(0,0,0,.6);color:#fff;opacity:.88;    /* 常显：一眼就知道能单独下 */
           transition:opacity var(--dur-fast) var(--ease-out),background var(--dur-fast) var(--ease-out)}
-        .card:hover .dl,.dl:focus-visible{opacity:1}
-        .dl:hover{background:var(--color-primary)}
-        .dl:focus-visible{outline:2px solid #fff;outline-offset:2px}
+        .dl:hover{background:var(--color-primary);opacity:1}
+        .dl:focus-visible{opacity:1;outline:2px solid #fff;outline-offset:2px}
 
-        .body{padding:var(--space-3) var(--space-3) var(--space-4)}
+        .body{padding:.6rem .7rem .7rem}
         .name{font-size:var(--fs-sm);font-weight:500;margin:0 0 .15rem;
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .meta{font-size:var(--fs-xs);color:var(--text-2);margin:0;font-variant-numeric:tabular-nums}
         .time{font-size:var(--fs-xs);color:var(--text-3);margin:.2rem 0 0;font-variant-numeric:tabular-nums}
 
         footer{
-          position:sticky;bottom:0;margin-top:var(--space-6);padding:var(--space-3) 0;
+          position:sticky;bottom:0;margin-top:1.1rem;padding:.7rem 0;
           display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;
           font-size:var(--fs-sm);color:var(--text-2);
           background:linear-gradient(to top,var(--page-bg) 62%,transparent);
@@ -215,7 +214,7 @@ enum LanPage {
           *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
         }
         @media (max-width:640px){
-          main{padding:var(--space-4) var(--space-3)}
+          main{padding:.75rem .75rem 4rem}
           .hint{display:none}
         }
         </style>

@@ -696,8 +696,11 @@ final class LocalHTTPServer {
             let full = dir.appendingPathComponent(n)
             var d: ObjCBool = false
             guard fm.fileExists(atPath: full.path, isDirectory: &d) else { continue }
-            // 缩略图是"附件"不是"内容" —— 以前它们混在列表里，打开一屏全是 thumb_xxx.jpg
-            if !d.boolValue, n.hasPrefix("thumb_"), n.hasSuffix(".jpg") { continue }
+            // App 自己产的"附件"不进这一页（缩略图 / 播放缓存清单 / 分片目录）——
+            // 它们不是"内容"。以前只有缩略图被挡掉，于是那一页混进一堆几 KB 的
+            // `.vgplay_*.m3u8`（播放中继写的临时清单）和空的 parts_ 目录，
+            // 而且 m3u8 还被当成"视频"归类 → 视频分类里全是播不了的清单。
+            if Self.isInternalArtifact(n) { continue }
 
             let enc = n.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? n
             let url = "\(prefix)/\(base)\(enc)"
@@ -745,18 +748,45 @@ final class LocalHTTPServer {
             items: items, heading: heading, sub: sub, backURL: back,
             note: "这一页是手机上的「视频抓取」共享出来的。点缩略图在线播放（mp4 能直接播），"
                 + "点卡片选中后可批量下载，缩略图右上角的 ↓ 下载单个。"
-                + "要关掉共享，回手机 App 点「关闭共享」。")
+                + "App 内部的缩略图、播放缓存清单和临时分片目录不在这里显示"
+                + "（用电脑挂 WebDAV 看得到）。要关掉共享，回手机 App 点「关闭共享」。")
         sendHTML(fd, status: 200, reason: "OK", html: html)
     }
 
+    /// App 自己产的中间产物 —— 不该出现在「给电脑挑文件」这一页里。
+    ///
+    /// 清单（都是 `JobStore.dir` 里真实存在的文件/目录，`contentsOfDirectory` 会返回它们）：
+    ///   · `.vgplay_*.m3u8` —— 播放中继写的临时清单（按远端地址算的稳定名，7 天过期）
+    ///   · `thumb_*.jpg`    —— 每条的缩略图
+    ///   · `parts_*` / `joined_*` —— 边下边播的分片目录、拼接临时目录
+    /// 它们都能通往 WebDAV 看得到、管得着；只是不该在"挑片子"的卡片墙里碍眼。
+    private static func isInternalArtifact(_ name: String) -> Bool {
+        if name.hasPrefix(".") { return true }
+        if name.hasPrefix("thumb_") { return true }
+        if name.hasPrefix("parts_") { return true }
+        if name.hasPrefix("joined_") { return true }
+        return false
+    }
+
     /// 卡片上的类型标签：优先信记录里建卡时定下的类别，没有就按扩展名猜。
+    ///
+    /// ★★ v1.0.170：**这张扩展名表必须和 `DownloadJob.kind(fromExtension:)` 逐字一致** ——
+    ///   那一张才是"什么算视频/图片/音频"的**唯一定义**，这里只是它在后台线程的替身
+    ///   （`DownloadJob` 是 `@MainActor`，本机 HTTP 服务用不了它）。
+    ///   上一版漏了个 `3gp` → 那种视频被判成"文件"，在网页上看着就像"少了一个"。
+    ///   自检里加了一条「两张表必须相同」的断言把这个形状钉住。
+    /// ★ 另外：**`m3u8` 不算视频** —— 它是播放清单（几 KB），不是能直接播的片子。
     private static func kindKey(rec: JobRecord?, file: String) -> String {
         if let k = rec?.kind, ["video", "image", "audio", "doc"].contains(k) { return k }
         switch (file as NSString).pathExtension.lowercased() {
-        case "mp4", "mov", "m4v", "mkv", "avi", "ts", "flv", "webm", "m3u8": return "video"
-        case "jpg", "jpeg", "png", "gif", "webp", "heic", "bmp": return "image"
-        case "mp3", "m4a", "aac", "wav", "flac", "ogg": return "audio"
-        default: return "doc"
+        case "mp4", "m4v", "mov", "ts", "webm", "mkv", "flv", "avi", "3gp":
+            return "video"
+        case "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tiff", "svg":
+            return "image"
+        case "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus":
+            return "audio"
+        default:
+            return "doc"
         }
     }
 
