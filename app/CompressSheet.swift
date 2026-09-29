@@ -170,7 +170,9 @@ struct CompressSheet: View {
         .navigationViewStyle(.stack)
         .confirmationDialog("要压的文件从哪来？", isPresented: $showSourceMenu,
                             titleVisibility: .visible) {
-            Button("从相册选（图片/视频）") { showPhotoPicker = true }
+            // ★ 按钮上不写"（图片/视频）"—— 收哪一类是**上面的模式**决定的（视频模式只收视频），
+            //   写上反而对不上。跟着下一次构建一起推。
+            Button("从相册选") { showPhotoPicker = true }
             Button("从「文件」选") { showFilePicker = true }
             Button("取消", role: .cancel) {}
         }

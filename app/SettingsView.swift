@@ -19,6 +19,14 @@ struct SettingsView: View {
     /// **两个都默认关**（用户 2026-09-28 选的）。
     @AppStorage(WatchProgress.enabledKey) private var resumeEnabled = false
     @AppStorage(PlayerBox.autoLandscapeKey) private var autoLandscape = false
+    /// ★ v1.0.159：后台播放声音（**默认开**）。
+    /// 键与 `PlayerBox.backgroundAudioKey` 一致 —— 两边天然同步。
+    /// 开着：播放中切到别的 App / 锁屏，画面丢掉、**声音接着放**；
+    /// 关着：切走就停（iOS 默认行为），回来得重新点播放。
+    /// ★ 为什么这个必须默认开：iOS 15 起 AVPlayer 默认策略是 `.automatic`，
+    ///   一进后台就暂停 —— 那一刻没有音频在放，"后台音频"这张票立刻失效 →
+    ///   进程被挂起/回收 → 用户回来时**播放器整块没了**（真机反馈就是这个现象）。
+    @AppStorage(PlayerBox.backgroundAudioKey) private var bgAudio = true
     /// 播放小窗（App 里播放视频时切出去继续播）。
     /// 跟「下载保活」是两件事，所以是两个开关。
     @AppStorage("playerPiPEnabled") private var playerPiP = true
@@ -51,10 +59,11 @@ struct SettingsView: View {
                             if !on { note = "已关闭续看，之前记录的播放进度也一并清掉了。" }
                         }
                     Toggle("首次播放自动横屏", isOn: $autoLandscape)
+                    Toggle("后台播放声音（切走/锁屏继续出声）", isOn: $bgAudio)
                 } header: {
                     Text("播放")
                 } footer: {
-                    Text("**记录播放进度（默认关）** 开着：视频看到一半退出，下次打开会接着上次的位置继续，下载列表里也能看到一条细进度线。关着：每次从头播，不留任何记录。\n\n**首次播放自动横屏（默认关）** 开着：横向视频一打开就自动转成横屏；关着：保持竖屏播放，想横屏自己转手机（播放器里的全屏按钮照常能用）。")
+                    Text("**记录播放进度（默认关）** 开着：视频看到一半退出，下次打开会接着上次的位置继续，下载列表里也能看到一条细进度线。关着：每次从头播，不留任何记录。\n\n**首次播放自动横屏（默认关）** 开着：横向视频一打开就自动转成横屏；关着：保持竖屏播放，想横屏自己转手机（播放器里的全屏按钮照常能用）。\n\n**后台播放声音（默认开）** 开着：播放中切到别的 App 或锁屏，画面丢掉、声音继续放；关着：切走就暂停，回来要重新点播放。改完**下次打开播放器生效**。")
                 }
 
                 Section {

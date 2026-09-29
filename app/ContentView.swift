@@ -1630,18 +1630,16 @@ struct DownloadList: View {
     @State private var filter: DownloadFilter = .video
 
     // ── ★ v1.0.127 多选与批量 ──
-    /// 多选模式（长按任意一条进入）
+    /// 多选模式（长按任意一条、或右上角「选择」进入）
     @State private var selecting = false
     /// 选中的任务。按 **id** 记，不按下标 —— 过滤/排序一变下标就错位了
     @State private var picked = Set<UUID>()
     /// 批量操作的进度提示（存相册/导出都是串行的，得让用户看到走到哪了）
     @State private var batchNote: String?
-    /// 批量导出：当前正在弹保存的那个 / 剩下的 / 已完成 / 总数
-    /// （用户要的形态是"**逐个弹保存**"，一个文件一次）
-    @State private var exportURL: SheetURL?
-    @State private var exportRest: [URL] = []
-    @State private var exportDone = 0
-    @State private var exportTotal = 0
+    /// ★ v1.0.159：批量导出改成**一次把所有文件交给系统**，只问一次"存到哪个文件夹"。
+    ///   以前是逐个弹保存面板（`exportURL` / `exportRest` / `exportDone`），
+    ///   用户反馈"一个文件一次确认"，太烦。
+    @State private var exportBatch: SheetURLs?
 
     /// 搜索过滤（按标题或原始地址）+ 分类过滤。
     /// ★ 过滤后左滑删除必须**按对象**删、不能按下标删 —— 过滤后的下标跟
@@ -1684,6 +1682,12 @@ struct DownloadList: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 10)
                         .padding(.bottom, 2)
+                        // ★ v1.0.159：切分类时，把"现在看不见的那些"从选中里去掉 ——
+                        //   否则会出现「已选 15 个」而屏幕上只勾了 12 个，
+                        //   全选/取消全选的语义也跟着乱。
+                        .onChange(of: filter) { _ in
+                            picked.formIntersection(Set(shownJobs.map(\.id)))
+                        }
 
                         List {
                             Section {
@@ -1768,7 +1772,14 @@ struct DownloadList: View {
             //   条件必须写在 ToolbarItem 内部。
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    if selecting { Button("取消") { exitSelecting() } }
+                    if selecting {
+                        Button("取消") { exitSelecting() }
+                    } else if !center.jobs.isEmpty {
+                        // ★ v1.0.159：**明面的多选入口**。
+                        //   以前只能长按进多选 —— 藏得太深，用户反馈"批量处理没有全选"，
+                        //   其实是连多选都很难发现。
+                        Button("选择") { selecting = true; picked.removeAll() }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if selecting {
@@ -1778,20 +1789,15 @@ struct DownloadList: View {
                     }
                 }
             }
-            // ★ v1.0.127 批量导出：逐个弹保存（一个文件一次），保存完自动弹下一个
-            .sheet(item: $exportURL) { one in
-                DocumentExporter(url: one.url, onFinish: { _ in
-                    exportDone += 1
-                    // 稍等一下再弹下一个 —— sheet 自己还在收尾，立刻换会让它弹不出来
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        if exportRest.isEmpty {
-                            batchNote = "已导出 \(exportDone)/\(exportTotal)"
-                            selecting = false
-                            picked.removeAll()
-                        } else {
-                            exportURL = SheetURL(url: exportRest.removeFirst())
-                        }
-                    }
+            // ★ v1.0.159：批量导出 = **一次交一批**，系统只问一次"存到哪个文件夹"。
+            //   完成回调只有"成功/取消"两种结果（系统不逐个报），所以提示里不编个数之外的细节。
+            .sheet(item: $exportBatch) { batch in
+                DocumentExporter(urls: batch.urls, onFinish: { ok in
+                    batchNote = ok
+                        ? "已导出 \(batch.urls.count) 个到你选的位置"
+                        : "已取消导出"
+                    selecting = false
+                    picked.removeAll()
                 })
             }
         }
@@ -1800,23 +1806,36 @@ struct DownloadList: View {
 
     // MARK: - ★ v1.0.127 多选与批量
 
-    /// 底部操作条：删除 / 存相册 / 导出，都是"对选中的那些做"
+    /// 底部操作条：全选 / 删除 / 存相册 / 导出，都是"对选中的那些做"
     private var batchBar: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             HStack(spacing: 8) {
-                Text("已选 \(picked.count) 个")
+                Text("已选 \(picked.count)/\(shownJobs.count)")
                     .font(.system(size: 13, weight: .medium))
                 Spacer(minLength: 4)
+                // ★ v1.0.159：全选 —— 范围是**当前分类 + 当前搜索**显示的那些
+                //   （不是"全部任务"：你在「图片」栏点全选，不该把视频也选上）
+                Button(allShownPicked ? "取消全选" : "全选") { toggleSelectAll() }
+                    .font(.system(size: 13))
+                    .disabled(shownJobs.isEmpty)
+            }
+            HStack(spacing: 8) {
                 Button(role: .destructive) { batchDelete() } label: {
-                    Label("删除", systemImage: "trash").font(.system(size: 12.5))
+                    Label("删除", systemImage: "trash")
+                        .font(.system(size: 12.5))
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 Button { batchSavePhotos() } label: {
-                    Label("存相册", systemImage: "photo.on.rectangle").font(.system(size: 12.5))
+                    Label("存相册", systemImage: "photo.on.rectangle")
+                        .font(.system(size: 12.5))
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 Button { batchExport() } label: {
-                    Label("导出", systemImage: "folder").font(.system(size: 12.5))
+                    Label("存文件夹", systemImage: "folder")
+                        .font(.system(size: 12.5))
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
             }
@@ -1829,6 +1848,20 @@ struct DownloadList: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.thinMaterial)
+    }
+
+    /// 当前显示的那些是不是**全都**选中了
+    private var allShownPicked: Bool {
+        !shownJobs.isEmpty && shownJobs.allSatisfy { picked.contains($0.id) }
+    }
+
+    /// 全选 / 取消全选（只作用于当前显示的那些）
+    private func toggleSelectAll() {
+        if allShownPicked {
+            picked.removeAll()
+        } else {
+            picked = Set(shownJobs.map(\.id))
+        }
     }
 
     private var pickedJobs: [DownloadJob] {
@@ -1875,18 +1908,16 @@ struct DownloadList: View {
         }
     }
 
-    /// 批量导出：收集文件地址，交给上面那张 sheet 逐个弹保存
+    /// 批量导出：**一次把所有文件交给系统**，系统只问一次"存到哪个文件夹"。
+    /// （v1.0.127 那版是逐个弹保存面板 —— 用户反馈"一个文件一次确认"，已废。）
     private func batchExport() {
         let urls = pickedJobs.compactMap { $0.exportURL() }
         guard !urls.isEmpty else {
             batchNote = "选中的里面没有能导出的文件"
             return
         }
-        exportTotal = urls.count
-        exportDone = 0
-        exportRest = Array(urls.dropFirst())
-        batchNote = "开始导出 \(urls.count) 个，逐个选保存位置…"
-        exportURL = SheetURL(url: urls[0])
+        batchNote = "选了 \(urls.count) 个 —— 接下来只需选一次文件夹"
+        exportBatch = SheetURLs(urls: urls)
     }
 
     /// 顶部存储条：这个 App 占了多少、设备还剩多少。
@@ -1928,6 +1959,14 @@ struct DownloadList: View {
 struct SheetURL: Identifiable {
     let url: URL
     var id: String { url.absoluteString }
+}
+
+/// ★ v1.0.159：一**批**文件的 sheet 载体（批量导出用）。
+/// 用 `.sheet(item:)` 必须有 Identifiable —— 别退回 `isPresented + 可选内容`，
+/// 那种写法会弹出一整屏白页（项目里踩过）。
+struct SheetURLs: Identifiable {
+    let urls: [URL]
+    var id: String { urls.map(\.absoluteString).joined(separator: "|") }
 }
 
 struct JobRow: View {

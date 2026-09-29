@@ -427,6 +427,15 @@ final class PlayerBox: ObservableObject {
         UserDefaults.standard.bool(forKey: autoLandscapeKey)
     }
 
+    /// ★ v1.0.159：后台播放声音的开关键（设置页与这里同一个键）
+    static let backgroundAudioKey = "bgAudioPlayback"
+    /// **默认开** —— 手写 UserDefaults 读取时**必须**用 `object(forKey:) ?? true`：
+    /// `bool(forKey:)` 对"从没写过的键"返回 false，会让默认开的东西一装上就是关的
+    /// （这个坑项目里真踩过一次，见 notes 的长期约定）。
+    static var backgroundAudioEnabled: Bool {
+        (UserDefaults.standard.object(forKey: backgroundAudioKey) as? Bool) ?? true
+    }
+
     let player: AVPlayer
     private let item: AVPlayerItem
     /// ★ v1.0.115 续看：这条内容的身份（列表传的是任务 id）。进度就记在它下面。
@@ -484,6 +493,19 @@ final class PlayerBox: ObservableObject {
         player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
+
+        // ══ ★★ v1.0.159：后台播放声音（关键的一行）══
+        //   真机反馈：「切走就停止播放，回来时**播放器窗口都没了**」。
+        //   根因就是 iOS 15 起 AVPlayer 多了这个策略，**默认 `.automatic`** ——
+        //   一进后台系统就把视频暂停；那一刻**没有音频在播**，
+        //   于是"后台音频"这张票立刻失效 → 进程被挂起/回收 → 回来等于重来。
+        //   设成 `.continuesIfPossible` = 进后台**只丢画面、留着声音**，
+        //   音频在响 → 系统继续给运行时间 → 回来时播放器还在、还在播。
+        //   （音频会话 `.playback` 和 Info.plist 的 UIBackgroundModes=audio 本来就有，缺的就是这一行。）
+        //   ★ 设置里那个开关关着时**不设**，保持 iOS 默认（切走就停）。
+        if #available(iOS 15.0, *), PlayerBox.backgroundAudioEnabled {
+            player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        }
 
         // NotificationCenter 的 block 是 @Sendable 的：直接在闭包里调实例方法没问题
         // （queue: .main 保证已在主线程），但**不能在里面再套一层并发闭包引用 weak self**，

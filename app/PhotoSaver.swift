@@ -60,14 +60,31 @@ enum Saver {
 /// 所以这里用 forExporting + asCopy —— 系统会把文件**复制**到用户选的地方，
 /// 程序内的原件不受影响。
 ///
+/// ★★ v1.0.159：**可以一次交多个文件**。用户的反馈是
+///   「批量保存到手机文件夹，居然一个一个弹窗确认放到哪个文件」——
+///   那是因为以前每个文件单独弹一次面板（`forExporting: [一个 url]`）。
+///   一次交多个时，iOS 换的是一套**选文件夹**的面板：选一次，全部写进去。
+///
 /// 不用 `@Binding isPresented` 而是用回调：外层用 `.sheet(item:)` 弹出，
 /// 关掉时把 item 置 nil 即可 —— 这样也不会有「弹出了但内容为空」的白屏问题。
 struct DocumentExporter: UIViewControllerRepresentable {
-    let url: URL
+    let urls: [URL]
     var onFinish: (Bool) -> Void
 
+    /// 老的单文件调用点（备份 / 单条导出）—— 一行都不用改
+    init(url: URL, onFinish: @escaping (Bool) -> Void) {
+        self.urls = [url]
+        self.onFinish = onFinish
+    }
+
+    /// ★ v1.0.159 批量：一次把多个文件交给系统，只问一次"存到哪个文件夹"
+    init(urls: [URL], onFinish: @escaping (Bool) -> Void) {
+        self.urls = urls
+        self.onFinish = onFinish
+    }
+
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let vc = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        let vc = UIDocumentPickerViewController(forExporting: urls, asCopy: true)
         vc.delegate = context.coordinator
         vc.shouldShowFileExtensions = true
         vc.allowsMultipleSelection = false
