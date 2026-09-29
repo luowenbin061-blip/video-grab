@@ -41,6 +41,17 @@ enum JobStore {
         return (a?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
+    /// 设备可用空间（拿不到就 0）。
+    /// ★ v1.0.160：从 `DownloadList`（一个 View）搬到这里 —— 压缩队列也要用它判断
+    ///   "这批压得下吗"，而 View 上的静态成员跨类型引用又别扭又容易写错类型名
+    ///   （真机上就是这么炸的：`ContentView.deviceFreeSpace` 根本没有，它在 DownloadList 上）。
+    ///   放在 JobStore 最顺：它本来就是"这套目录/空间"的管家。
+    static var deviceFreeSpace: Int64 {
+        let u = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage ?? 0
+    }
+
     /// 删掉若干文件（不存在就跳过）
     static func remove(_ names: [String?]) {
         for n in names {

@@ -296,7 +296,7 @@ final class CompressQueue: ObservableObject {
 
         // ★ 开工前查空间：成品和原片同时在，别压到一半没地方写
         let need = CompressPlan.spaceNeeded(outputBytes: waitingOutputBytes)
-        let free = ContentView.deviceFreeSpace
+        let free = JobStore.deviceFreeSpace
         guard need <= free else {
             return "空间不够：这一批大约还要 \(CompressPlan.mb(need))MB，现在只剩 "
                  + "\(CompressPlan.mb(free))MB。先删几条（或删掉些下载）再开始。"

@@ -1935,12 +1935,9 @@ struct DownloadList: View {
         .padding(.vertical, 2)
     }
 
-    /// 设备可用空间（拿不到就 0，界面会显示「—」）
-    static var deviceFreeSpace: Int64 {
-        let u = URL(fileURLWithPath: NSHomeDirectory())
-        let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return v?.volumeAvailableCapacityForImportantUsage ?? 0
-    }
+    /// 设备可用空间 —— 实现搬到了 `JobStore.deviceFreeSpace`
+    /// （v1.0.160：压缩队列也要用它，别再从 View 上借）
+    static var deviceFreeSpace: Int64 { JobStore.deviceFreeSpace }
 }
 
 /// 让 URL 可以直接当 sheet 的触发源（.sheet(item:)）。
