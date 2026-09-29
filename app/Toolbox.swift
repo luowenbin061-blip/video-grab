@@ -38,6 +38,10 @@ struct ToolboxView: View {
     @State private var showBackupOptions = false
     /// ★ v1.0.155：「压画质省空间」那张卡
     @State private var showCompress = false
+    /// ★ v1.0.160：压缩队列（单例）—— 这格要用它显示"还有几个没压完"的小角标。
+    ///   为什么非要有角标：队列**关掉卡片也在跑**，没有角标的话界面上完全看不到它
+    ///   （用户要的就是"别在我看不见的时候丢任务"）。
+    @ObservedObject private var queue = CompressQueue.shared
     /// 从备份恢复：选那个 json 文件
     @State private var showRestorePicker = false
     /// 备份好了 → 直接弹**文件夹选择器**（用户要的是"存到哪儿"，不是再点一次分享面板）
@@ -97,7 +101,10 @@ struct ToolboxView: View {
                     // ★★ v1.0.155：压画质省空间 —— 把已下载的成品重新编码成更小的文件。
                     //   它和「转成 MP4」（换封装、秒级、无损）**不是一回事**：
                     //   这个要重新编码，**有损、要几分钟**，所以是独立入口、独立一张卡。
-                    cell("arrow.down.right.and.arrow.up.left", "压画质省空间", .teal) {
+                    // ★ v1.0.160：改成**队列**了 —— 一次能排最多 20 个、串行一个个压；
+                    //   关掉卡片它也在跑，所以这格用角标显示"还没压完几条"。
+                    cell("arrow.down.right.and.arrow.up.left", "压画质省空间", .teal,
+                         badge: queue.badgeCount) {
                         showCompress = true
                     }
                 }

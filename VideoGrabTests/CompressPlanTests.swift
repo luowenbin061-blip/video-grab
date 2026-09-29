@@ -130,4 +130,35 @@ final class CompressPlanTests: XCTestCase {
             XCTAssertTrue(t.quality > 0 && t.quality < 1, "「\(t.title)」的质量值越界")
         }
     }
+
+    // MARK: - 队列的规矩（v1.0.160）
+
+    /// ★★ 主规矩：**串行** —— 已经有一条在跑就绝不再取；
+    /// 没有在跑的就取**最靠前的等待中**那条（先来先压）。
+    /// 为什么值得当考题：这条要是坏了（比如同时跑两条），真机上只表现为"更烫、更慢"，
+    /// 肉眼根本看不出来 —— 只能靠离线断言挡。
+    func testQueueRunsOneAtATimeAndInOrder() {
+        XCTAssertNil(CompressPlan.nextRunIndex(slots: []))
+        XCTAssertEqual(CompressPlan.nextRunIndex(slots: [.other, .waiting, .waiting]), 1,
+                       "跳过已结束的行，取最靠前的等待中")
+        XCTAssertNil(CompressPlan.nextRunIndex(slots: [.running, .waiting]),
+                     "已经有一条在跑 → 不许再取")
+        XCTAssertNil(CompressPlan.nextRunIndex(slots: [.other, .running, .waiting]))
+        XCTAssertNil(CompressPlan.nextRunIndex(slots: [.other, .other]), "没等待中的就该歇着")
+    }
+
+    /// 队列上限就是用户拍的那个数
+    func testQueueCapIsTwenty() {
+        XCTAssertEqual(CompressPlan.maxQueue, 20)
+    }
+
+    /// 开压前要腾的空间：必须**大于**成品本身的预估 ——
+    /// 因为成品和原片会同时在（我们绝不自动删原片），还要给临时文件和系统留余量。
+    func testSpaceNeededLeavesAMargin() {
+        XCTAssertGreaterThan(CompressPlan.spaceNeeded(outputBytes: 1_000_000_000), 1_000_000_000)
+        XCTAssertGreaterThan(CompressPlan.spaceNeeded(outputBytes: 0), 0)
+        XCTAssertGreaterThanOrEqual(CompressPlan.spaceNeeded(outputBytes: 0), 200 * 1_048_576)
+        // 负数（读不到大小时传 0 或负数）不能让需求变成负的
+        XCTAssertGreaterThan(CompressPlan.spaceNeeded(outputBytes: -5), 0)
+    }
 }

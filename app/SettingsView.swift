@@ -30,6 +30,10 @@ struct SettingsView: View {
     /// 播放小窗（App 里播放视频时切出去继续播）。
     /// 跟「下载保活」是两件事，所以是两个开关。
     @AppStorage("playerPiPEnabled") private var playerPiP = true
+    /// ★ v1.0.160：压缩时用小窗保活（**默认开**）。
+    /// 键与 `CompressQueue.keepAliveKey` 一致 —— 两边天然同步。
+    /// 关掉 = 压的时候不能切走/锁屏（切走会被系统挂起，那一条会从头再来）。
+    @AppStorage(CompressQueue.keepAliveKey) private var compressKeepAlive = true
     /// 长按视频弹下载菜单（默认开）。关掉 = 完全不接管长按，页面怎么长按都跟我们无关
     @AppStorage("lpLongPressDownload") private var lpDownload = true
     /// 长按诊断（默认关）：只在排查「长按没反应」时打开，会在屏幕顶部显示一行过程记录
@@ -75,10 +79,12 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                     Toggle("播放小窗（切出去继续播）", isOn: $playerPiP)
+                    // ★ v1.0.160：压缩期间要不要弹小窗保活（用户点名要有这个开关）
+                    Toggle("压缩时用小窗保活（切走也能压）", isOn: $compressKeepAlive)
                 } header: {
                     Text("画中画")
                 } footer: {
-                    Text("下载保活：开了会立刻出现一个小窗，里面是下载进度；随时关小窗即可停用。\n播放小窗：在 App 里播视频时切到别的 App，画面缩成小窗继续播（也能直接点播放器上的画中画按钮）。\n两个小窗同时只能有一个 —— 播放时下载保活窗会先让位，播完自动还回来。")
+                    Text("下载保活：开了会立刻出现一个小窗，里面是下载进度；随时关小窗即可停用。\n播放小窗：在 App 里播视频时切到别的 App，画面缩成小窗继续播（也能直接点播放器上的画中画按钮）。\n压缩保活（默认开）：压画质省空间排队开压时会自动起小窗，切到别的 App 也能一直压；关掉的话**压的时候别切走、也别锁屏** —— 切走会被系统挂起，那一条会从头再来。\n两个小窗同时只能有一个 —— 播放时下载/压缩保活窗会先让位，播完自动还回来。")
                 }
 
                 Section {
@@ -298,8 +304,10 @@ struct SettingsView: View {
         guard !isCleaning else { return }        // 防连点：上一次还没完
         isCleaning = true
         let active = Set(downloads.jobs.filter { $0.isActive }.map { $0.id.uuidString })
+        // ★ v1.0.160：正在压的那条，它的 `.partial` 还得用 —— 主线程先问一句再进后台
+        let compressing = CompressQueue.shared.isRunning
         Task.detached(priority: .userInitiated) {
-            let freed = JobStore.cleanupTemp(keeping: active)
+            let freed = JobStore.cleanupTemp(keeping: active, keepPartials: compressing)
             await MainActor.run {
                 note = freed > 0
                     ? "已清理下载临时文件，释放约 \(max(1, freed / 1048576))MB"

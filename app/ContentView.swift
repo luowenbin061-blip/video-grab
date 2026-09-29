@@ -14,6 +14,11 @@ final class DownloadCenter: ObservableObject {
             job.onUpdate = { [weak self] in self?.save() }
             return job
         }
+        // ★ v1.0.160：启动顺手扫掉上次被杀留下的**压缩半成品**（`.partial.` 那种）——
+        //   以前**没人清**（cleanupTemp 只认 parts_*/joined_*），它们会一直占着空间。
+        //   此刻压缩队列一定是"暂停"的（重启后不自动开跑），所以扫得安全。
+        //   放后台线程做，不占启动时间。
+        Task.detached(priority: .utility) { JobStore.cleanupPartials() }
     }
 
     @discardableResult
@@ -151,38 +156,20 @@ final class DownloadCenter: ObservableObject {
     /// 只记连带起的 —— 用户自己手动开的那个，关共享时不许替他收掉。
     private var pipByShare = false
 
-    // ══ ★★ v1.0.158：压缩期间也保活 ══
-    //   压一次要几分钟到十几分钟（重编码），要是只能"干等着别切走"，这个功能就废了一半。
-    //   系统只给一个小窗，所以压缩进度跟下载进度**共用同一个窗**：
-    //   有下载任务时下载优先，没有时显示压缩。也是"往前台时开、结束就收"。
-    /// 压缩进行中给画中画看的画面（不在压缩时是 nil）
-    @Published private(set) var compressSnap: PiPProgress.Snapshot?
-    /// 这个窗是「压缩」连带起的吗（用户自己开的不动）
-    private var pipByCompress = false
-
-    /// 压缩开始 —— **必须在前台调**（进了后台再起画中画必失败，跟共享同一个道理）
-    func beginCompressKeepAlive(title: String) {
-        preparePiP()
-        compressSnap = PiPProgress.Snapshot(title: title, detail: "正在压缩…",
-                                           progress: 0, activeCount: 1)
-        let wasRunning = pip.isRunning
-        pip.start()
-        if !wasRunning { pipByCompress = true }
-    }
-
-    func updateCompressKeepAlive(detail: String, progress: Double) {
-        guard let old = compressSnap else { return }
-        compressSnap = PiPProgress.Snapshot(title: old.title, detail: detail,
-                                           progress: progress, activeCount: 1)
-    }
-
-    /// 压缩结束：只把「这次连带起的小窗」收回去 ——
-    /// 用户自己手动开的不动；还有下载在跑 / 还开着共享也不动（那两个还要靠它活着）。
-    func endCompressKeepAlive() {
-        compressSnap = nil
-        if pipByCompress && activeCount == 0 && !lanOn {
-            pip.stop()
-            pipByCompress = false
+    // ══ ★★ v1.0.160：压缩的保活改由「压缩队列」自己管 ══
+    //   队列是单例（`CompressQueue.shared`）：它自己起/收小窗、自己发布给画中画看的画面。
+    //   这里只负责**把三样东西接给它**（启动时接一次）：
+    //     ① 画中画对象（它要用来 start/stop）
+    //     ② 收编成品的出口（压完自动进下载列表那条路）
+    //     ③ "别人还要不要这个小窗" —— 下载还在跑 / 还开着共享时，压缩收工也不许把窗收掉
+    //   ★ v1.0.158 那套 begin/update/endCompressKeepAlive 已经删掉（被队列取代，别再加回来）。
+    func wireCompressQueue() {
+        let q = CompressQueue.shared
+        q.pip = pip
+        q.center = self
+        q.othersNeedPiP = { [weak self] in
+            guard let self else { return false }
+            return self.activeCount > 0 || self.lanOn
         }
     }
 
@@ -239,8 +226,9 @@ final class DownloadCenter: ObservableObject {
             let first = act.first
             // 没有下载任务时小窗也得有像样的画面（开关可能正开着）
             if act.isEmpty {
-                // ★ v1.0.158：没有下载但有压缩 → 显示压缩进度
-                if let cs = self.compressSnap { return cs }
+                // ★ v1.0.158 起：没有下载但有压缩 → 显示压缩的进度
+                //   （v1.0.160 起这份画面由「压缩队列」发布，见 CompressQueue.snapshot）
+                if let cs = CompressQueue.shared.snapshot { return cs }
                 return self.lanOn
                     ? PiPProgress.Snapshot(title: "局域网共享中",
                                            detail: "电脑可在同一 Wi-Fi 下下载",
@@ -592,6 +580,8 @@ struct ContentView: View {
         .onAppear {
             input = model.address
             downloads.preparePiP()
+            // ★ v1.0.160：把压缩队列的三根线接上（小窗 / 收编出口 / 别人要不要小窗）
+            downloads.wireCompressQueue()
             // 历史只记「真的加载完成的、你正在看的」那一页
             // （同一地址由 store 合并，不会把列表刷成一堆重复项；
             //   about:blank 之类由 store 自己挡掉）

@@ -3,26 +3,21 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// 「压画质省空间」那张卡：**选源文件 → 选档位 → 压缩 → 决定留哪个**。
+/// 「压画质省空间」那张卡：**选源文件 / 选档位 / 加入队列 → 队列自己一个个压**。
 ///
-/// ══ ★★ v2（2026-09-29）改了什么、为什么 ══
-///   ① **五档、按源码率的比例取值**（旧版写死绝对码率，对低码率片源等于"加码"——
-///      真机上出现过「49.6MB 的片子预估能压到 122MB」）。见 `CompressPlan.Tier`。
-///   ② **一行 5 个小胶囊**，选中后下面一行写「49.6MB → 约 35MB · 说明」——
-///      用户要的就是这个形态（"一行 5 个小胶囊 + 下面一行写体积提示"）。
-///   ③ **进度带上"还要多久"**（用 ffmpeg 报的 `speed` 算）。
-///   ④ **压完先预览再决定**：预览 / 存到相册 / 留在下载列表 / 删掉新文件。
-///   ⑤ **图片也支持**（按 JPEG 质量重压）。
-///   ⑥ **压缩期间接了画中画保活** —— 不再要求"停留在这个界面"（旧版那个限制已经去掉）。
-///   ⑦ 源文件也能从**相册 / 文件**里选（不只下载列表里的）。
+/// ══ ★★ v1.0.160 改了什么（上一版是"压一个、看一眼、决定留不留"）══
+///   ① **改成队列**：一次能排最多 20 个，**串行**一个个压（手机只有一个硬件编码器）。
+///   ② **任务不再活在卡片里**：队列是单例（`CompressQueue.shared`）并且落盘 ——
+///      卡片关掉、甚至退出重进，任务都在。打开卡片时**只要有活在跑就直接显示队列**，
+///      绝不回到"选文件"那一页（用户原话："此时误关或者关掉压缩页面就会丢失压缩任务"）。
+///   ③ **失败一个跳过继续压下一个**，原因留在那一行。
+///   ④ 压完仍然自动收进下载列表（`X_压缩版`）；这里只留一个「看效果」按钮。
+///   ⑤ 保活（画中画小窗）默认开、设置里能关；关掉时那句提示会变成"别切走"。
 ///
-/// ══ 设计取舍（按用户的口味：页面上东西越少越好，功能藏在一级入口后面）══
-///   · **不单独做"确认页"**：胶囊下面那行直接写「多少 MB → 约多少 MB」，
-///     选完点开始就是确认。多一页是负担。
+/// ══ 设计取舍（按用户的口味：页面上东西越少越好）══
+///   · 选文件那页只有三块：源列表（含"从相册/文件选"）、**一行 5 个胶囊**、加入队列。
+///   · 胶囊下面那行直接写「49.6MB → 约 35MB · 说明」，选完点加入就是确认，不设确认页。
 ///   · **不自动删原片**：压缩不可逆 —— 原片一律不动，删不删由他自己决定。
-///   · **压完不替他做决定，但也不留垃圾**：四个按钮摆在明面上；
-///     直接关掉卡片（没选）= **默认收进下载列表**（不丢东西、也不会有"看不见的孤儿文件"
-///     白占空间）。想省空间就点「删掉新文件」—— 原片不受影响。
 struct CompressSheet: View {
 
     /// 这个功能能干的两种活（一次只干一种）
@@ -32,15 +27,8 @@ struct CompressSheet: View {
         var title: String { self == .video ? "视频" : "图片" }
     }
 
-    /// 压好的那份成品
-    private struct Done {
-        let url: URL
-        let note: String
-        let title: String
-        /// ★ 压完**当场就自动收进下载列表**了（成一条新记录）—— 不留"看不见的孤儿文件"，
-        ///   也不依赖"他必须在这张卡里做决定"。「删掉新文件」靠这条记录走现成的删除通道。
-        let jobID: UUID
-    }
+    /// 卡片显示哪一页
+    private enum Page { case pick, queue }
 
     /// 选中的源（两种来源统一成这一个形状）
     private struct Source {
@@ -51,12 +39,14 @@ struct CompressSheet: View {
     }
 
     @ObservedObject var center: DownloadCenter
+    /// ★ 队列是单例：卡片只是它的一个"窗口"，开开关关不影响它
+    @ObservedObject private var queue = CompressQueue.shared
     @Binding var isPresented: Bool
 
     @State private var mode: Mode = .video
     /// 选中的「已下载」条目
     @State private var selectedID: UUID?
-    /// 从相册/文件选来的源文件（**不进下载列表** —— 压完才决定留不留）
+    /// 从相册/文件选来的源文件（入队时会被搬进程序目录）
     @State private var picked: [SavedFile] = []
     @State private var pickedIndex: Int?
     /// 外部选来的视频时长（估算体积要用）—— 按路径存，读不到就是 0
@@ -69,13 +59,10 @@ struct CompressSheet: View {
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
 
-    @State private var running = false
-    @State private var progress: Double = 0
-    @State private var phase = ""
+    /// nil = 自动（有活在跑就显示队列页）
+    @State private var page: Page?
+    /// 入队/开压被拒的原因（人话）
     @State private var failed: String?
-    @State private var note: String?
-    @State private var done: Done?
-    @State private var saving = false
     @State private var previewItem: SheetURL?
 
     // MARK: - 源文件
@@ -103,9 +90,14 @@ struct CompressSheet: View {
                       bytes: JobStore.size(of: name), duration: job.duration)
     }
 
+    /// 现在显示队列页吗 —— **有等待/在压的活就自动进队列页**（用户要的）
+    private var onQueuePage: Bool {
+        if let page { return page == .queue }
+        return queue.liveCount > 0
+    }
+
     // MARK: - 预估
 
-    /// 视频预估体积：源码率 × 档位比例 → 目标码率 → (目标码率 + 128k 音频) × 时长
     private var videoEstimate: Int64? {
         guard let s = source, s.duration > 0 else { return nil }
         let bps = CompressPlan.targetVideoBps(
@@ -134,9 +126,6 @@ struct CompressSheet: View {
     var body: some View {
         NavigationView {
             List {
-                if let note {
-                    Section { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary) }
-                }
                 if let failed {
                     Section {
                         Text(failed)
@@ -145,23 +134,17 @@ struct CompressSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-
-                if running {
-                    runningSection
-                } else if let d = done {
-                    doneSection(d)
+                if onQueuePage {
+                    queuePage
                 } else {
-                    sourceSection
-                    tierSection
-                    startSection
+                    pickPage
                 }
             }
             .navigationTitle("压画质省空间")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    // ★ 压着的时候也**允许**关掉：有小窗保活，压缩不会断，
-                    //   压完还会自动进下载列表（见 start()）。所以不必把他锁在这一页。
+                    // ★ 压着也能关：有小窗保活，压不会断；队列会自己一路压完
                     Button("关闭") { isPresented = false }
                 }
             }
@@ -170,14 +153,12 @@ struct CompressSheet: View {
         .navigationViewStyle(.stack)
         .confirmationDialog("要压的文件从哪来？", isPresented: $showSourceMenu,
                             titleVisibility: .visible) {
-            // ★ 按钮上不写"（图片/视频）"—— 收哪一类是**上面的模式**决定的（视频模式只收视频），
-            //   写上反而对不上。跟着下一次构建一起推。
+            // 收哪一类由上面的模式决定（视频模式只收视频），所以按钮上不写"（图片/视频）"
             Button("从相册选") { showPhotoPicker = true }
             Button("从「文件」选") { showFilePicker = true }
             Button("取消", role: .cancel) {}
         }
         .sheet(isPresented: $showPhotoPicker) {
-            // ★ 图片模式才收图片；视频模式还是只收视频（跟原来一样）
             PhotoPickerBox(onPicked: { files in takePicked(files) },
                            kind: mode == .image ? .image : .movie)
         }
@@ -190,7 +171,6 @@ struct CompressSheet: View {
             if Self.imageExts.contains(s.url.pathExtension.lowercased()) {
                 ImageViewerSheet(url: s.url, title: "")
             } else {
-                // 预览不接画中画（压缩已经结束，不需要靠小窗保活）
                 PlayerSheet(url: s.url, title: "", pip: nil, key: "")
             }
         }
@@ -203,108 +183,146 @@ struct CompressSheet: View {
         }
     }
 
-    // MARK: - 三个区块
+    // MARK: - 队列页
 
-    private var runningSection: some View {
-        Section("正在压缩") {
-            VStack(alignment: .leading, spacing: 8) {
-                ProgressView(value: progress)
-                Text(phase.isEmpty ? "正在压缩…" : phase)
+    @ViewBuilder private var queuePage: some View {
+        if let cur = queue.current {
+            Section("正在压缩") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: cur.progress)
+                    Text(cur.phase.isEmpty ? "正在压缩…" : cur.phase)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary)
+                    Text(keepAliveHint)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            }
+        } else if queue.waitingCount > 0 {
+            Section {
+                Text("有 \(queue.waitingCount) 个在排队，还没开始。")
+                    .font(.system(size: 13))
+                Button {
+                    startQueue()
+                } label: {
+                    Text("继续压缩")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                }
+            } header: {
+                Text("排队中")
+            } footer: {
+                Text("一次只压一个（手机只有一个硬件编码器，同时压几个不会更快，只会更烫）。")
+                    .font(.system(size: 11.5))
+            }
+        } else {
+            Section("压完了") {
+                Text("这一批都处理完了。成品已经收进下载列表（名字带「_压缩版」），在那儿能播、能存相册、能存文件夹。")
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
-                // ★ 旧版这里写的是"必须停留在这个界面"。v2 接了画中画保活 →
-                //   切走也能继续（画中画的小窗活着，进程就不会被挂起）。
-                Text("现在有小窗保活：切到别的 App 也能接着压 —— 别把小窗划掉就行。关掉这张卡也不会中断，压完会自动进下载列表。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.vertical, 4)
         }
-    }
 
-    private func doneSection(_ d: Done) -> some View {
-        Group {
-            Section("压好了") {
-                Text(d.note)
-                    .font(.system(size: 13, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("已经当成一条新记录收进下载列表了（「\(d.title)_压缩版」）。原片一动没动。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        Section("队列 · \(queue.items.count)/\(CompressPlan.maxQueue)") {
+            ForEach(queue.items) { item in
+                QueueRow(item: item,
+                         onPreview: { previewItem = SheetURL(url: $0) },
+                         onCancel: { queue.cancel(item) })
             }
-            Section {
-                Button {
-                    previewItem = SheetURL(url: d.url)
-                } label: {
-                    Label("先看看效果", systemImage: "play.rectangle")
-                }
-                Button {
-                    saveToPhotos(d)
-                } label: {
-                    Label(saving ? "正在存相册…" : "存到相册", systemImage: "square.and.arrow.down")
-                }
-                .disabled(saving)
+        }
+
+        Section {
+            Button {
+                page = .pick
+            } label: {
+                Label("再加几个文件", systemImage: "plus.circle")
+            }
+            if queue.current != nil, queue.waitingCount > 0 {
                 Button(role: .destructive) {
-                    discard(d)
+                    queue.stopAfterCurrent()        // 当前这条压完就停
                 } label: {
-                    Label("不要这条（删掉新文件）", systemImage: "trash")
+                    Label("停止（当前这条压完就停）", systemImage: "stop.circle")
                 }
-                Button("完成") { isPresented = false }
-            } footer: {
-                Text("「删掉新文件」同时会把下载列表里那条记录一起撤掉 —— 原片和相册里那份都不受影响。")
-                    .font(.system(size: 11.5))
             }
-        }
-    }
-
-    private var sourceSection: some View {
-        Group {
-            Section {
-                Picker("", selection: $mode) {
-                    ForEach(Mode.allCases) { m in Text(m.title).tag(m) }
-                }
-                .pickerStyle(.segmented)
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            }
-
-            Section(header: Text(mode == .video ? "选一个视频" : "选一张图片")) {
-                if candidates.isEmpty && picked.isEmpty {
-                    Text(mode == .video
-                         ? "下载列表里还没有能压的视频 —— 也可以直接从相册/文件选。"
-                         : "下载列表里还没有能压的图片 —— 也可以直接从相册/文件选。")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(candidates) { job in
-                    row(icon: mode == .video ? "film" : "photo",
-                        title: job.title,
-                        detail: "\(CompressPlan.mb(job.fileSize))MB · 已下载",
-                        on: (pickedIndex == nil && job.id == selectedID)) {
-                        pickedIndex = nil
-                        selectedID = job.id
-                    }
-                }
-                ForEach(Array(picked.enumerated()), id: \.offset) { item in
-                    row(icon: "square.and.arrow.down",
-                        title: Self.base(item.element.originalName),
-                        detail: "\(CompressPlan.mb(Self.fileSize(item.element.url)))MB · 从相册/文件选的",
-                        on: (pickedIndex == item.offset)) {
-                        selectedID = nil
-                        pickedIndex = item.offset
-                    }
-                }
+            if queue.hasFinishedRows {
                 Button {
-                    showSourceMenu = true
+                    queue.clearFinished()
                 } label: {
-                    Label("从相册 / 文件选…", systemImage: "plus.circle")
+                    Label("清掉已经结束的行", systemImage: "trash")
                 }
             }
+        } footer: {
+            // 注意：Text(单个字面量) 才渲染 markdown；这里就是单个字面量，星号会被渲染
+            Text("ffmpeg 是在 App 内跑的，**没法从外面掐断** —— 所以「停止」只能是「当前这条压完就停」。正在压的那条结束后，成品照样会收进下载列表。\n「清掉已经结束的行」只删列表行，不动文件。")
+                .font(.system(size: 11.5))
         }
     }
 
-    private var tierSection: some View {
+    /// 保活状态那句话（开 / 关两种说法，都要说清后果）
+    private var keepAliveHint: String {
+        CompressQueue.keepAliveEnabled
+            ? "可以切到别的 App —— 小窗里会显示进度（别把小窗划掉）。关掉这张卡也不会中断。"
+            : "★ 你关掉了「压缩时保活」：压的时候别切走、也别锁屏 —— 切走会被系统挂起，这一条会从头再来。"
+    }
+
+    // MARK: - 选文件页
+
+    @ViewBuilder private var pickPage: some View {
+        if !queue.items.isEmpty {
+            Section {
+                Button {
+                    page = .queue
+                } label: {
+                    Label("看队列（\(queue.items.count) 条，\(queue.liveCount) 条还没压完）",
+                          systemImage: "list.bullet")
+                }
+            }
+        }
+
+        Section {
+            Picker("", selection: $mode) {
+                ForEach(Mode.allCases) { m in Text(m.title).tag(m) }
+            }
+            .pickerStyle(.segmented)
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        }
+
+        Section(header: Text(mode == .video ? "选一个视频" : "选一张图片")) {
+            if candidates.isEmpty && picked.isEmpty {
+                Text(mode == .video
+                     ? "下载列表里还没有能压的视频 —— 也可以直接从相册/文件选。"
+                     : "下载列表里还没有能压的图片 —— 也可以直接从相册/文件选。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(candidates) { job in
+                row(icon: mode == .video ? "film" : "photo",
+                    title: job.title,
+                    detail: "\(CompressPlan.mb(job.fileSize))MB · 已下载",
+                    on: (pickedIndex == nil && job.id == selectedID)) {
+                    pickedIndex = nil
+                    selectedID = job.id
+                }
+            }
+            ForEach(Array(picked.enumerated()), id: \.offset) { item in
+                row(icon: "square.and.arrow.down",
+                    title: Self.base(item.element.originalName),
+                    detail: "\(CompressPlan.mb(Self.fileSize(item.element.url)))MB · 从相册/文件选的",
+                    on: (pickedIndex == item.offset)) {
+                    selectedID = nil
+                    pickedIndex = item.offset
+                }
+            }
+            Button {
+                showSourceMenu = true
+            } label: {
+                Label("从相册 / 文件选…", systemImage: "plus.circle")
+            }
+        }
+
         Section("压到什么程度") {
             // ★★ 一行 5 个小胶囊（用户点名的形态）
             HStack(spacing: 6) {
@@ -317,30 +335,26 @@ struct CompressSheet: View {
                 }
             }
             .padding(.vertical, 2)
-            // ★ 下面那行：体积提示 + 一句人话
             Text(tierHint)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-    }
 
-    private var startSection: some View {
         Section {
             Button {
-                start()
+                addToQueue()
             } label: {
-                Text(source == nil ? "先选一个文件" : "开始压缩")
+                Text(source == nil ? "先选一个文件" : "加入队列")
                     .font(.system(size: 15, weight: .medium))
                     .frame(maxWidth: .infinity)
             }
             .disabled(source == nil)
         } footer: {
-            // ★ 注意：`Text(三元)` 是**拼接出来的 String**，不渲染 markdown ——
-            //   所以这两句里不能写 `**`（会原样露出星号）。要加粗只能用单个字面量。
+            // ★ 注意：`Text(三元)` 是**拼接出来的 String**，不渲染 markdown —— 这里不能写 **
             Text(mode == .video
-                 ? "压缩要重新编码（有损、几分钟），和「转成 MP4」那种秒级的换封装不是一回事。原片不会被改动。"
-                 : "图片统一存成 JPG、按质量重压（透明通道会丢掉），不缩分辨率 —— 只靠质量省空间。原片不会被改动。")
+                 ? "加入后自动开始压（一次一个），最多能排 \(CompressPlan.maxQueue) 个。可以接着选下一个，也可以直接关掉这张卡 —— 队列会自己压完，成品自动收进下载列表。压缩要重新编码（有损、几分钟），原片不会被改动。"
+                 : "加入后自动开始压（一次一个），最多能排 \(CompressPlan.maxQueue) 个。图片统一存成 JPG、按质量重压（透明通道会丢掉），不缩分辨率。原片不会被改动。")
                 .font(.system(size: 11.5))
         }
     }
@@ -394,13 +408,12 @@ struct CompressSheet: View {
 
     // MARK: - 动作
 
-    /// 相册/文件选来的东西：存进卡片（**不进下载列表**），顺手把视频时长读出来
+    /// 相册/文件选来的东西：先放在卡片里（**入队时才搬进程序目录**），顺手把时长读出来
     private func takePicked(_ files: [SavedFile]) {
         guard !files.isEmpty else { return }
         picked = files
         selectedID = nil
         pickedIndex = 0
-        // 时长要现读（估算体积要用）—— 只对视频有意义，图片跳过
         let isVideo = (mode == .video)
         guard isVideo else { return }
         Task {
@@ -411,86 +424,30 @@ struct CompressSheet: View {
         }
     }
 
-    private func start() {
+    /// 加入队列 → 翻到队列页 → 立刻开压（串行，不用等）
+    private func addToQueue() {
         guard let s = source else { return }
-        running = true
         failed = nil
-        note = nil
-        progress = 0
-        phase = ""
-        // ★ 起画中画**必须在后台前、且在前台**的时候（跟"共享给电脑"同一个道理）
-        center.beginCompressKeepAlive(title: s.title.isEmpty ? "压缩" : s.title)
-
-        let isImage = (mode == .image)
-        let t = tier
-        let pt = photoTier
-        let onP: (Double, String) -> Void = { p, msg in
-            Task { @MainActor in
-                progress = p
-                phase = msg
-                center.updateCompressKeepAlive(detail: msg, progress: p)
-            }
+        let req = CompressQueue.Request(
+            url: s.url,
+            title: s.title.isEmpty ? (mode == .video ? "视频" : "图片") : s.title,
+            kind: (mode == .image ? .image : .video),
+            bytes: s.bytes, duration: s.duration,
+            videoTier: tier, photoTier: photoTier)
+        if let why = queue.enqueue(req) {
+            failed = "✗ " + why
+            return
         }
-        Task {
-            do {
-                let r: (url: URL, bytes: Int64, note: String)
-                if isImage {
-                    r = try await Compressor.runPhoto(input: s.url, tier: pt, onProgress: onP)
-                } else {
-                    r = try await Compressor.run(input: s.url, tier: t, onProgress: onP)
-                }
-                await MainActor.run {
-                    running = false
-                    center.endCompressKeepAlive()
-                    // ★★ 压完**立刻**收进下载列表（当成一条新记录）：
-                    //   ① 不会有"看不见但占空间"的孤儿文件；
-                    //   ② 就算他刚才把卡片关了、或在别的 App 里，结果也稳稳落在下载页；
-                    //   ③ 「删掉新文件」直接走现成的删除通道。
-                    let title = s.title.isEmpty ? "视频" : s.title
-                    let job = center.adoptCompressed(
-                        r.url, title: title + "_压缩版",
-                        kind: isImage ? .image : .video)
-                    done = Done(url: r.url, note: r.note, title: title, jobID: job.id)
-                }
-            } catch {
-                await MainActor.run {
-                    running = false
-                    center.endCompressKeepAlive()
-                    failed = "✗ " + error.localizedDescription
-                }
-            }
-        }
+        selectedID = nil
+        picked = []
+        pickedIndex = nil
+        page = .queue                      // 用户要的：有活了就直接看进度
+        startQueue()
     }
 
-    private func saveToPhotos(_ d: Done) {
-        saving = true
-        Task {
-            do {
-                try await Saver.toPhotos(d.url)
-                await MainActor.run {
-                    saving = false
-                    note = "已存到相册。想省空间可以再点「删掉新文件」—— 原片和相册里那份都不受影响。"
-                }
-            } catch {
-                await MainActor.run {
-                    saving = false
-                    failed = "存相册失败：" + error.localizedDescription
-                }
-            }
-        }
-    }
-
-    /// 不要了：记录和文件一起撤掉（走现成的删除通道），然后回到选文件
-    private func discard(_ d: Done) {
-        if let job = center.jobs.first(where: { $0.id == d.jobID }) {
-            center.remove(job)                                  // 连文件一起删
-        }
-        // 保险：万一那条记录已经不在了（他在别处删过），这里也把文件清掉
-        try? FileManager.default.removeItem(at: d.url)
-        done = nil
-        progress = 0
-        phase = ""
-        note = "已删掉新文件。原片没动 —— 想再压一次随时可以。"
+    private func startQueue() {
+        failed = nil
+        if let why = queue.start() { failed = "✗ " + why }
     }
 
     // MARK: - 小工具
@@ -508,4 +465,87 @@ struct CompressSheet: View {
 
     private static let imageExts: Set<String> =
         ["jpg", "jpeg", "png", "gif", "heic", "heif", "avif", "bmp", "tiff", "webp"]
+}
+
+/// 队列里的一行。**单独一个 View** 是为了让它只订阅自己那一条的进度
+/// （一条 500ms 刷一次，别把整张卡都带着重画）。
+private struct QueueRow: View {
+    @ObservedObject var item: CompressQueue.Item
+    var onPreview: (URL) -> Void
+    var onCancel: () -> Void
+
+    private var icon: String {
+        switch item.state {
+        case .waiting:   return "clock"
+        case .running:   return "arrow.triangle.2.circlepath"
+        case .done:      return "checkmark.circle.fill"
+        case .failed:    return "exclamationmark.triangle.fill"
+        case .cancelled: return "minus.circle"
+        }
+    }
+
+    private var tint: Color {
+        switch item.state {
+        case .done:    return .green
+        case .failed:  return .red
+        case .running: return .accentColor
+        default:       return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 15))
+                    .foregroundStyle(tint)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(.system(size: 14))
+                        .lineLimit(1)
+                    Text(item.sizeLine)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                if item.state == .waiting {
+                    Button {
+                        onCancel()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("取消这一条")
+                } else if item.state == .done, let out = item.outputName {
+                    Button("看效果") { onPreview(JobStore.file(named: out)) }
+                        .font(.system(size: 12.5))
+                } else {
+                    Text(item.state.label)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(tint)
+                }
+            }
+
+            if item.state == .running {
+                ProgressView(value: item.progress)
+                Text(item.phase.isEmpty ? "正在压缩…" : item.phase)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            if let n = item.note {
+                Text(n).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let f = item.failure {
+                Text("✗ " + f)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 2)
+    }
 }

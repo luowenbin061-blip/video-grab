@@ -103,7 +103,8 @@ enum JobStore {
     /// 但谁都不清，于是磁盘只减不增、越用越容易失败（会诊的机制②）。
     /// `keeping` 传"正在下载的任务 id"，那些任务的目录跳过（否则会把正在下的弄坏）。
     @discardableResult
-    static func cleanupTemp(keeping activeIDs: Set<String> = []) -> Int64 {
+    static func cleanupTemp(keeping activeIDs: Set<String> = [],
+                            keepPartials: Bool = false) -> Int64 {
         let fm = FileManager.default
         guard let list = try? fm.contentsOfDirectory(at: dir,
                                                      includingPropertiesForKeys: [.isDirectoryKey]) else {
@@ -118,6 +119,33 @@ enum JobStore {
             } else if !n.hasPrefix("joined_") {
                 continue
             }
+            freed += sizeOfItem(u, fm: fm)
+            try? fm.removeItem(at: u)
+        }
+        // ★ v1.0.160：顺手把压缩的半成品也扫掉（除非**正在压** —— 那条的 .partial 还得用）
+        if !keepPartials {
+            freed += cleanupPartials()
+        }
+        return freed
+    }
+
+    /// ★ v1.0.160：扫掉「压缩的半成品」。
+    ///   压缩写的是 `名字.partial.mp4` / `名字.partial.jpg`，而上面的 `cleanupTemp`
+    ///   **只认 `parts_*` / `joined_*`** —— 所以一次被杀掉的压缩会留下一个
+    ///   **看不见、又占空间、而且永远不会消失**的大文件（真机上就是这么攒起来的）。
+    ///
+    /// ★★ 判据必须精确到 **`.partial.`（前后两个点都在）**：
+    ///   下载端还有 `seg_000001.part` / `direct.part` 这类文件名，那是**续传要用的**，
+    ///   绝不能被一起扫掉（扫了就等于"暂停下的那半天下白下了"）。
+    @discardableResult
+    static func cleanupPartials() -> Int64 {
+        let fm = FileManager.default
+        guard let list = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
+            return 0
+        }
+        var freed: Int64 = 0
+        for u in list where u.lastPathComponent.contains(".partial.") {
             freed += sizeOfItem(u, fm: fm)
             try? fm.removeItem(at: u)
         }

@@ -184,6 +184,35 @@ enum CompressPlan {
         return mm == 0 ? "约 \(h) 小时" : "约 \(h) 小时 \(mm) 分"
     }
 
+    // MARK: - 队列的规矩（纯逻辑，考在离线回归集里）
+
+    /// 队列上限 —— **用户拍的：最多 20 个**（`notes/VideoGrab.md` 的压缩队列交接单）
+    static let maxQueue = 20
+
+    /// 一条任务在"调度"眼里的样子（只留调度需要的信息）
+    enum Slot { case waiting, running, other }
+
+    /// 下一步该跑哪一条。
+    /// · **串行**：已经有一条在跑 → 返回 nil（一次只压一个 —— 硬件编码器只有一个，
+    ///   同时跑两个只会更烫更慢，用户也认了这条）
+    /// · 否则取**最靠前的 waiting**（先来先压）
+    /// · 返回 nil = 没活可干
+    ///
+    /// ★ 为什么值得抽成纯函数：这条规矩要是坏了（比如同时跑两条），
+    ///   在真机上只表现为"更烫、更慢"——**肉眼根本看不出来**，只能靠离线断言挡。
+    static func nextRunIndex(slots: [Slot]) -> Int? {
+        if slots.contains(where: { $0 == .running }) { return nil }
+        return slots.firstIndex(of: .waiting)
+    }
+
+    /// 开压之前要腾出多少空间才敢开工。
+    /// 成品会和原片**同时在**（我们绝不自动删原片），所以至少要留出成品的量；
+    /// 再加 10% 余量 + 200MB 机动 —— 编码器还要写临时文件，系统也在用同一块空间。
+    static func spaceNeeded(outputBytes: Int64) -> Int64 {
+        let base = max(0, outputBytes)
+        return Int64(Double(base) * 1.1) + 200 * 1_048_576
+    }
+
     /// 界面上的体积（MB，一位小数）
     static func mb(_ bytes: Int64) -> String {
         String(format: "%.1f", Double(bytes) / 1_048_576)
