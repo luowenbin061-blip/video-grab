@@ -82,19 +82,36 @@ final class DownloadCenter: ObservableObject {
     }
 
     /// 删除任务时把文件也删掉（用户明确要删，就别留垃圾）
+    /// ★ v1.0.163：删任务**不再永久删文件** —— 有产物的先交给**文件回收站**（可恢复）。
+    /// 用户明确说"压缩后的原片我很可能就删了"，所以"删"这一步必须留后悔药
+    /// （书签早在 v1.0.97 就有回收站了，视频反而没有）。
     func remove(at offsets: IndexSet) {
-        for i in offsets { jobs[i].cancel() }
         let going = offsets.map { jobs[$0] }
+        for j in going {
+            j.cancel()
+            FileBin.shared.put(j)        // 有成品 → 进回收站；没成品 → 内部直接清分片
+        }
         jobs.remove(atOffsets: offsets)
-        for j in going { j.deleteFiles() }
         save()
     }
 
     func remove(_ job: DownloadJob) {
         job.cancel()
+        FileBin.shared.put(job)
         jobs.removeAll { $0.id == job.id }
-        job.deleteFiles()
         save()
+    }
+
+    /// ★ v1.0.163：从文件回收站把一条捞回来（文件已经搬回程序目录了，这里只重建任务）。
+    /// ★ 顺序不能反：必须**先**把文件搬回来，再 `DownloadJob(record:)` ——
+    ///   那个初始化器会检查产物在不在，文件没回来它就会把任务标成"文件已不在"。
+    @discardableResult
+    func restoreFromBin(_ record: JobRecord) -> DownloadJob {
+        let job = DownloadJob(record: record)
+        job.onUpdate = { [weak self] in self?.save() }
+        jobs.insert(job, at: 0)
+        save()
+        return job
     }
 
     func save() {
@@ -164,6 +181,8 @@ final class DownloadCenter: ObservableObject {
     //     ③ "别人还要不要这个小窗" —— 下载还在跑 / 还开着共享时，压缩收工也不许把窗收掉
     //   ★ v1.0.158 那套 begin/update/endCompressKeepAlive 已经删掉（被队列取代，别再加回来）。
     func wireCompressQueue() {
+        // ★ v1.0.163：文件回收站恢复时也要把任务塞回这个中心
+        FileBin.shared.center = self
         let q = CompressQueue.shared
         q.pip = pip
         q.center = self
@@ -1630,6 +1649,9 @@ struct DownloadList: View {
     ///   以前是逐个弹保存面板（`exportURL` / `exportRest` / `exportDone`），
     ///   用户反馈"一个文件一次确认"，太烦。
     @State private var exportBatch: SheetURLs?
+    /// ★ v1.0.163：文件回收站（删掉的原片先放这儿）
+    @ObservedObject private var bin = FileBin.shared
+    @State private var showFileBin = false
     /// ★ v1.0.162：下载页批量加入压缩队列 —— 先弹一次档位（这页没有档位控件）
     @State private var showCompressTiers = false
 
@@ -1684,6 +1706,23 @@ struct DownloadList: View {
                         List {
                             Section {
                                 storageBar
+                            }
+                            // ★ v1.0.163：回收站入口（**只在非空时出现**，不占地方）。
+                            //   它同时是"删了但其实还没省空间"这件事的唯一提示位 ——
+                            //   数字就摆在这儿，用户不会以为删掉就等于省下来了。
+                            if !bin.items.isEmpty {
+                                Section {
+                                    Button {
+                                        showFileBin = true
+                                    } label: {
+                                        Label("文件回收站 · \(bin.items.count) 项 · "
+                                              + DownloadJob.sizeText(bin.totalBytes),
+                                              systemImage: "trash")
+                                    }
+                                } footer: {
+                                    Text("删掉的原片先放这里，能恢复。**清空之前它们还占着空间** —— 确认不要了再去清空，那一刻才真省下来。")
+                                        .font(.system(size: 11.5))
+                                }
                             }
                             if shownJobs.isEmpty {
                                 Section {
@@ -1796,6 +1835,9 @@ struct DownloadList: View {
                                       batchCompress()
                                   })
             }
+            .sheet(isPresented: $showFileBin) {
+                FileBinView(downloads: center, isPresented: $showFileBin)
+            }
             .sheet(item: $exportBatch) { batch in
                 DocumentExporter(urls: batch.urls, onFinish: { ok in
                     batchNote = ok
@@ -1896,7 +1938,7 @@ struct DownloadList: View {
         let victims = pickedJobs
         guard !victims.isEmpty else { return }
         for j in victims { center.remove(j) }
-        batchNote = "已删除 \(victims.count) 个"
+        batchNote = "已移进文件回收站 \(victims.count) 个（还占着空间，确认不要了去回收站清空）"
         exitSelecting()
     }
 
@@ -1973,7 +2015,8 @@ struct DownloadList: View {
                                             kind: job.mediaKind,
                                             bytes: job.fileSize,
                                             duration: job.duration,
-                                            videoTier: vt, photoTier: pt)
+                                            videoTier: vt, photoTier: pt,
+                                            resolution: job.resolution)
             if let why = CompressQueue.shared.enqueue(req) {
                 batchNote = "✗ " + why + (added > 0 ? "（已加入 \(added) 个）" : "")
                 exitSelecting()

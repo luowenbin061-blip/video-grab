@@ -227,6 +227,21 @@ enum CompressPlan {
         return Int64(Double(base) * 1.1) + 200 * 1_048_576
     }
 
+    /// ★ v1.0.163：「压缩前的状态」记一笔 —— 用户要求"能不能记录压缩前的状态"。
+    /// 只记**参数**（大小 · 分辨率 · 码率），**不还原画面**：
+    /// 压缩有损不可逆，原画质的信息只存在于原文件里，删了就没了
+    /// （这条得跟用户说清，别让他以为以后能"修回来"）。
+    /// 抽成纯函数是为了能被离线考题验（码率换算、除零、缺分辨率都藏在这里）。
+    static func sourceInfoLine(bytes: Int64, resolution: String?, duration: Double) -> String {
+        var parts = ["原片 \(mb(bytes))MB"]
+        if let r = resolution, !r.isEmpty { parts.append(r) }
+        if bytes > 0, duration > 0 {
+            let kbps = Int((Double(bytes) * 8 / duration / 1000).rounded())
+            if kbps > 0 { parts.append("\(kbps)kbps") }
+        }
+        return parts.joined(separator: " · ")
+    }
+
     /// 界面上的体积（MB，一位小数）
     static func mb(_ bytes: Int64) -> String {
         String(format: "%.1f", Double(bytes) / 1_048_576)

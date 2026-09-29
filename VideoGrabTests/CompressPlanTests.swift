@@ -165,6 +165,28 @@ final class CompressPlanTests: XCTestCase {
         XCTAssertEqual(CompressPlan.maxQueue, 20)
     }
 
+    /// ★ v1.0.163：「压缩前的状态」文案组装。
+    /// 只记参数（大小/分辨率/码率）——**不还原画面**（有损不可逆，物理上做不到）。
+    func testSourceInfoLine() {
+        // 真机那条：49.6MB / 670 秒 → 621kbps
+        XCTAssertEqual(CompressPlan.sourceInfoLine(bytes: 52_009_370,
+                                                   resolution: "1280×2276", duration: 670),
+                       "原片 49.6MB · 1280×2276 · 621kbps")
+        // 没分辨率 → 跳过那一段
+        XCTAssertEqual(CompressPlan.sourceInfoLine(bytes: 52_009_370, resolution: nil, duration: 670),
+                       "原片 49.6MB · 621kbps")
+        // 空串也算没有
+        XCTAssertEqual(CompressPlan.sourceInfoLine(bytes: 52_009_370, resolution: "", duration: 670),
+                       "原片 49.6MB · 621kbps")
+        // 读不到时长（相册选来的，或图片）→ 不算码率，**绝不除零**
+        XCTAssertEqual(CompressPlan.sourceInfoLine(bytes: 3_145_728,
+                                                   resolution: "4032×3024", duration: 0),
+                       "原片 3.0MB · 4032×3024")
+        // 读不到大小 → 不报码率
+        XCTAssertFalse(CompressPlan.sourceInfoLine(bytes: 0, resolution: nil, duration: 670)
+                        .contains("kbps"))
+    }
+
     /// 开压前要腾的空间：必须**大于**成品本身的预估 ——
     /// 因为成品和原片会同时在（我们绝不自动删原片），还要给临时文件和系统留余量。
     func testSpaceNeededLeavesAMargin() {

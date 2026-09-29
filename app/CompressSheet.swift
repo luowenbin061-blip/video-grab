@@ -432,7 +432,8 @@ struct CompressSheet: View {
                                             kind: job.mediaKind,
                                             bytes: job.fileSize,
                                             duration: job.duration,
-                                            videoTier: tier, photoTier: photoTier)
+                                            videoTier: tier, photoTier: photoTier,
+                                            resolution: job.resolution)
             if let why = queue.enqueue(req) {
                 failed = (added > 0 ? "已加入 \(added) 个。" : "") + "✗ " + why
                 break
@@ -458,14 +459,23 @@ struct CompressSheet: View {
             var reqs: [CompressQueue.Request] = []
             for f in files {
                 var d = 0.0
+                var res: String?
                 if !isImage {
-                    d = (try? await AVURLAsset(url: f.url).load(.duration).seconds) ?? 0
+                    let asset = AVURLAsset(url: f.url)
+                    d = (try? await asset.load(.duration).seconds) ?? 0
+                    // ★ v1.0.163：顺手把原片分辨率也读出来（只为"记录压缩前的状态"）
+                    if let t = try? await asset.loadTracks(withMediaType: .video).first {
+                        let size = t.naturalSize.applying(t.preferredTransform)
+                        let w = Int(abs(size.width).rounded()), h = Int(abs(size.height).rounded())
+                        if w > 0, h > 0 { res = "\(w)×\(h)" }
+                    }
                 }
                 reqs.append(CompressQueue.Request(url: f.url,
                                                   title: Self.base(f.originalName),
                                                   kind: isImage ? .image : .video,
                                                   bytes: Self.fileSize(f.url), duration: d,
-                                                  videoTier: vt, photoTier: pt))
+                                                  videoTier: vt, photoTier: pt,
+                                                  resolution: res))
             }
             await MainActor.run {
                 preparing = false
@@ -735,6 +745,13 @@ private struct QueueRow: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // ★ v1.0.163：「压缩前的状态」——只在你**要做决定**（待处理）或**已留下**时显示，
+            //   平时不占行高。只记参数，不还原画面（压缩有损不可逆）。
+            if item.state == .pending || item.state == .kept {
+                Text(item.sourceLine)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
             }
 
             // ★ 待处理的四个动作（看效果 / 留下 / 存相册 / 存文件夹）

@@ -89,6 +89,9 @@ final class CompressQueue: ObservableObject {
         /// 这条源是**我们搬进来的**吗 → 压完就能删（用户的原件在相册里，不需要我们留一份）
         let ownsSource: Bool
         let srcBytes: Int64
+        /// ★ v1.0.163：原片的**分辨率**（"1280×2276"）—— 只用来**记录"压缩前的状态"**，
+        /// 不参与任何压缩计算（档位/尺寸都只按源码率和短边来）。
+        let srcResolution: String?
         let duration: Double
         let videoTier: CompressPlan.Tier
         let photoTier: CompressPlan.PhotoTier
@@ -102,13 +105,15 @@ final class CompressQueue: ObservableObject {
 
         init(id: UUID = UUID(), title: String, kind: DownloadJob.MediaKind,
              sourceName: String, ownsSource: Bool, srcBytes: Int64, duration: Double,
-             videoTier: CompressPlan.Tier, photoTier: CompressPlan.PhotoTier) {
+             videoTier: CompressPlan.Tier, photoTier: CompressPlan.PhotoTier,
+             srcResolution: String? = nil) {
             self.id = id
             self.title = title
             self.kind = kind
             self.sourceName = sourceName
             self.ownsSource = ownsSource
             self.srcBytes = srcBytes
+            self.srcResolution = srcResolution
             self.duration = duration
             self.videoTier = videoTier
             self.photoTier = photoTier
@@ -143,12 +148,19 @@ final class CompressQueue: ObservableObject {
                 : "\(tierLabel) · \(src)"
         }
 
+        /// ★ v1.0.163：**"压缩前的状态"** —— 压完那行会把原片的大小/分辨率/码率写出来。
+        /// 只记参数、不还原画面（有损不可逆）。文案组装走纯函数，能被离线考题验。
+        var sourceLine: String {
+            CompressPlan.sourceInfoLine(bytes: srcBytes, resolution: srcResolution, duration: duration)
+        }
+
         /// 落盘形态
         var record: Record {
             Record(id: id, title: title, kindKey: kind.key, sourceName: sourceName,
                    ownsSource: ownsSource, srcBytes: srcBytes, duration: duration,
                    videoTier: videoTier.rawValue, photoTier: photoTier.rawValue,
-                   state: state.rawValue, note: note, failure: failure, outputName: outputName)
+                   state: state.rawValue, note: note, failure: failure, outputName: outputName,
+                   srcResolution: srcResolution)
         }
     }
 
@@ -167,6 +179,9 @@ final class CompressQueue: ObservableObject {
         var note: String?
         var failure: String?
         var outputName: String?
+        /// ★ v1.0.163：原片分辨率。**可选类型**：v1.0.162 及更早落盘的队列里没有这个键，
+        /// 合成的解码器对可选字段用 decodeIfPresent，缺键不会让整份队列读不出来。
+        var srcResolution: String?
     }
 
     /// 入队请求（界面把选中的源 + 档位交进来）
@@ -178,6 +193,8 @@ final class CompressQueue: ObservableObject {
         let duration: Double
         let videoTier: CompressPlan.Tier
         let photoTier: CompressPlan.PhotoTier
+        /// ★ v1.0.163：原片分辨率（只记录）。**故意不给默认值**：漏传的调用点编译就报错。
+        let resolution: String?
     }
 
     // MARK: - 外面的接线（启动时接一次）
@@ -275,7 +292,8 @@ final class CompressQueue: ObservableObject {
 
         items.append(Item(title: r.title, kind: r.kind, sourceName: name, ownsSource: owns,
                           srcBytes: r.bytes, duration: r.duration,
-                          videoTier: r.videoTier, photoTier: r.photoTier))
+                          videoTier: r.videoTier, photoTier: r.photoTier,
+                          srcResolution: r.resolution))
         save()
         return nil
     }
@@ -459,7 +477,7 @@ final class CompressQueue: ObservableObject {
             guard let st else { return nil }
             let it = Item(id: r.id, title: r.title, kind: k, sourceName: r.sourceName,
                           ownsSource: r.ownsSource, srcBytes: r.srcBytes, duration: r.duration,
-                          videoTier: vt, photoTier: pt)
+                          videoTier: vt, photoTier: pt, srcResolution: r.srcResolution)
             it.state = st
             it.phase = (st == .running) ? Status.waiting.label : st.label
             it.note = r.note

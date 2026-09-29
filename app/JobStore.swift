@@ -52,6 +52,63 @@ enum JobStore {
         return v?.volumeAvailableCapacityForImportantUsage ?? 0
     }
 
+    // MARK: - ★ v1.0.163 文件回收站（删原片不再是永久删）
+
+    /// 回收站目录（第一次用时创建）。
+    /// 为什么就放在同一个目录下的 `trash/` 子目录：
+    ///   · 同一个卷上 `moveItem` 是**瞬时的**（不复制字节，删除几百 MB 的片子也是零耗时）；
+    ///   · `totalSize()` 本来就递归统计这个目录 → 回收站里占的空间**会如实算进"下载占用"**，
+    ///     用户清空之后数字才会掉下来（"删了但其实没省空间"这件事必须能被看见）。
+    static var trashDir: URL {
+        let d = dir.appendingPathComponent("trash", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    /// 把一个文件挪进回收站，返回**实际的回收站文件名**（重名会加 `-2` 后缀）；
+    /// `nil` = 文件不在或挪不动（调用方据此决定要不要直接删）。
+    static func moveToTrash(named name: String) -> String? {
+        let fm = FileManager.default
+        let src = file(named: name)
+        guard fm.fileExists(atPath: src.path) else { return nil }
+
+        var dest = trashDir.appendingPathComponent(name)
+        var i = 2
+        while fm.fileExists(atPath: dest.path) {
+            let ns = name as NSString
+            let base = ns.deletingPathExtension, ext = ns.pathExtension
+            let candidate = ext.isEmpty ? "\(base)-\(i)" : "\(base)-\(i).\(ext)"
+            dest = trashDir.appendingPathComponent(candidate)
+            i += 1
+        }
+        do {
+            try fm.moveItem(at: src, to: dest)
+            return dest.lastPathComponent
+        } catch {
+            return nil
+        }
+    }
+
+    /// 从回收站搬回程序目录。**同名文件已存在就不动**（返回 false，宁可失败也不覆盖东西）。
+    static func restoreFromTrash(fileName: String) -> Bool {
+        let fm = FileManager.default
+        let src = trashDir.appendingPathComponent(fileName)
+        guard fm.fileExists(atPath: src.path) else { return false }
+        let dest = file(named: fileName)
+        guard !fm.fileExists(atPath: dest.path) else { return false }
+        do {
+            try fm.moveItem(at: src, to: dest)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// 从回收站里真删掉一个（这一步之后恢复不了）
+    static func removeFromTrash(fileName: String) {
+        try? FileManager.default.removeItem(at: trashDir.appendingPathComponent(fileName))
+    }
+
     /// 删掉若干文件（不存在就跳过）
     static func remove(_ names: [String?]) {
         for n in names {
