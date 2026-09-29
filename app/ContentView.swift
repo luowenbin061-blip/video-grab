@@ -2246,10 +2246,14 @@ struct JobRow: View {
                         // 本地没东西可播（比如文件被删了），退回原始在线地址，
                         // 仍然走我们自己的播放器 —— 而不是丢给 Safari
                         Button {
-                            if let u = URL(string: job.sourceURL) {
-                                // ★ v1.0.164：带上这条记录的 Referer/UA/Cookie ——
-                                //   不带的话防盗链的站一律 403，用户只会以为"地址过期了"
-                                playSheet = SheetURL(url: u, headers: job.playbackHeaders)
+                            // ★★ v1.0.166：改走**播放代理**（同一条毛病，根因见 `MediaProxy`）——
+                            //   AVPlayer 自己带不上头（私有键对 HLS 不可靠）→ 防盗链的站必 403。
+                            let hs = job.playbackHeaders
+                            if let proxied = MediaProxy.wrap(job.sourceURL, headers: hs) {
+                                playSheet = SheetURL(url: proxied, headers: nil)
+                            } else if let u = URL(string: job.sourceURL) {
+                                // 代理起不来 → 退回原地址直连（头照旧带上）
+                                playSheet = SheetURL(url: u, headers: hs)
                             } else {
                                 job.show("地址不合法")
                             }

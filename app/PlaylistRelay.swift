@@ -365,8 +365,14 @@ enum PlaylistRelay {
     ///   搬过来之后就废了，**属于"把本来能播的搞坏"的那一类**（2026-09-28 外部审查指出，已核实）。
     ///   同类标签还有 `#EXT-X-MAP:URI="init.mp4"`（fMP4 的初始化段，漏了直接播不了）、
     ///   `#EXT-X-MEDIA:…URI="…"`、`#EXT-X-I-FRAME-STREAM-INF:URI="…"`。
-    ///   → 所以：**凡是 `URI="…"`，一律换成绝对远端地址**（原本已是绝对的会原样返回）。
-    private static func rewriteURIAttrs(_ line: String, base: URL) -> String {
+    ///   → 所以：**凡是 `URI="…"`，一律先解析成绝对地址**（原本已是绝对的会原样返回）。
+    ///
+    /// ★ v1.0.166：加了 `map`。原来这里只做「绝对化」（本文件自己用）；
+    ///   播放代理（`MediaProxy`）要的是「换成走本机代理的地址」——
+    ///   **映射不同、解析规则完全同一套**，所以抽成带 mapper 的版本，
+    ///   绝不写第二份 `URI="…"` 的解析。**默认参数 = 原来那个行为，一字未变。**
+    static func rewriteURIAttrs(_ line: String, base: URL,
+                                map: (URL) -> String = { $0.absoluteString }) -> String {
         guard line.contains("URI=\"") else { return line }
         var out = ""
         var rest = Substring(line)
@@ -376,7 +382,7 @@ enum PlaylistRelay {
             guard let r2 = rest.range(of: "\"") else { return line }   // 引号都没闭合 → 整行不动
             let uri = String(rest[..<r2.lowerBound])
             if let abs = M3U8Playlist.resolve(uri, relativeTo: base) {
-                out += abs.absoluteString
+                out += map(abs)
             } else {
                 out += uri
             }

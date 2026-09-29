@@ -437,6 +437,17 @@ final class LocalHTTPServer {
             }
         }
 
+        // ★★ v1.0.166：**播放代理** —— 把上游请求搬到本机来走一趟（防盗链的站也能播；
+        //   为什么非这样不可，根因见 `MediaProxy` 开头）。
+        //   放在**口令校验之后**：局域网访客不许拿它当开放代理用。
+        let rangeHeader = lines.first { $0.lowercased().hasPrefix("range:") }
+            .map { $0.dropFirst("range:".count).trimmingCharacters(in: .whitespaces) }
+        if let reply = MediaProxy.handle(rawTarget: String(parts[1]),
+                                         rangeHeader: rangeHeader) {
+            sendProxy(fd, reply, isHead: isHead)
+            return
+        }
+
         // 防目录穿越
         var rootPath = root.standardizedFileURL.path
         while rootPath.hasSuffix("/") { rootPath.removeLast() }
@@ -583,6 +594,23 @@ final class LocalHTTPServer {
         head += "Connection: close\r\n\r\n"
         _ = writeAll(fd, Data(head.utf8))
     }
+
+    /// ★ v1.0.166：代理响应 —— 把我们替播放器取回来的东西发出去（含 206 / Content-Range）。
+    private func sendProxy(_ fd: Int32, _ r: MediaProxy.Reply, isHead: Bool) {
+        var head = "HTTP/1.1 \(r.status) \(r.reason)\r\n"
+        head += "Content-Type: \(r.contentType)\r\n"
+        head += "Content-Length: \(r.body.count)\r\n"
+        if r.acceptRanges { head += "Accept-Ranges: bytes\r\n" }
+        if let cr = r.contentRange { head += "Content-Range: \(cr)\r\n" }
+        head += "Cache-Control: no-store\r\n"
+        head += "Connection: close\r\n\r\n"
+        guard writeAll(fd, Data(head.utf8)) else { return }
+        if isHead || r.body.isEmpty { return }
+        _ = writeAll(fd, r.body)
+    }
+
+    /// 给 `MediaProxy` 按后缀猜类型用（`mimeType(for:)` 是 private，开一个口子，**别抄第二份**）
+    static func mimeForProxy(_ ext: String) -> String { mimeType(for: ext) }
 
     private func sendSimple(_ fd: Int32, status: Int, reason: String) {
         var head = "HTTP/1.1 \(status) \(reason)\r\n"

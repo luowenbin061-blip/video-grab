@@ -180,6 +180,7 @@ struct RecycleBinView: View {
                 ForEach(bin.items) { rec in
                     BinRow(rec: rec,
                            onPlay: { play(rec) },
+                           onRedownload: { k in redownload(rec, kind: k) },
                            onRestore: { restore(rec) },
                            onDrop: { drop(rec) },
                            onCopy: { copyURL(rec) })
@@ -202,14 +203,36 @@ struct RecycleBinView: View {
     }
 
     private func play(_ rec: BinRecord) {
+        // ★★ v1.0.166：改走**播放代理** —— 上游请求由本机服务带队去取。
+        //   为什么非这样不可：AVPlayer 自己**带不上头**（私有键 `AVURLAssetHTTPHeaderFieldsKey`
+        //   对 HLS 的内部请求不可靠）→ 真机上就是 403；而**下载**那条路
+        //   （我们自己用 URLSession 取）一直是通的。根因见 `MediaProxy` 开头。
+        //   代理起不来才退回原地址直连（头照旧带上，能带多少算多少）。
+        let headers = DownloadJob.ctxHeaders(ua: rec.job.ua ?? "",
+                                            referer: rec.job.referrer,
+                                            cookie: rec.job.cookie)
+        if let proxied = MediaProxy.wrap(rec.job.sourceURL, headers: headers) {
+            playItem = PlayReq(id: rec.id.uuidString, url: proxied, headers: nil)
+            return
+        }
         guard let u = URL(string: rec.job.sourceURL) else {
             note = "这条的地址不合法，没法播"
             return
         }
-        playItem = PlayReq(id: rec.id.uuidString, url: u,
-                           headers: DownloadJob.ctxHeaders(ua: rec.job.ua ?? "",
-                                                           referer: rec.job.referrer,
-                                                           cookie: rec.job.cookie))
+        playItem = PlayReq(id: rec.id.uuidString, url: u, headers: headers)
+    }
+
+    /// **「重新下载」**：用存下来的地址 + Referer/UA/Cookie 再下一份。
+    /// ★ 这条路**一直是通的**（那条「56 个分片 + AES 钥匙全拿到」的记录就是铁证）——
+    ///   所以它是"真能把片子拿回来"的那个按钮，不依赖播放链路的任何改动。
+    private func redownload(_ rec: BinRecord, kind: DownloadJob.MediaKind?) {
+        downloads.add(title: rec.job.title,
+                      url: rec.job.sourceURL,
+                      referrer: rec.job.referrer ?? "",
+                      ua: rec.job.ua ?? "",
+                      cookie: rec.job.cookie ?? "",
+                      kind: kind)
+        note = "已开始重新下载「\(rec.job.title)」—— 去下载页看进度"
     }
 
     private func restore(_ rec: BinRecord) {
@@ -244,6 +267,9 @@ private struct BinRow: View {
 
     let rec: BinRecord
     let onPlay: () -> Void
+    /// ★ v1.0.166：把已经算好的类别回传给外层 —— 外层就不必自己去建 `DownloadJob`
+    ///   （那属于「从非主线程隔离的上下文调主线程接口」，是编译风险点）。
+    let onRedownload: (DownloadJob.MediaKind) -> Void
     let onRestore: () -> Void
     let onDrop: () -> Void
     let onCopy: () -> Void
@@ -290,6 +316,13 @@ private struct BinRow: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("播放")
             }
+            // ★ v1.0.166：重新下载（这条路一直通 —— 不依赖播放链路）
+            Button { onRedownload(k) } label: {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 19))
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("重新下载")
             Button { onRestore() } label: {
                 Image(systemName: "arrow.uturn.backward.circle")
                     .font(.system(size: 19))
