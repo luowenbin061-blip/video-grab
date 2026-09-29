@@ -467,6 +467,23 @@ final class LocalHTTPServer {
             return
         }
 
+        // ★ v1.0.169 缩略图：磁盘上是 `thumb_<uuid>.jpg`（就躺在共享目录里），
+        //   但页面通过 `__thumb/` 这个虚拟路径取 —— 这样目录列表里不会混进一堆缩略图，
+        //   也能给它一个明确的 image/jpeg（普通文件走的是 octet-stream，<img> 可能不认）。
+        //   只认「thumb_ 开头 + .jpg 结尾 + 不含 /」这一个形状：挡掉目录穿越和任意文件读取。
+        if path.hasPrefix("__thumb/") {
+            let name = String(path.dropFirst("__thumb/".count))
+            if name.hasPrefix("thumb_"), name.hasSuffix(".jpg"), !name.contains("/") {
+                if let data = try? Data(contentsOf: JobStore.file(named: name)) {
+                    sendBody(fd, status: 200, reason: "OK", contentType: "image/jpeg",
+                             body: data, isHead: isHead)
+                    return
+                }
+            }
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+
         // ★ v1.0.127 边下边播：这条清单是**现场生成**的 —— 每下完一个分片它就变长。
         //   所以不能当普通文件发（那只会发出第一次写下的内容，播放器播完就停）。
         //   路径形如 `__live/<任务id>.m3u8`；磁盘上并没有这个目录。
@@ -654,7 +671,12 @@ final class LocalHTTPServer {
         """)
     }
 
-    /// 目录列表页 —— 电脑浏览器打开后直接点文件名就能下载 / 在线播放
+    /// 目录列表页 —— 电脑浏览器打开后直接点就能播 / 下载。
+    ///
+    /// ★ v1.0.169：从「一行一个文件名」改成**卡片网格**（缩略图 + 时长 + 分辨率 + 时间，
+    ///   加搜索 / 排序 / 类型筛选）。数据 = 「目录里有什么文件」+「`records.json` 里的对应记录」——
+    ///   记录里存的时长 / 分辨率 / 下载时间 / 缩略图，这一页以前一个都没用上。
+    ///   页面本体（HTML/CSS/JS）在 `LanPage`，这里只负责把每张卡的字段算出来。
     private func sendDirectoryList(_ fd: Int32, dir: URL, relPath: String, isLocal: Bool) {
         let fm = FileManager.default
         let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
@@ -662,43 +684,80 @@ final class LocalHTTPServer {
         let prefix = (lanEnabled && !isLocal && !token.isEmpty) ? "/\(token)" : ""
         let base = relPath.isEmpty ? "" : relPath + "/"
 
-        var rows = ""
+        // 文件名 → 记录：缩略图、时长、分辨率、片名都靠它。
+        // ★ 只读 `JobStore` / `JobRecord`（非隔离）—— 这条线程不是主线程，不能碰 DownloadJob。
+        var byFile: [String: JobRecord] = [:]
+        for r in JobStore.load() {
+            if let n = r.outputName, !n.isEmpty { byFile[n] = r }
+        }
+
+        var items: [LanPage.Item] = []
         for n in names.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
             let full = dir.appendingPathComponent(n)
             var d: ObjCBool = false
             guard fm.fileExists(atPath: full.path, isDirectory: &d) else { continue }
-            let enc = n.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? n
-            rows += "<li><a href=\"\(prefix)/\(base)\(enc)\">"
-            rows += d.boolValue ? "📁 \(Self.esc(n))/</a>" : "🎬 \(Self.esc(n))</a>"
-            if !d.boolValue { rows += "<span class=size>\(Self.sizeText(full))</span>" }
-            rows += "</li>\n"
-        }
-        if rows.isEmpty { rows = "<li class=size>（这个目录里还没有文件）</li>\n" }
+            // 缩略图是"附件"不是"内容" —— 以前它们混在列表里，打开一屏全是 thumb_xxx.jpg
+            if !d.boolValue, n.hasPrefix("thumb_"), n.hasSuffix(".jpg") { continue }
 
-        var html = """
-        <!doctype html><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>视频抓取 · 文件</title>
-        <style>
-        body{font:15px -apple-system,system-ui,"PingFang SC",sans-serif;margin:26px;max-width:840px;color:#111}
-        h2{font-size:17px;margin:0 0 14px} ul{list-style:none;padding:0;margin:0}
-        li{margin:12px 0;line-height:1.4}
-        a{color:#0a66ff;text-decoration:none;word-break:break-all}
-        a:hover{text-decoration:underline}
-        .size{color:#888;font-size:13px;margin-left:10px}
-        .back{display:inline-block;margin-bottom:16px;font-size:14px}
-        .hint{margin-top:30px;color:#888;font-size:13px;line-height:1.6}
-        </style>
-        <h2>📂 \(relPath.isEmpty ? "根目录" : Self.esc(relPath))</h2>
-        """
+            let enc = n.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? n
+            let url = "\(prefix)/\(base)\(enc)"
+
+            if d.boolValue {
+                items.append(LanPage.Item(name: n, url: url, kind: "dir",
+                                          dur: 0, dim: "", bytes: 0, time: 0, thumb: ""))
+                continue
+            }
+
+            let rec = byFile[n]
+            let attrs = try? fm.attributesOfItem(atPath: full.path)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            // 优先用记录里"下完的时刻"，没有就退回文件的修改时间
+            let stamp = rec?.finishedAt ?? rec?.createdAt
+            // 缩略图只有真在磁盘上才给地址，不然 <img> 会去请求一个 404
+            var thumb = ""
+            if let r = rec {
+                let t = JobStore.thumbName(for: r.id)
+                if JobStore.exists(named: t) { thumb = "\(prefix)/__thumb/\(t)" }
+            }
+            let display = rec.flatMap { $0.title.isEmpty ? nil : $0.title } ?? n
+
+            items.append(LanPage.Item(name: display, url: url,
+                                      kind: Self.kindKey(rec: rec, file: n),
+                                      dur: rec?.duration ?? 0,
+                                      dim: rec?.resolution ?? "",
+                                      bytes: size,
+                                      time: stamp?.timeIntervalSince1970 ?? mtime,
+                                      thumb: thumb))
+        }
+
+        let heading = relPath.isEmpty ? "我的下载" : (relPath as NSString).lastPathComponent
+        let sub = relPath.isEmpty
+            ? "手机上的「视频抓取」正在共享这个目录"
+            : "共享目录 / \(relPath)"
+        var back: String? = nil
         if !relPath.isEmpty {
             let parent = (relPath as NSString).deletingLastPathComponent
-            html += "<a class=back href=\"\(prefix)/\(parent.isEmpty ? "" : parent + "/")\">← 返回上一层</a>\n"
+            back = "\(prefix)/\(parent.isEmpty ? "" : parent + "/")"
         }
-        html += "<ul>\n\(rows)</ul>\n"
-        html += "<p class=hint>手机上的「视频抓取」正在共享这个目录。点文件名即可下载，"
-        html += "mp4 一般能直接在线播放。<br>要关掉共享，回到手机 App 点「关闭共享」。</p>\n"
+
+        let html = LanPage.html(
+            items: items, heading: heading, sub: sub, backURL: back,
+            note: "这一页是手机上的「视频抓取」共享出来的。点缩略图在线播放（mp4 能直接播），"
+                + "点卡片选中后可批量下载，缩略图右上角的 ↓ 下载单个。"
+                + "要关掉共享，回手机 App 点「关闭共享」。")
         sendHTML(fd, status: 200, reason: "OK", html: html)
+    }
+
+    /// 卡片上的类型标签：优先信记录里建卡时定下的类别，没有就按扩展名猜。
+    private static func kindKey(rec: JobRecord?, file: String) -> String {
+        if let k = rec?.kind, ["video", "image", "audio", "doc"].contains(k) { return k }
+        switch (file as NSString).pathExtension.lowercased() {
+        case "mp4", "mov", "m4v", "mkv", "avi", "ts", "flv", "webm", "m3u8": return "video"
+        case "jpg", "jpeg", "png", "gif", "webp", "heic", "bmp": return "image"
+        case "mp3", "m4a", "aac", "wav", "flac", "ogg": return "audio"
+        default: return "doc"
+        }
     }
 
     private static func sizeText(_ url: URL) -> String {
@@ -740,6 +799,12 @@ final class LocalHTTPServer {
         case "part": return "video/mp2t"
         case "m4s": return "video/iso.segment"
         case "mp4", "m4v": return "video/mp4"
+        // ★ v1.0.169：图片也给对类型（缩略图走 __thumb 已经有 jpeg，这里管普通图片文件）
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
         default: return "application/octet-stream"
         }
     }

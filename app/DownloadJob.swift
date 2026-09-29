@@ -500,8 +500,10 @@ final class DownloadJob: ObservableObject, Identifiable {
         return JobStore.file(named: n)
     }
 
-    /// 缩略图按任务 id 命名 —— 跟标题无关，以后改标题也不会错位
-    static func thumbName(for id: UUID) -> String { "thumb_\(id.uuidString).jpg" }
+    /// 缩略图按任务 id 命名 —— 跟标题无关，以后改标题也不会错位。
+    /// ★ v1.0.169：实现搬去 `JobStore`（本机 HTTP 服务要在后台线程用它拼缩略图地址，
+    ///   而本类是 `@MainActor`，后台碰不得）。这里保留同一个入口，调用方不用改。
+    static func thumbName(for id: UUID) -> String { JobStore.thumbName(for: id) }
 
     func saveToPhotos() async {
         guard let u = exportURL() else {

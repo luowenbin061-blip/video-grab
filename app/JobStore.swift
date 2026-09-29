@@ -35,6 +35,13 @@ enum JobStore {
         return FileManager.default.fileExists(atPath: file(named: name).path)
     }
 
+    /// 缩略图文件名（按任务 id 命名，跟标题无关 —— 改标题不会错位）。
+    ///
+    /// ★ v1.0.169：从 `DownloadJob` 搬到这里。本机 HTTP 服务跑在**后台线程**，
+    ///   要在那儿拼缩略图地址，而 `DownloadJob` 是 `@MainActor` 的，后台碰不得。
+    ///   `DownloadJob.thumbName(for:)` 保留原入口转发过来，调用方一行都不用改。
+    static func thumbName(for id: UUID) -> String { "thumb_\(id.uuidString).jpg" }
+
     static func size(of name: String?) -> Int64 {
         guard let name, !name.isEmpty else { return 0 }
         let a = try? FileManager.default.attributesOfItem(atPath: file(named: name).path)

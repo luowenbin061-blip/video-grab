@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>视频抓取 · 文件</title>
+<style>
+:root{
+  --blue-500:#4c8dff; --blue-400:#6ba1ff;
+  --n-0:#0e1014; --n-1:#161920; --n-2:#1e222b; --n-3:#272c37;
+  --t-1:#eef1f6; --t-2:#9aa3b2; --t-3:#6b7382;
+  --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.18);
+  --ok:#3fb950;
+
+  --space-1:.25rem; --space-2:.5rem; --space-3:.75rem; --space-4:1rem;
+  --space-6:1.5rem; --space-8:2rem;
+  --r-md:8px; --r-lg:12px; --r-xl:16px;
+
+  --fs-xs:.75rem; --fs-sm:.875rem; --fs-base:1rem; --fs-lg:1.25rem; --fs-xl:1.563rem;
+
+  --color-primary:var(--blue-500);
+  --color-surface:var(--n-1);
+  --card-bg:var(--n-1); --card-line:var(--line); --card-radius:var(--r-lg);
+  --dur-fast:150ms; --dur-med:250ms; --ease-out:cubic-bezier(.22,.61,.36,1);
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --n-0:#f6f7f9; --n-1:#ffffff; --n-2:#f0f2f5; --n-3:#e4e7ec;
+    --t-1:#12161d; --t-2:#5b6472; --t-3:#8a92a0;
+    --line:rgba(0,0,0,.09); --line-2:rgba(0,0,0,.2);
+  }
+}
+*,*::before,*::after{box-sizing:border-box}
+body{
+  margin:0; background:var(--n-0); color:var(--t-1);
+  font:400 var(--fs-base)/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+main{max-width:1180px;margin:0 auto;padding:var(--space-8) var(--space-6) var(--space-8)}
+
+header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin-bottom:var(--space-6)}
+h1{font-size:var(--fs-lg);font-weight:500;letter-spacing:-.01em;margin:0;flex:1 1 12rem}
+h1 small{display:block;font-size:var(--fs-xs);font-weight:400;color:var(--t-3);letter-spacing:0;margin-top:2px}
+
+.search{
+  flex:1 1 16rem;max-width:22rem;position:relative;
+}
+.search input{
+  width:100%;padding:.5rem .75rem .5rem 2.1rem;font:inherit;font-size:var(--fs-sm);
+  background:var(--n-2);color:var(--t-1);border:1px solid var(--line);border-radius:var(--r-md);
+  transition:border-color var(--dur-fast) var(--ease-out),background var(--dur-fast) var(--ease-out);
+}
+.search input::placeholder{color:var(--t-3)}
+.search input:hover{border-color:var(--line-2)}
+.search input:focus{outline:none;border-color:var(--color-primary);background:var(--n-1)}
+.search svg{position:absolute;left:.7rem;top:50%;translate:0 -50%;color:var(--t-3);pointer-events:none}
+
+.seg{display:flex;gap:2px;padding:3px;background:var(--n-2);border-radius:var(--r-md);border:1px solid var(--line)}
+.seg button{
+  font:inherit;font-size:var(--fs-xs);padding:.35rem .7rem;border:0;border-radius:6px;
+  background:transparent;color:var(--t-2);cursor:pointer;
+  transition:background var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);
+}
+.seg button:hover{color:var(--t-1);background:var(--n-3)}
+.seg button[aria-pressed="true"]{background:var(--color-primary);color:#fff}
+.seg button:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
+
+.grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,15rem),1fr));
+  gap:var(--space-4);
+}
+.card{
+  background:var(--card-bg);border:1px solid var(--card-line);border-radius:var(--card-radius);
+  overflow:hidden;cursor:pointer;position:relative;
+  opacity:0;translate:0 .75rem;animation:reveal .45s var(--ease-out) forwards;
+  transition:border-color var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out),background var(--dur-fast) var(--ease-out);
+}
+@keyframes reveal{to{opacity:1;translate:0 0}}
+.card:hover{border-color:var(--line-2);transform:translateY(-2px);background:var(--n-2)}
+.card:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
+.card:active{transform:translateY(0) scale(.995)}
+.card[aria-selected="true"]{border-color:var(--color-primary);background:var(--n-2)}
+
+.thumb{
+  position:relative;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
+  background:var(--n-3);overflow:hidden;
+}
+.thumb .icon{width:2.2rem;height:2.2rem;border-radius:50%;background:rgba(0,0,0,.5);
+  display:flex;align-items:center;justify-content:center;opacity:0;
+  transition:opacity var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out)}
+.card:hover .thumb .icon,.card:focus-visible .thumb .icon{opacity:1;transform:scale(1.06)}
+.dur{position:absolute;right:.4rem;bottom:.4rem;font-size:var(--fs-xs);line-height:1.2;
+  padding:.1rem .35rem;border-radius:4px;background:rgba(0,0,0,.72);color:#fff;
+  font-variant-numeric:tabular-nums}
+.tick{position:absolute;left:.4rem;top:.4rem;width:1.1rem;height:1.1rem;border-radius:50%;
+  background:var(--color-primary);display:none;align-items:center;justify-content:center}
+.card[aria-selected="true"] .tick{display:flex}
+
+.body{padding:var(--space-3) var(--space-3) var(--space-4)}
+.name{font-size:var(--fs-sm);font-weight:500;margin:0 0 .15rem;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{font-size:var(--fs-xs);color:var(--t-2);margin:0;font-variant-numeric:tabular-nums}
+.time{font-size:var(--fs-xs);color:var(--t-3);margin:.2rem 0 0}
+
+footer{
+  position:sticky;bottom:0;margin-top:var(--space-6);padding:var(--space-3) 0;
+  display:flex;align-items:center;gap:var(--space-3);
+  font-size:var(--fs-sm);color:var(--t-2);
+  background:linear-gradient(to top,var(--n-0) 60%,transparent);
+}
+.btn{
+  font:inherit;font-size:var(--fs-sm);padding:.45rem .9rem;border-radius:var(--r-md);
+  border:1px solid var(--line-2);background:transparent;color:var(--t-1);cursor:pointer;
+  transition:background var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out),opacity var(--dur-fast) var(--ease-out);
+}
+.btn:hover:not(:disabled){background:var(--n-2);border-color:var(--t-3)}
+.btn:active:not(:disabled){transform:scale(.98)}
+.btn:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.primary{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+.btn.primary:hover:not(:disabled){background:var(--blue-400);border-color:var(--blue-400)}
+.hint{margin-left:auto;font-size:var(--fs-xs);color:var(--t-3)}
+.empty{grid-column:1/-1;padding:var(--space-8) 0;text-align:center;color:var(--t-3);font-size:var(--fs-sm)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+@media (max-width:640px){
+  main{padding:var(--space-4) var(--space-3)}
+  .hint{display:none}
+}
+</style>
+
+<main>
+  <h2 class="sr-only">手机共享出来的视频与图片文件列表，可以搜索、排序、筛选，点缩略图播放，点卡片选中后批量下载。</h2>
+
+  <header>
+    <h1>视频抓取 · 文件<small id="sub">正在共享 iPhone 上的下载目录</small></h1>
+    <div class="search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M16.5 16.5L21 21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <input id="q" type="search" placeholder="搜索文件名" aria-label="搜索文件名">
+    </div>
+    <div class="seg" id="sort" role="group" aria-label="排序方式">
+      <button data-k="time" aria-pressed="true">最新</button>
+      <button data-k="size" aria-pressed="false">最大</button>
+      <button data-k="name" aria-pressed="false">名称</button>
+    </div>
+    <div class="seg" id="kind" role="group" aria-label="类型筛选">
+      <button data-k="all" aria-pressed="true">全部</button>
+      <button data-k="video" aria-pressed="false">视频</button>
+      <button data-k="image" aria-pressed="false">图片</button>
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    <span id="cnt">0 个文件</span>
+    <button class="btn primary" id="dl" disabled>下载选中</button>
+    <button class="btn" id="clr" disabled>取消选择</button>
+    <span class="hint">点缩略图在线播放 · 点卡片选中</span>
+  </footer>
+</main>
+
+<script>
+var ICON='<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7l9 5-9 5z" fill="#fff"/></svg>';
+var TICK='<svg width="9" height="9" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+var D=[
+  {n:"示例视频 A",d:"12:34",r:"1280×720",s:313.7,t:9,k:"video"},
+  {n:"示例视频 B",d:"4:20",r:"1920×1080",s:42.1,t:8,k:"video"},
+  {n:"示例片段 C",d:"2:45",r:"854×480",s:15.5,t:7,k:"video"},
+  {n:"封面截图.png",d:"",r:"1920×1080",s:1.2,t:6,k:"image"},
+  {n:"示例视频 D",d:"20:35",r:"1920×1080",s:688.4,t:5,k:"video"},
+  {n:"示例视频 E",d:"7:08",r:"1280×720",s:120.6,t:4,k:"video"},
+  {n:"示例视频 F",d:"3:02",r:"1280×720",s:38.9,t:3,k:"video"},
+  {n:"贴图.png",d:"",r:"750×1334",s:.6,t:2,k:"image"},
+  {n:"示例视频 G",d:"15:47",r:"1920×1080",s:402.3,t:1,k:"video"}
+];
+var sort="time",kind="all",q="",sel={};
+function size(b){return b>=1024?(b/1024).toFixed(2)+" GB":Math.round(b)+" MB"}
+function ago(t){return t===9?"今天 18:41":t===8?"今天 16:52":t===7?"昨天 21:07":t===6?"昨天 14:20":t===5?"前天 19:33":t===4?"9月27日":t===3?"9月26日":t===2?"9月25日":"9月23日"}
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+
+function render(){
+  var list=D.filter(function(x){
+    if(kind!=="all"&&x.k!==kind)return false;
+    if(q&&x.n.toLowerCase().indexOf(q.toLowerCase())<0)return false;
+    return true;
+  });
+  list.sort(function(a,b){
+    if(sort==="name")return a.n.localeCompare(b.n,"zh");
+    if(sort==="size")return b.s-a.s;
+    return b.t-a.t;
+  });
+  var g=document.getElementById("grid");
+  if(!list.length){
+    g.innerHTML='<p class="empty">没有匹配的文件</p>';
+  }else{
+    g.innerHTML=list.map(function(x){
+      var i=D.indexOf(x),on=sel[i]?"true":"false";
+      return '<article class="card" tabindex="0" role="option" aria-selected="'+on+'" data-i="'+i+'" style="animation-delay:'+Math.min(i,8)*55+'ms">'+
+        '<div class="thumb"><div class="icon">'+ICON+'</div>'+
+        '<span class="tick">'+TICK+'</span>'+
+        (x.d?'<span class="dur">'+x.d+'</span>':'')+
+        '</div><div class="body"><p class="name">'+esc(x.n)+'</p>'+
+        '<p class="meta">'+x.r+' · '+size(x.s)+'</p>'+
+        '<p class="time">'+ago(x.t)+'</p></div></article>';
+    }).join("");
+  }
+  var n=Object.keys(sel).length;
+  document.getElementById("cnt").textContent=n?("已选 "+n+" 个 · 共 "+list.length+" 个"):(list.length+" 个文件");
+  document.getElementById("dl").disabled=!n;
+  document.getElementById("clr").disabled=!n;
+}
+
+function toggle(i){ if(sel[i])delete sel[i]; else sel[i]=1; render(); }
+
+document.getElementById("grid").addEventListener("click",function(e){
+  var c=e.target.closest(".card"); if(!c)return;
+  toggle(c.dataset.i);
+});
+document.getElementById("grid").addEventListener("dblclick",function(e){
+  var c=e.target.closest(".card"); if(!c)return;
+  alert("（设计稿）这里会在线播放：" + D[c.dataset.i].n);
+});
+document.getElementById("grid").addEventListener("keydown",function(e){
+  var c=e.target.closest(".card"); if(!c)return;
+  if(e.key===" "||e.key==="Enter"){e.preventDefault();toggle(c.dataset.i)}
+});
+document.getElementById("q").addEventListener("input",function(){q=this.value;render()});
+["sort","kind"].forEach(function(id){
+  var g=document.getElementById(id);
+  g.addEventListener("click",function(e){
+    var b=e.target.closest("button"); if(!b)return;
+    g.querySelectorAll("button").forEach(function(o){o.setAttribute("aria-pressed",o===b?"true":"false")});
+    if(id==="sort")sort=b.dataset.k; else kind=b.dataset.k;
+    render();
+  });
+});
+document.getElementById("clr").addEventListener("click",function(){sel={};render()});
+document.getElementById("dl").addEventListener("click",function(){
+  alert("（设计稿）这里会下载选中的 "+Object.keys(sel).length+" 个文件");
+});
+render();
+</script>
+</html>
