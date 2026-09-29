@@ -103,15 +103,28 @@ final class CompressPlanTests: XCTestCase {
         }
     }
 
-    /// 「还要多久」：算不出来就返回 nil（宁可不说，也不编一个时间给他）
+    /// 「还要多久」的单位规则（v1.0.162 用户点名改的）：
+    /// **不满 1 分钟精确到秒**、1 小时以内用分钟、超过 1 小时用"小时 + 分"；
+    /// 算不出来就返回 nil（宁可不说，也不编一个时间给他）。
     func testEtaText() {
         XCTAssertNil(CompressPlan.etaText(doneSec: 0, totalSec: 600, speed: 0))
         XCTAssertNil(CompressPlan.etaText(doneSec: 0, totalSec: 0, speed: 1))
-        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 50, speed: 1), "不到 1 分钟")
-        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 600, speed: 1), "约 10 分钟")
-        // 干了 60 秒、总 600 秒、2 倍速 → 还剩 270 秒 ≈ 5 分钟
-        XCTAssertEqual(CompressPlan.etaText(doneSec: 60, totalSec: 600, speed: 2), "约 5 分钟")
-        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 7200, speed: 1), "约 2 小时")
+        // ★ 不满一分钟 → 精确到秒（以前一律"不到 1 分钟"）
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 50, speed: 1), "50 秒")
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 59, speed: 1), "59 秒")
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 570, totalSec: 600, speed: 1), "30 秒")
+        // 刚起步（剩 0 秒也不会写成"0 秒"）
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 10, totalSec: 10, speed: 1), "1 秒")
+        // ≥ 1 分钟 → 分钟
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 61, totalSec: 121, speed: 1), "1 分钟")
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 600, speed: 1), "10 分钟")
+        // 干了 60 秒、总 600 秒、2 倍速 → 还剩 270 秒 ≈ 5 分钟（4.5 进位）
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 60, totalSec: 600, speed: 2), "5 分钟")
+        // ≥ 1 小时 → 小时 + 分
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 7200, speed: 1), "2 小时")
+        XCTAssertEqual(CompressPlan.etaText(doneSec: 0, totalSec: 7500, speed: 1), "2 小时 5 分")
+        // 返回值里**不带**"还要 / 约" —— 由调用方拼，避免"还要 约 3 分钟"
+        XCTAssertFalse(CompressPlan.etaText(doneSec: 0, totalSec: 600, speed: 1)!.contains("约"))
     }
 
     /// 图片：每档预估都得比原图小，而且档位越激进估得越小

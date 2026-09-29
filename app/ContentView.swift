@@ -1630,6 +1630,8 @@ struct DownloadList: View {
     ///   以前是逐个弹保存面板（`exportURL` / `exportRest` / `exportDone`），
     ///   用户反馈"一个文件一次确认"，太烦。
     @State private var exportBatch: SheetURLs?
+    /// ★ v1.0.162：下载页批量加入压缩队列 —— 先弹一次档位（这页没有档位控件）
+    @State private var showCompressTiers = false
 
     /// 搜索过滤（按标题或原始地址）+ 分类过滤。
     /// ★ 过滤后左滑删除必须**按对象**删、不能按下标删 —— 过滤后的下标跟
@@ -1781,6 +1783,19 @@ struct DownloadList: View {
             }
             // ★ v1.0.159：批量导出 = **一次交一批**，系统只问一次"存到哪个文件夹"。
             //   完成回调只有"成功/取消"两种结果（系统不逐个报），所以提示里不编个数之外的细节。
+            // ★ v1.0.162：先把档位问清楚再入队 —— "未经同意替他选档"也是他抱怨的那类事。
+            //   弹窗里选完会写进 UserDefaults，`batchCompress()` 从那儿读（单一来源）。
+            .sheet(isPresented: $showCompressTiers) {
+                CompressTierSheet(videoCount: compressableVideos.count,
+                                  photoCount: compressableImages.count,
+                                  videoBytes: compressableVideos.map(\.fileSize).max() ?? 0,
+                                  videoDuration: compressableVideos.max { $0.fileSize < $1.fileSize }?.duration ?? 0,
+                                  photoBytes: compressableImages.map(\.fileSize).max() ?? 0,
+                                  onDone: {
+                                      showCompressTiers = false
+                                      batchCompress()
+                                  })
+            }
             .sheet(item: $exportBatch) { batch in
                 DocumentExporter(urls: batch.urls, onFinish: { ok in
                     batchNote = ok
@@ -1808,6 +1823,14 @@ struct DownloadList: View {
                 Button(allShownPicked ? "取消全选" : "全选") { toggleSelectAll() }
                     .font(.system(size: 13))
                     .disabled(shownJobs.isEmpty)
+                // ★★ v1.0.162：批量丢进压缩队列（以前只能回压缩卡里一条条挑）
+                Button {
+                    showCompressTiers = true
+                } label: {
+                    Label("压缩", systemImage: "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 13))
+                }
+                .disabled(picked.isEmpty)
             }
             HStack(spacing: 8) {
                 Button(role: .destructive) { batchDelete() } label: {
@@ -1908,6 +1931,65 @@ struct DownloadList: View {
         }
         batchNote = "选了 \(urls.count) 个 —— 接下来只需选一次文件夹"
         exportBatch = SheetURLs(urls: urls)
+    }
+
+    // MARK: - ★ v1.0.162 批量加入压缩队列
+
+    /// 选中里**能压的**：是视频/图片、而且成品文件真的在。
+    /// 没下完的、失败的、音频/文档一律跳过 —— 但会**说清跳过了几个**（不静默）。
+    private var compressablePicked: [DownloadJob] {
+        pickedJobs.filter {
+            ($0.mediaKind == .video || $0.mediaKind == .image)
+                && $0.outputName != nil && JobStore.size(of: $0.outputName) > 0
+        }
+    }
+    private var compressableVideos: [DownloadJob] {
+        compressablePicked.filter { $0.mediaKind == .video }
+    }
+    private var compressableImages: [DownloadJob] {
+        compressablePicked.filter { $0.mediaKind == .image }
+    }
+
+    /// 把选中的这些丢进压缩队列（档位从"上次选的"读 —— 弹窗刚写进去的就是它）
+    private func batchCompress() {
+        let vt = CompressPlan.Tier(
+            rawValue: UserDefaults.standard.string(forKey: CompressPlan.videoTierKey) ?? "") ?? .balance
+        let pt = CompressPlan.PhotoTier(
+            rawValue: UserDefaults.standard.string(forKey: CompressPlan.photoTierKey) ?? "") ?? .normal
+
+        let all = pickedJobs
+        let ok = compressablePicked
+        let skipped = all.count - ok.count
+        guard !ok.isEmpty else {
+            batchNote = "选中的这 \(all.count) 个都压不了（还没下完、或不是视频/图片）"
+            return
+        }
+
+        var added = 0
+        for job in ok {
+            guard let name = job.outputName else { continue }
+            let req = CompressQueue.Request(url: JobStore.file(named: name),
+                                            title: job.title,
+                                            kind: job.mediaKind,
+                                            bytes: job.fileSize,
+                                            duration: job.duration,
+                                            videoTier: vt, photoTier: pt)
+            if let why = CompressQueue.shared.enqueue(req) {
+                batchNote = "✗ " + why + (added > 0 ? "（已加入 \(added) 个）" : "")
+                exitSelecting()
+                return
+            }
+            added += 1
+        }
+
+        if let why = CompressQueue.shared.start() {
+            batchNote = "已加入 \(added) 个，但开不了：\(why)"
+        } else {
+            batchNote = "已加入压缩队列 \(added) 个"
+                + (skipped > 0 ? "，跳过 \(skipped) 个（还没下完或不是视频/图片）" : "")
+                + "。到工具箱「压画质省空间」里看进度。"
+        }
+        exitSelecting()
     }
 
     /// 顶部存储条：这个 App 占了多少、设备还剩多少。

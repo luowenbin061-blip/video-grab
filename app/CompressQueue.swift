@@ -19,6 +19,9 @@ import SwiftUI
 ///   · **开工前查空间**：成品和原片同时在，不够就明确拦下来说差多少。
 ///   · **重启后保持暂停**（跟下载任务同一个约定）：能看到"还有 N 个没压"，点「继续」才跑。
 ///   · 保活（画中画小窗）默认开，设置里能关（键 `compressKeepAlive`）。
+///   · ★★ **压完先不收**：进 `.pending`「待你决定」，行上给
+///     看效果 / 留下（收进下载列表）/ 存相册 / 存文件夹 / 丢弃
+///     —— 用户明确不要"未经同意就自动存进下载页"。
 ///
 /// ══ 一条硬约束（写在最前面，别指望能做）══
 ///   ffmpeg 是**在进程内**跑的阻塞调用（不是子进程），**没法从外面掐断** ——
@@ -32,15 +35,32 @@ final class CompressQueue: ObservableObject {
     // MARK: - 一条任务的状态
 
     enum Status: String, Codable {
-        case waiting, running, done, failed, cancelled
+        case waiting, running, failed, cancelled
+        /// ★★ v1.0.162：**压好了、还没决定怎么处理**。
+        ///   用户明确不要"未经同意就自动存进下载页" —— 所以压完停在这里，
+        ///   由他在那一行上选：看效果 / 留下（收进下载列表）/ 存相册 / 存文件夹 / 丢弃。
+        case pending
+        /// 决定"留下"了（已经收进下载列表）
+        case kept
+        /// 决定"丢弃"了（成品文件已删，原片没动）
+        case discarded
 
-        var isLive: Bool { self == .waiting || self == .running }
+        /// 还算"没处理完"的（角标、汇总都用它）——
+        /// ★ pending 也算：不然用户一转头就忘了有几条在等他，那些文件就成了"占着空间看不见"的东西。
+        var isLive: Bool {
+            switch self {
+            case .waiting, .running, .pending: return true
+            default: return false
+            }
+        }
 
         var label: String {
             switch self {
             case .waiting:   return "等待中"
             case .running:   return "压缩中"
-            case .done:      return "已完成"
+            case .pending:   return "已压好，待你决定"
+            case .kept:      return "已留下（在下载列表）"
+            case .discarded: return "已丢弃"
             case .failed:    return "失败"
             case .cancelled: return "已取消"
             }
@@ -280,6 +300,37 @@ final class CompressQueue: ObservableObject {
         save()
     }
 
+    /// 待处理的条数 / 一共占多少（用**实际文件大小**，不是预估）
+    var pendingCount: Int { items.filter { $0.state == .pending }.count }
+    var pendingBytes: Int64 {
+        items.filter { $0.state == .pending }.reduce(0) { $0 + JobStore.size(of: $1.outputName) }
+    }
+
+    /// 「留下」= 收进下载列表（跟"导入视频"同一个归宿）。
+    /// ★ 走 `adoptCompressed`（**只认领不搬不改名**）：名字一动，行上的"看效果"就扑空。
+    func keep(_ item: Item) {
+        guard item.state == .pending, let out = item.outputName else { return }
+        center?.adoptCompressed(JobStore.file(named: out),
+                                title: item.title + "_压缩版", kind: item.kind)
+        item.state = .kept
+        item.phase = Status.kept.label
+        save()
+    }
+
+    /// 「丢弃」= 删掉成品。**原片一律不动。**
+    func discard(_ item: Item) {
+        guard item.state == .pending, let out = item.outputName else { return }
+        try? FileManager.default.removeItem(at: JobStore.file(named: out))
+        item.state = .discarded
+        item.phase = Status.discarded.label
+        item.note = nil
+        save()
+    }
+
+    /// 一键处理（20 条一条条点太烦 —— 用户要"逐条决定"，但别逼他点 40 下）
+    func keepAll() { for it in items where it.state == .pending { keep(it) } }
+    func discardAll() { for it in items where it.state == .pending { discard(it) } }
+
     /// 清掉"已经结束"的那些行（成品已经收进下载列表，删行不动文件）
     func clearFinished() {
         items.removeAll { !$0.state.isLive }
@@ -318,14 +369,15 @@ final class CompressQueue: ObservableObject {
 
             do {
                 let r = try await compress(item)
-                // ★ 收进下载列表：走 `adoptCompressed`（**只认领不搬不改名**）——
-                //   名字一动，卡片上"看效果"就会扑空（v1.0.158 踩过）。
-                center?.adoptCompressed(r.url, title: item.title + "_压缩版", kind: item.kind)
                 item.outputName = r.url.lastPathComponent
                 item.note = r.note
-                item.state = .done
+                item.state = .pending
                 item.progress = 1
-                item.phase = Status.done.label
+                item.phase = Status.pending.label
+                // ★★ v1.0.162（用户第 3 条）：**不再自动收进下载列表** ——
+                //   "未经同意默认存进下载页"是他明确不满的地方。
+                //   现在停在"待你决定"，由 `keep()` / `discard()` 明确处理
+                //   （keep 才走 `adoptCompressed`：只认领不搬不改名）。
             } catch {
                 // ★ 失败**只影响这一条**：原因留下，继续压下一个
                 item.failure = error.localizedDescription
@@ -400,8 +452,11 @@ final class CompressQueue: ObservableObject {
         items = recs.compactMap { r in
             guard let k = DownloadJob.MediaKind(key: r.kindKey),
                   let vt = CompressPlan.Tier(rawValue: r.videoTier),
-                  let pt = CompressPlan.PhotoTier(rawValue: r.photoTier),
-                  let st = Status(rawValue: r.state) else { return nil }
+                  let pt = CompressPlan.PhotoTier(rawValue: r.photoTier) else { return nil }
+            // ★ 兼容 v1.0.161 落盘的 "done"：那一版"压完就自动收进下载列表"了，
+            //   所以现在按"已留下"读回来最贴切（别丢行 —— 丢了就等于无声无息）。
+            let st = Status(rawValue: r.state == "done" ? Status.kept.rawValue : r.state)
+            guard let st else { return nil }
             let it = Item(id: r.id, title: r.title, kind: k, sourceName: r.sourceName,
                           ownsSource: r.ownsSource, srcBytes: r.srcBytes, duration: r.duration,
                           videoTier: vt, photoTier: pt)

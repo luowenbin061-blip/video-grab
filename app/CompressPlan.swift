@@ -172,17 +172,31 @@ enum CompressPlan {
     }
 
     /// 「还要多久」—— 用 ffmpeg 报的 `speed`（倍速）算。
+    /// ★★ v1.0.162 改的单位规则（用户点名）：
+    ///   · **不满 1 分钟：精确到秒** ——「42 秒」（以前一律写"不到 1 分钟"，太糊）
+    ///   · 1~60 分钟：以分钟为主 ——「3 分钟」
+    ///   · 1 小时以上：小时 + 分 ——「1 小时 5 分」（整点就写「2 小时」）
+    /// ★ 只返回**时长本身**（"3 分钟"），"还要"由调用方拼 ——
+    ///   以前这里自带"约"，跟调用方的"还要"拼一起变成「还要 约 3 分钟」，很别扭。
     /// speed ≤ 0 或算不出来时返回 **nil**（宁可不说，也不给一个瞎编的时间）。
     static func etaText(doneSec: Double, totalSec: Double, speed: Double) -> String? {
         guard totalSec > 0, doneSec >= 0, speed > 0.01 else { return nil }
         let left = max(0, totalSec - doneSec) / speed
         guard left.isFinite else { return nil }
-        if left < 60 { return "不到 1 分钟" }
+        if left < 60 { return "\(max(1, Int(left.rounded()))) 秒" }
         let m = Int((left / 60).rounded())
-        if m < 60 { return "约 \(m) 分钟" }
+        if m < 60 { return "\(m) 分钟" }
         let h = m / 60, mm = m % 60
-        return mm == 0 ? "约 \(h) 小时" : "约 \(h) 小时 \(mm) 分"
+        return mm == 0 ? "\(h) 小时" : "\(h) 小时 \(mm) 分"
     }
+
+    // MARK: - 记住上次选的档位
+
+    /// ★ v1.0.162（用户要求）：档位要**记住上次的选择** ——
+    /// 主要是给"下载页批量加入"用的（那页没有档位控件，弹窗要带出上次那个）。
+    /// 键放这儿：压缩卡和弹窗两边天然同步。
+    static let videoTierKey = "compressVideoTier"
+    static let photoTierKey = "compressPhotoTier"
 
     // MARK: - 队列的规矩（纯逻辑，考在离线回归集里）
 
