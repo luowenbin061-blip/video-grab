@@ -1662,14 +1662,6 @@ enum DownloadSort: String, CaseIterable, Identifiable {
     }
 }
 
-/// ★ v1.0.189：量下载列表滚动偏移用的键（**临时诊断**，问题结了就连这个一起删）。
-private struct DlScrollOffsetKey: PreferenceKey {
-    static var defaultValue: Int = 0
-    static func reduce(value: inout Int, nextValue: () -> Int) {
-        value = nextValue()
-    }
-}
-
 struct DownloadList: View {
     @ObservedObject var center: DownloadCenter
     @Binding var isPresented: Bool
@@ -1677,10 +1669,8 @@ struct DownloadList: View {
     @State private var query = ""
     /// ★ v1.0.111：顶部四个分类按钮当前选中的那个（默认「视频」）。
     @State private var filter: DownloadFilter = .video
-    /// ★ v1.0.185：排序方式（右上角 ↑↓ 那个菜单），记住上次选择
+        /// ★ v1.0.185：排序方式（右上角 ↑↓ 那个菜单），记住上次选择
     @AppStorage("dlSort") private var sortRaw = DownloadSort.timeDesc.rawValue
-    /// ★ v1.0.189：**临时诊断**用的滚动偏移（滑不动那件事结了我就删掉）
-    @State private var scrollOffset = 0
 
     // ── ★ v1.0.127 多选与批量 ──
     /// 多选模式（长按任意一条、或右上角「选择」进入）
@@ -1774,7 +1764,6 @@ struct DownloadList: View {
                         //   代价：丢掉左滑删除 —— ⋯ 菜单里的「删除」和多选里的删除都还在。
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 8) {
-                                offsetProbe
                                 storageCard
                                 if shownJobs.isEmpty {
                                     Text(query.isEmpty
@@ -1845,10 +1834,6 @@ struct DownloadList: View {
                             .padding(.bottom, 40)
                         }
                         .background(Color(.systemGroupedBackground))
-                        .coordinateSpace(name: "dlscroll")
-                        .onPreferenceChange(DlScrollOffsetKey.self) { v in
-                            scrollOffset = v
-                        }
                         // ★ v1.0.154：进下载列表时统计一次；有任务在跑就自动跟着刷
                         .task {
                             center.refreshUsedSpace()
@@ -1901,9 +1886,6 @@ struct DownloadList: View {
                 Button("选择") { selecting = true; picked.removeAll() }
             }
             Spacer(minLength: 4)
-            Text("滑动 \(scrollOffset)")
-                .font(.system(size: 10).monospacedDigit())
-                .foregroundStyle(.tertiary)
             if !center.jobs.isEmpty {
                 Menu {
                     Picker("排序", selection: $sortRaw) {
@@ -1936,18 +1918,6 @@ struct DownloadList: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// 临时诊断：量 ScrollView 当前的滚动偏移（放在列表最上面，1pt 高，纯读数用）。
-    /// 他要是还滑不动，看一眼顶上那数字变不变 ——
-    /// **变 = 拖动到了滚动控件手里（问题在别处）；不变 = 触摸压根没到内容上。**
-    private var offsetProbe: some View {
-        GeometryReader { g in
-            Color.clear.preference(
-                key: DlScrollOffsetKey.self,
-                value: Int(-g.frame(in: .named("dlscroll")).minY))
-        }
-        .frame(height: 1)
     }
 
     // MARK: - ★ v1.0.127 多选与批量
@@ -2522,11 +2492,18 @@ struct JobRow: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: showLog ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                         Text(showLog ? "收起过程记录" : "过程记录")
-                            .font(.system(size: 11.5))
+                            .font(.system(size: 12.5))
+                        Spacer(minLength: 0)
                     }
                     .foregroundStyle(.secondary)
+                    // ★★ v1.0.190：**整行都能点** —— 以前这个按钮的点击区只有
+                    //   「⌄ 过程记录」那几个字那么大，点在旁边（同一行上）一点反应都没有，
+                    //   用户报的就是"点了不会展开"。字号也顺手从 11.5 提到 12.5。
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 3)
                 }
                 .buttonStyle(.plain)
             }
