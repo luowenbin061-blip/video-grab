@@ -1671,6 +1671,8 @@ struct DownloadList: View {
     @State private var filter: DownloadFilter = .video
         /// ★ v1.0.185：排序方式（右上角 ↑↓ 那个菜单），记住上次选择
     @AppStorage("dlSort") private var sortRaw = DownloadSort.timeDesc.rawValue
+    /// ★ v1.0.191：「过程记录」展开了哪些（按**任务 id** 记，不放在行里 —— 见 JobRow.logExpanded）
+    @State private var expandedLog = Set<UUID>()
 
     // ── ★ v1.0.127 多选与批量 ──
     /// 多选模式（长按任意一条、或右上角「选择」进入）
@@ -1781,7 +1783,9 @@ struct DownloadList: View {
                                         .padding(.top, 2)
                                     ForEach(shownJobs) { job in
                                         JobRow(job: job, pip: center.pip,
-                                               onDelete: { center.remove(job) })
+                                               onDelete: { center.remove(job) },
+                                               logExpanded: expandedLog.contains(job.id),
+                                               onToggleLog: { toggleLog(job.id) })
                                             // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
                                             //   卡与卡之间留缝（所以去掉列表分隔线）。
                                             // ★ v1.0.187：照用户要求把卡片**左右留白收窄**
@@ -1918,6 +1922,14 @@ struct DownloadList: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - ★ v1.0.191 「过程记录」展开状态（放在列表层）
+
+    /// 展开/收起某一条的过程记录 —— **状态由列表拿着**，行重建不会丢
+    private func toggleLog(_ id: UUID) {
+        if expandedLog.contains(id) { expandedLog.remove(id) }
+        else { expandedLog.insert(id) }
     }
 
     // MARK: - ★ v1.0.127 多选与批量
@@ -2240,7 +2252,14 @@ struct JobRow: View {
     @State private var shareSheet: SheetURL?
     /// ★ v1.0.111：图片的「查看」入口（下好的图片点开看大图）
     @State private var viewSheet: SheetURL?
-    @State private var showLog = false
+    /// ★ v1.0.191：「过程记录」展开着吗 —— **状态放在列表那一层**（不再是行内 @State）。
+    ///
+    /// 为什么挪上去（用户 22:48 报："有的行能点开，有好几个死活点不开"）：
+    /// 行内的 `@State` 挂在"这一行这个视图实例"上 —— 而列表是**懒加载**的，
+    /// 行会随滚动建/拆，某些情况下点完立刻被重建，状态就没了 → 看着就是"点了没反应"。
+    /// 放到列表层用**任务 id** 记，行怎么重建都不影响：**展开的就是展开了**。
+    var logExpanded: Bool = false
+    var onToggleLog: (() -> Void)? = nil
     /// ★ v1.0.185：「⋯」更多菜单（照参考图的操作表）
     @State private var showMenu = false
     /// ★ v1.0.185：「文件信息」小卡片
@@ -2488,12 +2507,12 @@ struct JobRow: View {
                 //   现在「过程记录」明明白白是这张卡的最后一行（也把那块空白用上了）。
                 Divider().padding(.top, 1)
                 Button {
-                    showLog.toggle()
+                    onToggleLog?()
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: showLog ? "chevron.down" : "chevron.right")
+                        Image(systemName: logExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .bold))
-                        Text(showLog ? "收起过程记录" : "过程记录")
+                        Text(logExpanded ? "收起过程记录" : "过程记录")
                             .font(.system(size: 12.5))
                         Spacer(minLength: 0)
                     }
@@ -2508,7 +2527,7 @@ struct JobRow: View {
                 .buttonStyle(.plain)
             }
 
-            if showLog {
+            if logExpanded {
                 // ★ v1.0.138：整份记录一键复制 —— 用户要能把它发我 / 自己留档。
                 //   以前只能靠截图，长记录要截好几张，还漏字。
                 HStack(spacing: 6) {
@@ -2720,7 +2739,8 @@ struct JobRow: View {
     /// 播放：**本地优先**；本地没有就退回在线（带防盗链头 + 先体检，死了说人话）
     private func doPlay() {
         if job.mediaKind == .video, let u = job.localPlaybackURL() {
-            showLog = false
+            // 开播前把过程记录收起来（不然整屏都是日志）—— 状态在列表层，得请它收
+            if logExpanded { onToggleLog?() }
             playSheet = SheetURL(url: u)
             return
         }
