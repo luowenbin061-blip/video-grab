@@ -1819,21 +1819,27 @@ struct DownloadList: View {
                                                         }
                                                 }
                                             }
-                                            // ★★ v1.0.192：**长按进多选加回来了**（用户要的：
-                                            //   "之前可以长按批量选择，现在这个版本不可以了" ——
-                                            //   是我 189 排查滑动时摘掉的，现在补回来）。
-                                            //   放在 ScrollView 里是安全的：并存手势 + 12pt 位移上限，
-                                            //   手指一移动它就自己失败，滚动照常；按住不动 0.45 秒进多选。
-                                            //   （在 List 里它是"抢触摸"的嫌疑犯，换成 ScrollView 后不是了。）
-                                            .simultaneousGesture(
-                                                LongPressGesture(minimumDuration: 0.45,
-                                                                 maximumDistance: 12)
-                                                    .onEnded { _ in
-                                                        guard !selecting else { return }
-                                                        selecting = true
-                                                        picked = [job.id]
-                                                    }
-                                            )
+                                            // ★★★ v1.0.193：**长按换成系统的 `contextMenu`**。
+                                            //
+                                            //   为什么（用户 23:57 做了一次决定性实测）：
+                                            //   192 把"长按手势"加回来之后 ——
+                                            //   **「能长按了，结果就是又滑不动了，点击过程记录也又不好使了」**。
+                                            //   反过来也成立：189~191（长按摘掉）滚动和点击都正常。
+                                            //   → **行级手势（LongPressGesture）就是那个"抢触摸"的东西**：
+                                            //     它把整行的触摸按住等 0.45 秒，滚动和子按钮的点击都被它挡住。
+                                            //
+                                            //   `contextMenu` 是系统**专门为"列表里长按"做的**：
+                                            //   按住不动才弹菜单，手指一移动就让滚动走 —— 两者不抢。
+                                            //   所以"长按进多选"这个习惯保住了，滚动也不用再牺牲。
+                                            .contextMenu {
+                                                Button {
+                                                    guard !selecting else { return }
+                                                    selecting = true
+                                                    picked = [job.id]
+                                                } label: {
+                                                    Label("选择", systemImage: "checkmark.circle")
+                                                }
+                                            }
                                     }
                                 }
                                 HStack {
@@ -2518,37 +2524,36 @@ struct JobRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-            }
 
-            }   // ← else 结束：下面这两块（过程记录）两种形态共用
-            if !job.notes.isEmpty {
-                // ★ v1.0.188：加一条分隔线 —— 卡片下沿原来空着一块，
-                //   现在「过程记录」明明白白是这张卡的最后一行（也把那块空白用上了）。
-                Divider().padding(.top, 1)
-                Button {
-                    // 传"我想要的目标状态"，不是"翻转一下" —— 重复触发也不会互相抵消
-                    onSetLog?(!logExpanded)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: logExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .bold))
-                        Text(logExpanded ? "收起过程记录" : "过程记录")
-                            .font(.system(size: 12.5))
-                        Spacer(minLength: 0)
+                // ★★ v1.0.193：这一行**只留在"详细版"里**（下载中 / 失败 / 文件丢了）。
+                //   这些行**没有「⋯」按钮**，不给他们留入口的话，日志就彻底看不到了 ——
+                //   而出问题时最需要看日志的恰恰是这些行。
+                //   已完成的行按用户要求把入口收进「⋯」菜单（那一排按钮太挤，也省掉一次点击歧义）。
+                if !job.notes.isEmpty {
+                    Divider().padding(.top, 1)
+                    Button {
+                        // 传"我想要的目标状态"，不是"翻转一下" —— 重复触发也不会互相抵消
+                        onSetLog?(!logExpanded)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: logExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(logExpanded ? "收起过程记录" : "过程记录")
+                                .font(.system(size: 12.5))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .contentShape(Rectangle())
                     }
-                    .foregroundStyle(.secondary)
-                    // ★★ v1.0.190/192：**整行都能点**，而且做成一整块"看得见的按钮"
-                    //   （以前点击区只有「⌄ 过程记录」那几个字那么大，点在旁边一点反应都没有）
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .background(Color(.tertiarySystemFill),
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .padding(.top, 2)
                 }
-                .buttonStyle(.plain)
-                .background(Color(.tertiarySystemFill),
-                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .padding(.top, 2)
-            }
+            }   // ← else 结束：下面这块（日志正文）两种形态共用
 
             if logExpanded {
                 // ★ v1.0.138：整份记录一键复制 —— 用户要能把它发我 / 自己留档。
