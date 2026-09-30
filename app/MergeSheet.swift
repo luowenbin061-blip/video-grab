@@ -233,7 +233,7 @@ struct MergeSheet: View {
         job.mp4Ready = true
         job.fileSize = bytes
         job.duration = seconds
-        job.phaseText = "合并完成"
+        job.phase = "合并完成"
         job.finished = true
         job.notes.append("· 由 \(group.count) 条已下载的视频合并而成")
         // 缩略图借首条那张（复制一份，按新 id 命名）——
