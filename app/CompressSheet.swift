@@ -364,6 +364,9 @@ struct CompressSheet: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity)   // ★ List 的行里要显式撑宽，
+                                          //   否则 LazyVGrid 算不出列数、被压成一行
+            .listRowSeparator(.hidden)    // ★ 网格里不要行分隔线
             .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             if candidates.count > 1 {
                 Button {
