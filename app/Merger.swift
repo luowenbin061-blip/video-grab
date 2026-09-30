@@ -196,6 +196,12 @@ enum Merger {
         guard let narrow = widths.min() else { throw Fail.unreadable(sources[0].title) }
         let targetW = max(2, narrow - (narrow % 2))      // h264 要求偶数
 
+        // ★★ 目标码率：按各集的**加权平均**（总字节 × 8 ÷ 总秒数），再夹到合理区间。
+        //   为什么必须自己算：**硬件编码器不认 `-crf`**，只认 `-b:v`（这一点照抄 `Compressor`，
+        //   那条路在真机上跑很久了）。取源的平均码率 = 尽量保真、又不会把文件搞大。
+        let avgBps = check.totalSec > 0 ? Double(check.totalBytes) * 8.0 / check.totalSec : 0
+        let targetBps = Int(min(max(avgBps, 800_000), 8_000_000))
+
         let fm = FileManager.default
         var tmps: [URL] = []
         defer { for t in tmps { try? fm.removeItem(at: t) } }   // 中间文件用完必删
@@ -214,10 +220,15 @@ enum Merger {
                 "-map", "0:v:0", "-map", "0:a:0?",
                 "-sn", "-dn",
                 "-vf", "scale=\(targetW):-2",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                // ★ 硬件编码（`h264_videotoolbox`）：软件编码 libx264 在手机上慢太多 ——
+                //   实测选择时**本该照抄 `Compressor`**，那条路一直用硬件、真机验证过。
+                //   代价：同码率下质量比软件略差一点点，但他这条路的目的只是"统一规格"，
+                //   不是为了压得更小，够用。
+                "-c:v", "h264_videotoolbox", "-b:v", "\(targetBps)",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                "-movflags", "+faststart",
+                // ★ 中间文件**不加 +faststart**：它马上就被读走拼掉了，
+                //   加它等于白多跑一遍完整 I/O（成品那条路才需要）。
                 tmp.path,
             ]
             let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
