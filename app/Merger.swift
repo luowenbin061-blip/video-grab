@@ -266,7 +266,7 @@ enum Merger {
         }
         defer { try? FileManager.default.removeItem(at: listURL) }
 
-        var args: [String] = [
+        var argList: [String] = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-fflags", "+genpts",
             "-f", "concat", "-safe", "0", "-i", listURL.path,
@@ -276,9 +276,14 @@ enum Merger {
         ]
         // 大文件不加 +faststart（那是两遍 I/O，见 FFmpegConverter 的说明）
         if totalBytes < FFmpegConverter.faststartLimit {
-            args += ["-movflags", "+faststart"]
+            argList += ["-movflags", "+faststart"]
         }
-        args.append(output.path)
+        argList.append(output.path)
+
+        // ★★ 必须先绑成 let 再进下面的并发闭包。把 var 直接捕获进 Task.detached 会编译不过：
+        //   reference to captured var - 本工程踩过 4 次（#138/#164/#171同类/#178），
+        //   所以自检里有一条「源码里不许出现 var args」的断言。
+        let args = argList
 
         onProgress(0.02, "正在合并…")
         let outURL = output
@@ -338,7 +343,7 @@ enum Merger {
             // 缩放 + 补黑边到目标画布（像素宽高比也统一）
             let vf = "scale=\(check.targetW):\(check.targetH):force_original_aspect_ratio=decrease,"
                 + "pad=\(check.targetW):\(check.targetH):(ow-iw)/2:(oh-ih)/2,setsar=1"
-            var args: [String] = [
+            var argList: [String] = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                 "-i", s.url.path,
                 "-map", "0:v:0", "-map", "0:a:0?",
@@ -355,11 +360,14 @@ enum Merger {
             ]
             // 声音参数全一致时**原样搬**（省一遍编码，也不动音质）
             if check.audioSame {
-                args += ["-c:a", "copy"]
+                argList += ["-c:a", "copy"]
             } else {
-                args += ["-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2"]
+                argList += ["-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2"]
             }
-            args.append(tmp.path)
+            argList.append(tmp.path)
+
+            // ★ 同样必须先 let 再进并发闭包（见 concatCopy 里的说明）
+            let args = argList
 
             let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
                 var argv = args.map { strdup($0) }
