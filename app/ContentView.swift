@@ -1765,7 +1765,13 @@ struct DownloadList: View {
                         //   几何 100% 可控（留白、字号不再受 List 那套默认内边距影响）。
                         //   代价：丢掉左滑删除 —— ⋯ 菜单里的「删除」和多选里的删除都还在。
                         ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 8) {
+                            // ★★ v1.0.192：`LazyVStack` → **普通 `VStack`**。
+                            //   为什么（"过程记录还是有的行点不开"）：懒加载的栈**只给看得见的那几行
+                            //   建视图**，行高变化（展开日志 / 下载进度刷新）时，**行与行之间的
+                            //   命中区域会和画面对不上**——表现就是"有的行点得开、有的点不开"。
+                            //   普通 VStack 每次都把所有行老老实实排一遍，几何是确定的。
+                            //   代价：行多了会一次性建出来（缩略图仍走降采样+缓存，20~50 条没问题）。
+                            VStack(alignment: .leading, spacing: 8) {
                                 storageCard
                                 if shownJobs.isEmpty {
                                     Text(query.isEmpty
@@ -1785,7 +1791,7 @@ struct DownloadList: View {
                                         JobRow(job: job, pip: center.pip,
                                                onDelete: { center.remove(job) },
                                                logExpanded: expandedLog.contains(job.id),
-                                               onToggleLog: { toggleLog(job.id) })
+                                               onSetLog: { open in setLog(job.id, open: open) })
                                             // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
                                             //   卡与卡之间留缝（所以去掉列表分隔线）。
                                             // ★ v1.0.187：照用户要求把卡片**左右留白收窄**
@@ -1813,11 +1819,21 @@ struct DownloadList: View {
                                                         }
                                                 }
                                             }
-                                            // ★★ v1.0.189：行级长按手势**摘掉了**。
-                                            //   多选入口还在：顶栏左边那个「选择」。
-                                            //   为什么摘：滑不动这条连改三次都没治好，而行级手势
-                                            //   是"每一行都挂一个手势识别器"——先把它从方程里去掉，
-                                            //   等滚动确认正常了再决定要不要加回来。
+                                            // ★★ v1.0.192：**长按进多选加回来了**（用户要的：
+                                            //   "之前可以长按批量选择，现在这个版本不可以了" ——
+                                            //   是我 189 排查滑动时摘掉的，现在补回来）。
+                                            //   放在 ScrollView 里是安全的：并存手势 + 12pt 位移上限，
+                                            //   手指一移动它就自己失败，滚动照常；按住不动 0.45 秒进多选。
+                                            //   （在 List 里它是"抢触摸"的嫌疑犯，换成 ScrollView 后不是了。）
+                                            .simultaneousGesture(
+                                                LongPressGesture(minimumDuration: 0.45,
+                                                                 maximumDistance: 12)
+                                                    .onEnded { _ in
+                                                        guard !selecting else { return }
+                                                        selecting = true
+                                                        picked = [job.id]
+                                                    }
+                                            )
                                     }
                                 }
                                 HStack {
@@ -1926,10 +1942,9 @@ struct DownloadList: View {
 
     // MARK: - ★ v1.0.191 「过程记录」展开状态（放在列表层）
 
-    /// 展开/收起某一条的过程记录 —— **状态由列表拿着**，行重建不会丢
-    private func toggleLog(_ id: UUID) {
-        if expandedLog.contains(id) { expandedLog.remove(id) }
-        else { expandedLog.insert(id) }
+    /// 把某一条的过程记录**设成**指定状态（不是"翻转" —— 重复触发同结果，抗重复）
+    private func setLog(_ id: UUID, open: Bool) {
+        if open { expandedLog.insert(id) } else { expandedLog.remove(id) }
     }
 
     // MARK: - ★ v1.0.127 多选与批量
@@ -2255,11 +2270,15 @@ struct JobRow: View {
     /// ★ v1.0.191：「过程记录」展开着吗 —— **状态放在列表那一层**（不再是行内 @State）。
     ///
     /// 为什么挪上去（用户 22:48 报："有的行能点开，有好几个死活点不开"）：
-    /// 行内的 `@State` 挂在"这一行这个视图实例"上 —— 而列表是**懒加载**的，
-    /// 行会随滚动建/拆，某些情况下点完立刻被重建，状态就没了 → 看着就是"点了没反应"。
+    /// 行内的 `@State` 挂在"这一行这个视图实例"上 —— 而列表会随滚动/内容变化重建行，
+    /// 状态就没了 → 看着就是"点了没反应"。
     /// 放到列表层用**任务 id** 记，行怎么重建都不影响：**展开的就是展开了**。
+    ///
+    /// ★★ v1.0.192：回调从"切换"改成「**明确要什么值**」（`onSetLog(Bool)`）。
+    ///   为什么：切换（toggle）只要被触发两次就互相抵消 = 看着没反应；
+    ///   而"设成 true/false"重复触发是同结果，**天然抗重复**。
     var logExpanded: Bool = false
-    var onToggleLog: (() -> Void)? = nil
+    var onSetLog: ((Bool) -> Void)? = nil
     /// ★ v1.0.185：「⋯」更多菜单（照参考图的操作表）
     @State private var showMenu = false
     /// ★ v1.0.185：「文件信息」小卡片
@@ -2507,7 +2526,8 @@ struct JobRow: View {
                 //   现在「过程记录」明明白白是这张卡的最后一行（也把那块空白用上了）。
                 Divider().padding(.top, 1)
                 Button {
-                    onToggleLog?()
+                    // 传"我想要的目标状态"，不是"翻转一下" —— 重复触发也不会互相抵消
+                    onSetLog?(!logExpanded)
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: logExpanded ? "chevron.down" : "chevron.right")
@@ -2517,14 +2537,17 @@ struct JobRow: View {
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(.secondary)
-                    // ★★ v1.0.190：**整行都能点** —— 以前这个按钮的点击区只有
-                    //   「⌄ 过程记录」那几个字那么大，点在旁边（同一行上）一点反应都没有，
-                    //   用户报的就是"点了不会展开"。字号也顺手从 11.5 提到 12.5。
+                    // ★★ v1.0.190/192：**整行都能点**，而且做成一整块"看得见的按钮"
+                    //   （以前点击区只有「⌄ 过程记录」那几个字那么大，点在旁边一点反应都没有）
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
                     .contentShape(Rectangle())
-                    .padding(.vertical, 3)
                 }
                 .buttonStyle(.plain)
+                .background(Color(.tertiarySystemFill),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .padding(.top, 2)
             }
 
             if logExpanded {
@@ -2605,6 +2628,9 @@ struct JobRow: View {
                 .disabled(!job.canSaveToPhotos)
             Button("保存到［文件］") { doExport() }
             Button("文件信息") { showInfo = true }
+            // ★★ v1.0.192：**「过程记录」也进这个菜单** —— 兜底。
+            //   卡片里那一行万一还有哪条点不开，从这儿一定能开（他已经用惯这个菜单了）。
+            Button(logExpanded ? "收起过程记录" : "过程记录") { onSetLog?(!logExpanded) }
             Button("复制源文件地址") { doCopyLink() }
             if let onDelete {
                 Button("删除", role: .destructive) { onDelete() }
@@ -2740,7 +2766,7 @@ struct JobRow: View {
     private func doPlay() {
         if job.mediaKind == .video, let u = job.localPlaybackURL() {
             // 开播前把过程记录收起来（不然整屏都是日志）—— 状态在列表层，得请它收
-            if logExpanded { onToggleLog?() }
+            if logExpanded { onSetLog?(false) }
             playSheet = SheetURL(url: u)
             return
         }
