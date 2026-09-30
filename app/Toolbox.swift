@@ -38,6 +38,8 @@ struct ToolboxView: View {
     @State private var showBackupOptions = false
     /// ★ v1.0.155：「压画质省空间」那张卡
     @State private var showCompress = false
+    /// ★ v1.0.171：「合并视频」那张卡
+    @State private var showMerge = false
     /// ★ v1.0.160：压缩队列（单例）—— 这格要用它显示"还有几个没压完"的小角标。
     ///   为什么非要有角标：队列**关掉卡片也在跑**，没有角标的话界面上完全看不到它
     ///   （用户要的就是"别在我看不见的时候丢任务"）。
@@ -107,6 +109,12 @@ struct ToolboxView: View {
                          badge: queue.badgeCount) {
                         showCompress = true
                     }
+
+                    // ★ v1.0.171：合并视频 —— 一集一个文件看着散、播着断，合成一条连着看。
+                    //   选几条已下载的成品（按下载时间排序），可整条合、也可每 N 集切段。
+                    cell("film.stack", "合并视频", .pink) {
+                        showMerge = true
+                    }
                 }
                 .padding(16)
 
@@ -151,6 +159,10 @@ struct ToolboxView: View {
             } message: {
                 // ★ 必须是**单个字面量**：Text(拼接出来的 String) 不渲染 markdown，会露出 **
                 Text("打包：书签、下载记录、首页入口、播放进度、已放行网站、设置。**不含 Cookie**（登录态不外带）。\n恢复前会自动把当前数据另存一份，能回滚。")
+            }
+            // ★ v1.0.171：合并视频
+            .sheet(isPresented: $showMerge) {
+                MergeSheet(center: center, isPresented: $showMerge)
             }
             // ★ v1.0.155：压画质省空间
             .sheet(isPresented: $showCompress) {
