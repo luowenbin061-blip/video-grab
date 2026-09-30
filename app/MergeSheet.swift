@@ -122,7 +122,7 @@ struct MergeSheet: View {
             .alert(fatalMix ? "这几条的编码不一样" : "这几条的规格不完全一样",
                    isPresented: $showConfirm) {
                 if !fatalMix {
-                    Button("仍然直接拼（快，可能花屏）") {
+                    Button("仍然直接拼（快；规格不同时画面可能卡住）") {
                         confirmText = nil
                         Task { await run(force: true) }
                     }

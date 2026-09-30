@@ -34,6 +34,8 @@ enum Merger {
         var audioChannels: Int
         var seconds: Double
         var bytes: Int64
+        /// 标称帧率（0 = 读不出）—— 统一规格时要一并统一，否则拼接后时间戳会乱
+        var fps: Double
 
         /// 判"能不能直接拼"的指纹 —— ★ 只认**分辨率 + 视频编码**。
         ///   声道数**不算**：ffmpeg 照搬每条流，它不影响能不能拼；
@@ -92,12 +94,14 @@ enum Merger {
                 channels = Int(asbd.pointee.mChannelsPerFrame)
             }
         }
+        let fps = Double((try? await v.load(.nominalFrameRate)) ?? 0)
         let sec = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
         let bytes = Self.bytes(of: url)
 
         return Info(width: Int(abs(size.width)), height: Int(abs(size.height)),
                     videoCodec: codec, audioChannels: channels,
-                    seconds: sec.isFinite ? sec : 0, bytes: bytes)
+                    seconds: sec.isFinite ? sec : 0, bytes: bytes,
+                    fps: fps.isFinite ? fps : 0)
     }
 
     /// 文件字节数（拿不到算 0）—— 写法照抄项目里的 `Compressor.size`：
@@ -191,10 +195,21 @@ enum Merger {
         guard sources.count >= 2 else { throw Fail.tooFew }
         let check = try await inspect(sources)
 
-        // 统一到"最窄的那一档" —— 不放大：放大只费时间、不长信息
-        let widths = check.infos.map { $0.width }.filter { $0 > 0 }
-        guard let narrow = widths.min() else { throw Fail.unreadable(sources[0].title) }
-        let targetW = max(2, narrow - (narrow % 2))      // h264 要求偶数
+        // ★★ 统一到"最窄的那一档"整张画布（**宽和高都要定死**）—— 不放大：放大只费时间、不长信息。
+        //
+        //   为什么不能只统一宽（v1.0.175 就是这么写的、被用户实测打回来了）：
+        //   高度是 `-2` 按比例算的 → **各集宽高比不一样时高度还是不一样**
+        //   → 拼出来段间 H.264 参数变化 → **音频正常、画面卡在第一段**（播放器不重新初始化）。
+        //   所以这里改成：先选一条"参考尺寸"（最窄的那条），其余全部 scale + **pad 补黑边**到它。
+        guard let ref = check.infos.filter({ $0.width > 0 && $0.height > 0 })
+            .min(by: { $0.width < $1.width }) else {
+            throw Fail.unreadable(sources[0].title)
+        }
+        let targetW = max(2, ref.width - (ref.width % 2))
+        let targetH = max(2, ref.height - (ref.height % 2))
+        // 帧率也统一：取各集里**最大**的（不掉帧），认不出就当 30
+        let maxFps = check.infos.map { $0.fps }.filter { $0 > 0 }.max() ?? 30
+        let targetFps = String(format: "%.3f", min(60, max(12, maxFps)))
 
         // ★★ 目标码率：按各集的**加权平均**（总字节 × 8 ÷ 总秒数），再夹到合理区间。
         //   为什么必须自己算：**硬件编码器不认 `-crf`**，只认 `-b:v`（这一点照抄 `Compressor`，
@@ -219,7 +234,11 @@ enum Merger {
                 "-i", s.url.path,
                 "-map", "0:v:0", "-map", "0:a:0?",
                 "-sn", "-dn",
-                "-vf", "scale=\(targetW):-2",
+                // 缩放 + 补黑边 + 统一像素宽高比：**输出尺寸必须和参考尺寸完全一致**，
+                // 差一个像素都可能让播放器在切段时卡住画面。
+                "-vf", "scale=\(targetW):\(targetH):force_original_aspect_ratio=decrease,"
+                    + "pad=\(targetW):\(targetH):(ow-iw)/2:(oh-ih)/2,setsar=1",
+                "-r", targetFps,
                 // ★ 硬件编码（`h264_videotoolbox`）：软件编码 libx264 在手机上慢太多 ——
                 //   实测选择时**本该照抄 `Compressor`**，那条路一直用硬件、真机验证过。
                 //   代价：同码率下质量比软件略差一点点，但他这条路的目的只是"统一规格"，
