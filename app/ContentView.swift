@@ -2524,6 +2524,8 @@ struct JobRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }        // ← 这里必须是 3 个闭合：else-if 链 / if exportURL / if finished
+                     //   （v1.0.193 我第一次改的时候漏了第 3 个，CI 直接编译不过 —— 别动这里）
 
                 // ★★ v1.0.193：这一行**只留在"详细版"里**（下载中 / 失败 / 文件丢了）。
                 //   这些行**没有「⋯」按钮**，不给他们留入口的话，日志就彻底看不到了 ——
