@@ -1662,6 +1662,14 @@ enum DownloadSort: String, CaseIterable, Identifiable {
     }
 }
 
+/// ★ v1.0.189：量下载列表滚动偏移用的键（**临时诊断**，问题结了就连这个一起删）。
+private struct DlScrollOffsetKey: PreferenceKey {
+    static var defaultValue: Int = 0
+    static func reduce(value: inout Int, nextValue: () -> Int) {
+        value = nextValue()
+    }
+}
+
 struct DownloadList: View {
     @ObservedObject var center: DownloadCenter
     @Binding var isPresented: Bool
@@ -1671,6 +1679,8 @@ struct DownloadList: View {
     @State private var filter: DownloadFilter = .video
     /// ★ v1.0.185：排序方式（右上角 ↑↓ 那个菜单），记住上次选择
     @AppStorage("dlSort") private var sortRaw = DownloadSort.timeDesc.rawValue
+    /// ★ v1.0.189：**临时诊断**用的滚动偏移（滑不动那件事结了我就删掉）
+    @State private var scrollOffset = 0
 
     // ── ★ v1.0.127 多选与批量 ──
     /// 多选模式（长按任意一条、或右上角「选择」进入）
@@ -1720,22 +1730,18 @@ struct DownloadList: View {
     }
 
     var body: some View {
-        NavigationView {
-            Group {
-                if center.jobs.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "tray")
-                            .font(.system(size: 34))
-                            .foregroundStyle(.tertiary)
-                        Text("还没有下载任务")
-                            .foregroundStyle(.secondary)
-                        Text("下载好的视频留在程序里，\n需要时再点「存相册」或「存文件夹」。")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(.tertiary)
-                            .multilineTextAlignment(.center)
-                    }
-                } else {
-                    VStack(spacing: 0) {
+        // ★★ v1.0.189：**整页按「最朴素的那套」重写** ——
+        //   `NavigationView` / 系统列表 / `safeAreaInset` / **行级长按手势** 全部摘掉。
+        //   滑不动这条已经连改三次，全都在这些系统构件里打转；这次一个都不留。
+        //   现在的结构：**自己的顶栏 + 头（搜索 + 分类）+ ScrollView（自己画的卡片）+ 多选条**，
+        //   全是"自己画的普通视图"，没有任何会跟滚动/命中判定抢东西的容器。
+        VStack(spacing: 0) {
+            topBar
+            Divider()
+            if center.jobs.isEmpty {
+                emptyState
+            } else {
+                VStack(spacing: 0) {
                         // ★★ v1.0.188：**固定的头部 = 搜索框 + 四个分类**（不跟着列表滚）。
                         //   搜索框改自己画（原来用系统 `.searchable`）—— 位置和样子跟参考图一致，
                         //   也少一层"系统搜索栏在 sheet 里怎么摆"的不确定性。
@@ -1768,6 +1774,7 @@ struct DownloadList: View {
                         //   代价：丢掉左滑删除 —— ⋯ 菜单里的「删除」和多选里的删除都还在。
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 8) {
+                                offsetProbe
                                 storageCard
                                 if shownJobs.isEmpty {
                                     Text(query.isEmpty
@@ -1813,20 +1820,11 @@ struct DownloadList: View {
                                                         }
                                                 }
                                             }
-                                            // ★ v1.0.187：长按进多选改用 **simultaneousGesture**。
-                                            //   以前是 `.onLongPressGesture` —— 它会把触摸"占住"，
-                                            //   手指按在卡片上往下拉时列表发涩甚至不动
-                                            //   （用户 20:50 报「滑不动」的两个原因之一）。
-                                            //   并存手势 + 默认 10pt 最大位移：一滑动它自己就失败，
-                                            //   滚动照常；**按住不动 0.45 秒**才进多选。
-                                            .simultaneousGesture(
-                                                LongPressGesture(minimumDuration: 0.45)
-                                                    .onEnded { _ in
-                                                        guard !selecting else { return }
-                                                        selecting = true
-                                                        picked = [job.id]
-                                                    }
-                                            )
+                                            // ★★ v1.0.189：行级长按手势**摘掉了**。
+                                            //   多选入口还在：顶栏左边那个「选择」。
+                                            //   为什么摘：滑不动这条连改三次都没治好，而行级手势
+                                            //   是"每一行都挂一个手势识别器"——先把它从方程里去掉，
+                                            //   等滚动确认正常了再决定要不要加回来。
                                     }
                                 }
                                 HStack {
@@ -1847,90 +1845,109 @@ struct DownloadList: View {
                             .padding(.bottom, 40)
                         }
                         .background(Color(.systemGroupedBackground))
+                        .coordinateSpace(name: "dlscroll")
+                        .onPreferenceChange(DlScrollOffsetKey.self) { v in
+                            scrollOffset = v
+                        }
                         // ★ v1.0.154：进下载列表时统计一次；有任务在跑就自动跟着刷
                         .task {
                             center.refreshUsedSpace()
                             center.keepUsedSpaceFreshWhileBusy()
                         }
                     }
-                    // ★ v1.0.127 多选：底部操作条（只在多选态出现，平时完全不占地方）
-                    .safeAreaInset(edge: .bottom) {
-                        if selecting { batchBar }
-                    }
+                    // ★ v1.0.189：多选条现在是**流里的一个普通视图**（不再用 `safeAreaInset` ——
+                    //   它会在 sheet 里给内容再套一层容器，正是"触摸到不了内容"的常见来源）。
+                    if selecting { batchBar }
                 }
-            }
-            // ★ v1.0.187：按用户要求**去掉页面顶部那行大字标题** ——
-            //   它不承担任何功能，还把屏幕最上面那块占掉了。
-            //   导航栏只留左边「选择」、右边「排序」。
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            // ★ iOS 15 的老坑：`.toolbar { }` 里**不能写 if**（v1.0.97 实错过）——
-            //   条件必须写在 ToolbarItem 内部。
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if selecting {
-                        Button("取消") { exitSelecting() }
-                    } else if !center.jobs.isEmpty {
-                        // ★ v1.0.159：**明面的多选入口**。
-                        //   以前只能长按进多选 —— 藏得太深，用户反馈"批量处理没有全选"，
-                        //   其实是连多选都很难发现。
-                        Button("选择") { selecting = true; picked.removeAll() }
-                    }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    // ★ v1.0.187：按用户要求 —— **去掉「完成」，把这个位置让给「排序」**，
-                    //   并且排序按钮改成**文字「排序」**，不用图标。
-                    //   （关这个页面：往下滑收起就行，不需要一个专门的按钮。）
-                    if !center.jobs.isEmpty {
-                        Menu {
-                            Picker("排序", selection: $sortRaw) {
-                                ForEach(DownloadSort.allCases) { s in
-                                    Label(s.label, systemImage: s.icon).tag(s.rawValue)
-                                }
-                            }
-                        } label: {
-                            Text("排序")
-                        }
-                        .accessibilityLabel("排序")
-                    }
-                }
-                // ★ 「完成」只在**多选态**出现 —— 不然勾了一堆没路退出多选。
-                //   （平时那个"关页面"的完成按钮已经按用户要求去掉了。）
-                ToolbarItem(placement: .confirmationAction) {
-                    if selecting {
-                        Button("完成") { exitSelecting() }
-                    }
-                }
-            }
-            // ★ v1.0.159：批量导出 = **一次交一批**，系统只问一次"存到哪个文件夹"。
-            //   完成回调只有"成功/取消"两种结果（系统不逐个报），所以提示里不编个数之外的细节。
-            // ★ v1.0.162：先把档位问清楚再入队 —— "未经同意替他选档"也是他抱怨的那类事。
-            //   弹窗里选完会写进 UserDefaults，`batchCompress()` 从那儿读（单一来源）。
-            .sheet(isPresented: $showCompressTiers) {
-                CompressTierSheet(videoCount: compressableVideos.count,
-                                  photoCount: compressableImages.count,
-                                  videoBytes: compressableVideos.map(\.fileSize).max() ?? 0,
-                                  videoDuration: compressableVideos.max { $0.fileSize < $1.fileSize }?.duration ?? 0,
-                                  photoBytes: compressableImages.map(\.fileSize).max() ?? 0,
-                                  onDone: {
-                                      showCompressTiers = false
-                                      batchCompress()
-                                  })
-            }
-            .sheet(item: $exportBatch) { batch in
-                DocumentExporter(urls: batch.urls, onFinish: { ok in
-                    batchNote = ok
-                        ? "已导出 \(batch.urls.count) 个到你选的位置"
-                        : "已取消导出"
-                    selecting = false
-                    picked.removeAll()
-                })
-            }
         }
-        .navigationViewStyle(.stack)
+        .background(Color(.systemGroupedBackground))
+        // ★ v1.0.159：批量导出 = **一次交一批**，系统只问一次"存到哪个文件夹"。
+        //   完成回调只有"成功/取消"两种结果（系统不逐个报），所以提示里不编个数之外的细节。
+        // ★ v1.0.162：先把档位问清楚再入队 —— "未经同意替他选档"也是他抱怨的那类事。
+        //   弹窗里选完会写进 UserDefaults，`batchCompress()` 从那儿读（单一来源）。
+        .sheet(isPresented: $showCompressTiers) {
+            CompressTierSheet(videoCount: compressableVideos.count,
+                              photoCount: compressableImages.count,
+                              videoBytes: compressableVideos.map(\.fileSize).max() ?? 0,
+                              videoDuration: compressableVideos.max { $0.fileSize < $1.fileSize }?.duration ?? 0,
+                              photoBytes: compressableImages.map(\.fileSize).max() ?? 0,
+                              onDone: {
+                                  showCompressTiers = false
+                                  batchCompress()
+                              })
+        }
+        .sheet(item: $exportBatch) { batch in
+            DocumentExporter(urls: batch.urls, onFinish: { ok in
+                batchNote = ok
+                    ? "已导出 \(batch.urls.count) 个到你选的位置"
+                    : "已取消导出"
+                selecting = false
+                picked.removeAll()
+            })
+        }
         // ★ v1.0.187：没有「完成」按钮了，关页面靠往下滑 —— 那就在收起时补一次落盘，
         //   别让「列表记录的保存」只挂在那个已经不存在的按钮上（防丢数据）。
         .onDisappear { center.save() }
+    }
+
+    // MARK: - ★ v1.0.189 顶栏（自己画，不用导航栏）
+
+    /// 左边「选择」、右边「排序」；中间那行小字是**临时诊断**（滑不动那件事还没结）。
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            if selecting {
+                Button("取消") { exitSelecting() }
+            } else if !center.jobs.isEmpty {
+                Button("选择") { selecting = true; picked.removeAll() }
+            }
+            Spacer(minLength: 4)
+            Text("滑动 \(scrollOffset)")
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(.tertiary)
+            if !center.jobs.isEmpty {
+                Menu {
+                    Picker("排序", selection: $sortRaw) {
+                        ForEach(DownloadSort.allCases) { s in
+                            Label(s.label, systemImage: s.icon).tag(s.rawValue)
+                        }
+                    }
+                } label: {
+                    Text("排序")
+                }
+                .accessibilityLabel("排序")
+            }
+        }
+        .font(.system(size: 16))
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "tray")
+                .font(.system(size: 34))
+                .foregroundStyle(.tertiary)
+            Text("还没有下载任务")
+                .foregroundStyle(.secondary)
+            Text("下载好的视频留在程序里，\n需要时再点「存相册」或「存文件夹」。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 临时诊断：量 ScrollView 当前的滚动偏移（放在列表最上面，1pt 高，纯读数用）。
+    /// 他要是还滑不动，看一眼顶上那数字变不变 ——
+    /// **变 = 拖动到了滚动控件手里（问题在别处）；不变 = 触摸压根没到内容上。**
+    private var offsetProbe: some View {
+        GeometryReader { g in
+            Color.clear.preference(
+                key: DlScrollOffsetKey.self,
+                value: Int(-g.frame(in: .named("dlscroll")).minY))
+        }
+        .frame(height: 1)
     }
 
     // MARK: - ★ v1.0.127 多选与批量
