@@ -79,7 +79,7 @@ struct MergeSheet: View {
                 } else {
                     Section {
                         // ★ 卡片网格（用户要的"图标格式"）：大缩略图 + 片名 + 时长/大小
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)],
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                                   spacing: 10) {
                             ForEach(candidates) { job in
                                 SourceCard(title: job.title,
