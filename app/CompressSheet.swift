@@ -352,15 +352,19 @@ struct CompressSheet: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
-            ForEach(candidates) { job in
-                SourceRow(title: job.title,
-                          detail: "\(CompressPlan.mb(job.fileSize))MB · 已下载",
-                          thumbURL: Self.sourceThumbURL(job),
-                          icon: mode == .video ? "film" : "photo",
-                          on: pickedJobs.contains(job.id)) {
-                    togglePick(job)
+            // ★ 卡片网格（用户要的"图标格式"）—— 跟「合并视频」那页同一套卡片
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)], spacing: 10) {
+                ForEach(candidates) { job in
+                    SourceCard(title: job.title,
+                               detail: "\(CompressPlan.mb(job.fileSize))MB · 已下载",
+                               thumbURL: job.cardThumbURL,
+                               icon: mode == .video ? "film" : "photo",
+                               on: pickedJobs.contains(job.id)) {
+                        togglePick(job)
+                    }
                 }
             }
+            .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             if candidates.count > 1 {
                 Button {
                     if allPicked { pickedJobs.removeAll() }

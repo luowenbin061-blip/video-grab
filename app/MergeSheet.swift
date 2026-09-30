@@ -78,7 +78,32 @@ struct MergeSheet: View {
                     }
                 } else {
                     Section {
-                        ForEach(candidates) { job in row(job) }
+                        // ★ 卡片网格（用户要的"图标格式"）：大缩略图 + 片名 + 时长/大小
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)],
+                                  spacing: 10) {
+                            ForEach(candidates) { job in
+                                SourceCard(title: job.title,
+                                           detail: detail(job),
+                                           thumbURL: job.cardThumbURL,
+                                           icon: "film",
+                                           on: picked.contains(job.id)) {
+                                    if picked.contains(job.id) { picked.remove(job.id) }
+                                    else { picked.insert(job.id) }
+                                }
+                                // 合成序号压在卡片左上角（原列表版是行左边的数字）
+                                .overlay(alignment: .topLeading) {
+                                    if let idx = pickedJobs.firstIndex(where: { $0.id == job.id }) {
+                                        Text("\(idx + 1)")
+                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(.white)
+                                            .frame(width: 18, height: 18)
+                                            .background(Circle().fill(Color.accentColor))
+                                            .padding(5)
+                                    }
+                                }
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     } header: {
                         Text("选要合并的（按下载时间从早到晚）")
                     } footer: {

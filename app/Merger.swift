@@ -257,7 +257,6 @@ enum Merger {
     }
 
     /// 只搬运的拼接（两条路最后都走它）。
-    /// ★ `-fflags +genpts`：防拼接处时间戳不连续。
     private static func concatCopy(_ urls: [URL], output: URL, totalBytes: Int64,
                                    onProgress: @escaping (Double, String) -> Void) async throws {
         let listURL = output.deletingLastPathComponent()
@@ -365,47 +364,82 @@ enum Merger {
             }
         }
 
-        // ② 一条命令：concat demuxer 喂进来 → 统一画布/帧率 → 硬件编码 → 输出
-        let listURL = output.deletingLastPathComponent()
-            .appendingPathComponent("merge_\(UUID().uuidString.prefix(8)).txt")
-        let body = pieces.map { "file \(concatQuoted($0.path))" }.joined(separator: "\n") + "\n"
-        guard (try? body.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
-            throw Fail.ffmpegFailed(-1)
+        // ② ★★★ 用 **concat filter** 拼 —— 按「帧和采样」一段段接，**不看时间戳**。
+        //
+        //   为什么不用 concat demuxer：那是**按时间戳**接的，各段的时间戳基准 / 时基 /
+        //   采样率不一致就会**音画错位**（而且越拼越偏）。filter 版是按流接的，
+        //   **从机制上绕开整类同步问题**；每路还各自挂了 scale / aresample，差异当场被抹平。
+        //   代价：同时打开所有输入（内存占用高）—— 一次 3~5 段够用。
+        //
+        //   ★ 前提：concat filter 要求**每一路都有音频流**。有段没音轨时退回老的 demuxer 路。
+        let allHaveAudio = check.infos.allSatisfy { $0.audioChannels > 0 }
+        if !allHaveAudio {
+            let listURL = output.deletingLastPathComponent()
+                .appendingPathComponent("merge_\(UUID().uuidString.prefix(8)).txt")
+            let body = pieces.map { "file \(concatQuoted($0.path))" }.joined(separator: "\n") + "\n"
+            guard (try? body.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
+                throw Fail.ffmpegFailed(-1)
+            }
+            defer { try? FileManager.default.removeItem(at: listURL) }
+            onProgress(0.02, "正在合并…")
+            let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+                var a: [String] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                                   "-f", "concat", "-safe", "0", "-i", listURL.path,
+                                   "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
+                                   "-c", "copy", output.path]
+                var argv = a.map { strdup($0) }
+                let c = HookFFmpeg(Int32(a.count), &argv)
+                for p in argv { free(p) }
+                return c
+            }.value
+            guard code == 0, Self.bytes(of: output) > 0 else {
+                try? FileManager.default.removeItem(at: output)
+                throw Fail.ffmpegFailed(code)
+            }
+            onProgress(1.0, "合并完成")
+            return
         }
-        defer { try? FileManager.default.removeItem(at: listURL) }
 
-        var argList: [String] = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "concat", "-safe", "0", "-i", listURL.path,
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-sn", "-dn",
-        ]
-        if check.needScale {
-            argList += ["-vf", "scale=\(check.targetW):\(check.targetH):"
-                        + "force_original_aspect_ratio=decrease,"
-                        + "pad=\(check.targetW):\(check.targetH):(ow-iw)/2:(oh-ih)/2,setsar=1,"
-                        + "format=yuv420p"]
-        } else {
-            argList += ["-vf", "format=yuv420p"]        // 尺寸本来就对，只统一像素格式
+        // 每一路都先"自己收拾干净"：视频统一画布+帧率+像素格式，音频统一采样率+对齐时间轴
+        var filters: [String] = []
+        var vRefs: [String] = []
+        var aRefs: [String] = []
+        for i in pieces.indices {
+            if check.needScale {
+                filters.append("[\(i):v]"
+                    + "scale=\(check.targetW):\(check.targetH):"
+                    + "force_original_aspect_ratio=decrease,"
+                    + "pad=\(check.targetW):\(check.targetH):(ow-iw)/2:(oh-ih)/2,"
+                    + "setsar=1,fps=\(check.targetFps),format=yuv420p[v\(i)]")
+            } else {
+                filters.append("[\(i):v]"
+                    + "fps=\(check.targetFps),format=yuv420p[v\(i)]")
+            }
+            // ★ aresample=async=1000 + first_pts=0：允许音频**拉伸去追视频**，起点晚就补静音
+            //   （这正是解决"音画不同步"的那两条；async 的单位是采样数，1000 ≈ 22ms/秒）
+            filters.append("[\(i):a]"
+                + "aresample=48000:async=1000:first_pts=0,asetpts=N/SR/TB[a\(i)]")
+            vRefs.append("[v\(i)]")
+            aRefs.append("[a\(i)]")
         }
+        filters.append(vRefs.joined() + aRefs.joined()
+                       + "concat=n=\(pieces.count):v=1:a=1[outv][outa]")
+
+        var argList: [String] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        for p in pieces { argList += ["-i", p.path] }
         argList += [
-            "-r", check.targetFps,
-            "-c:v", "h264_videotoolbox",                 // 硬件编码
+            "-filter_complex", filters.joined(separator: ";"),
+            "-map", "[outv]", "-map", "[outa]",
+            "-c:v", "h264_videotoolbox",
             "-b:v", "\(check.targetBps)",
             "-maxrate", "\(Int(Double(check.targetBps) * 1.5))",
             "-bufsize", "\(check.targetBps * 2)",
             "-pix_fmt", "yuv420p",
             "-g", "60",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         ]
-        if check.audioSame {
-            argList += ["-c:a", "copy"]                  // 音频本来就一致 → 原样搬
-        } else {
-            // ★★ 2026-09-30 实测后把 `-af aresample=async=1` 删掉了：
-            //   它是“预防性”加的（防音频时间戳跳动），但会在时间戳只是“不准”时**往里塞静音** →
-            //   音频被拉长 → **声音越走越晚、跟画面对不上**（用户实测报的）。
-            //   ★ 教训：**只修确实看到的症状，不做预防性加固** ——
-            //     上一个被删的 `-fflags +genpts` 是同一个毛病。
-            argList += ["-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2"]
+        if check.totalBytes < FFmpegConverter.faststartLimit {
+            argList += ["-movflags", "+faststart"]
         }
         argList.append(output.path)
 
