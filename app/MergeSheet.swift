@@ -44,10 +44,13 @@ struct MergeSheet: View {
 
     var body: some View {
         NavigationView {
-            List {
+            // ★★ v1.0.184：`List` → `SheetPage`（ScrollView + VStack）。
+            //   原因见 SheetKit.swift 顶上的说明 —— `LazyVGrid` 塞在 `List` 的行里
+            //   列数会被算错（用户截图：一列、缩略图撑满整屏）。
+            SheetPage {
                 // ── 正在跑：无论卡片是刚打开还是"关掉又进来"，都能看到它在跑 ──
                 if queue.isRunning {
-                    Section("正在合并（关掉这个窗口它也会继续）") {
+                    SheetSection("正在合并（关掉这个窗口它也会继续）") {
                         VStack(alignment: .leading, spacing: 8) {
                             ProgressView(value: queue.progress)
                             Text(queue.phase).font(.footnote).foregroundStyle(.secondary)
@@ -56,31 +59,37 @@ struct MergeSheet: View {
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
+                        .cardRow()
                     }
                 }
 
                 if let f = queue.failure, !queue.isRunning {
-                    Section {
+                    SheetSection {
                         Text(f).font(.footnote).foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardRow()
                     }
                 }
                 if let out = queue.lastOutput, queue.state == .done {
-                    Section {
+                    SheetSection {
                         Text("✔ 已合并：\(out)\n已经放进下载列表了。")
                             .font(.footnote).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardRow()
                     }
                 }
 
                 if candidates.isEmpty {
-                    Section {
+                    SheetSection {
                         Text("还没有可以合并的视频。先在下载页下几集，再回来合。")
                             .font(.footnote).foregroundStyle(.secondary)
+                            .cardRow()
                     }
                 } else {
-                    Section {
+                    SheetSection("选要合并的（按下载时间从早到晚）",
+                                 footer: Text("卡片左上角的数字就是合成后的先后顺序。想改顺序就取消重选。")) {
                         // ★ 卡片网格（用户要的"图标格式"）：大缩略图 + 片名 + 时长/大小
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
-                                  spacing: 10) {
+                        LazyVGrid(columns: gridColumns, spacing: 10) {
                             ForEach(candidates) { job in
                                 SourceCard(title: job.title,
                                            detail: detail(job),
@@ -103,33 +112,34 @@ struct MergeSheet: View {
                                 }
                             }
                         }
-                        .frame(maxWidth: .infinity)   // ★ List 的行里要显式撑宽，
-                                                      //   否则 LazyVGrid 算不出列数、被压成一行
-                        .listRowSeparator(.hidden)    // ★ 网格里不要行分隔线
-                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                    } header: {
-                        Text("选要合并的（按下载时间从早到晚）")
-                    } footer: {
-                        Text("行左边的数字就是合成后的先后顺序。想改顺序就取消重选。")
+                        .padding(12)
                     }
 
                     if !pickedJobs.isEmpty {
-                        Section("这条会变成什么样") {
+                        SheetSection("这条会变成什么样") {
                             Text(summaryText).font(.footnote)
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .cardRow()
                         }
                     }
 
-                    Section {
+                    SheetSection {
                         if busy {
                             HStack(spacing: 8) {
                                 ProgressView()
                                 Text(checking ? "正在检查这几条…" : "正在合并…")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
+                            .cardRow()
                         } else {
-                            Button(pickedJobs.count < 2 ? "至少选两条" : "开始合并") {
+                            Button {
                                 Task { await prepare() }
+                            } label: {
+                                Text(pickedJobs.count < 2 ? "至少选两条" : "开始合并")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .frame(maxWidth: .infinity)
+                                    .cardRow()
                             }
                             .disabled(pickedJobs.count < 2)
                         }
@@ -137,7 +147,11 @@ struct MergeSheet: View {
                 }
 
                 if let errorText {
-                    Section { Text(errorText).font(.footnote).foregroundStyle(.red) }
+                    SheetSection {
+                        Text(errorText).font(.footnote).foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardRow()
+                    }
                 }
             }
             .navigationTitle("合并视频")
@@ -164,28 +178,12 @@ struct MergeSheet: View {
         }
     }
 
-    /// 一行：编号 + 标题 + 时长/大小
-    private func row(_ job: DownloadJob) -> some View {
-        let idx = pickedJobs.firstIndex(where: { $0.id == job.id })
-        return Button {
-            if picked.contains(job.id) { picked.remove(job.id) } else { picked.insert(job.id) }
-        } label: {
-            HStack(spacing: 10) {
-                Text(idx.map { "\($0 + 1)" } ?? "·")
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(idx == nil ? Color.secondary : Color.accentColor)
-                    .frame(width: 20, alignment: .trailing)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(job.title).font(.subheadline).lineLimit(1)
-                    Text(detail(job)).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: picked.contains(job.id) ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(picked.contains(job.id) ? Color.accentColor : Color.secondary)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(busy)
+    /// ★ 固定 3 列（工具箱那页同款）。外面是 `ScrollView` → 宽度是确定的，
+    ///   不会再像塞在 `List` 的行里那样被算成 1 列。
+    private var gridColumns: [GridItem] {
+        [GridItem(.flexible(), spacing: 10),
+         GridItem(.flexible(), spacing: 10),
+         GridItem(.flexible(), spacing: 10)]
     }
 
     private func detail(_ job: DownloadJob) -> String {

@@ -134,24 +134,33 @@ struct CompressSheet: View {
 
     var body: some View {
         NavigationView {
-            List {
+            // ★★ v1.0.184：`List` → `SheetPage`（ScrollView + VStack）——
+            //   原因见 `SheetKit.swift` 顶上：`LazyVGrid` 塞在 `List` 的行里，
+            //   行给的宽度建议不可靠 → 网格被算成 1 列、缩略图撑满整屏（用户截图实测）。
+            SheetPage {
                 if let note {
-                    Section { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary) }
+                    SheetSection {
+                        Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .cardRow()
+                    }
                 }
                 if let failed {
-                    Section {
+                    SheetSection {
                         Text(failed)
                             .font(.system(size: 12.5))
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
+                            .cardRow()
                     }
                 }
                 if preparing {
-                    Section {
+                    SheetSection {
                         HStack(spacing: 8) {
                             ProgressView()
                             Text("正在准备（读源文件信息）…").font(.system(size: 12.5))
                         }
+                        .cardRow()
                     }
                 }
                 if onQueuePage {
@@ -168,7 +177,6 @@ struct CompressSheet: View {
                     Button("关闭") { isPresented = false }
                 }
             }
-            .listStyle(.insetGrouped)
         }
         .navigationViewStyle(.stack)
         .confirmationDialog("要压的文件从哪来？", isPresented: $showSourceMenu,
@@ -210,7 +218,7 @@ struct CompressSheet: View {
 
     @ViewBuilder private var queuePage: some View {
         if let cur = queue.current {
-            Section {
+            SheetSection("正在压缩 · 第 \(runningOrdinal)/\(queue.items.count) 个") {
                 VStack(alignment: .leading, spacing: 6) {
                     // ★ 这里**故意不放进度条**（用户要求：进度只显示在每个任务自己那一行）
                     Text("正在压「\(cur.title)」")
@@ -224,47 +232,46 @@ struct CompressSheet: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.vertical, 4)
-            } header: {
-                Text("正在压缩 · 第 \(runningOrdinal)/\(queue.items.count) 个")
+                .cardRow(top: 12, bottom: 12)
             }
             if queue.waitingCount > 0 {
-                Section {
+                SheetSection(footer: Text("ffmpeg 在 App 内跑，外面掐不断 —— 所以「停止」只能是「当前这条压完就停」。")) {
                     Button(role: .destructive) {
                         queue.stopAfterCurrent()        // 当前这条压完就停
                     } label: {
                         Label("停止（当前这条压完就停）", systemImage: "stop.circle")
+                            .foregroundStyle(.red)
+                            .cardRow()
                     }
-                } footer: {
-                    Text("ffmpeg 在 App 内跑，外面掐不断 —— 所以「停止」只能是「当前这条压完就停」。")
-                        .font(.system(size: 11.5))
                 }
             }
         } else if queue.waitingCount > 0 {
-            Section {
+            SheetSection("排队中",
+                         footer: Text("一次只压一个（手机只有一个硬件编码器，同时压几个不会更快，只会更烫）。")) {
                 Text("有 \(queue.waitingCount) 个在排队，还没开始。")
                     .font(.system(size: 13))
+                    .cardRow()
+                SheetDivider()
                 Button {
                     startQueue()
                 } label: {
                     Text("继续压缩")
                         .font(.system(size: 15, weight: .medium))
                         .frame(maxWidth: .infinity)
+                        .cardRow()
                 }
-            } header: {
-                Text("排队中")
-            } footer: {
-                Text("一次只压一个（手机只有一个硬件编码器，同时压几个不会更快，只会更烫）。")
-                    .font(.system(size: 11.5))
             }
         }
 
         // ★★ v1.0.162：待处理（压好了等你决定）—— 不再自动进下载列表
         if queue.pendingCount > 0 {
-            Section {
+            SheetSection("待处理",
+                         footer: Text("「留下」＝收进下载列表（以后能播、能存、能删）；「丢弃」＝删掉这份压缩成品。**原片一律不动。**")) {
                 Text("有 \(queue.pendingCount) 条已压好，等你决定 —— 一共 \(CompressPlan.mb(queue.pendingBytes))MB。")
                     .font(.system(size: 12.5))
                     .fixedSize(horizontal: false, vertical: true)
+                    .cardRow()
+                SheetDivider()
                 HStack(spacing: 8) {
                     Button { queue.keepAll() } label: {
                         Text("全部留下").frame(maxWidth: .infinity)
@@ -275,17 +282,13 @@ struct CompressSheet: View {
                     }
                     .buttonStyle(.bordered)
                 }
-            } header: {
-                Text("待处理")
-            } footer: {
-                // 单个字面量 → markdown 会被渲染
-                Text("「留下」＝收进下载列表（以后能播、能存、能删）；「丢弃」＝删掉这份压缩成品。**原片一律不动。**")
-                    .font(.system(size: 11.5))
+                .cardRow(top: 10, bottom: 12)
             }
         }
 
-        Section("队列 · \(queue.items.count)/\(CompressPlan.maxQueue)") {
-            ForEach(queue.items) { item in
+        SheetSection("队列 · \(queue.items.count)/\(CompressPlan.maxQueue)") {
+            ForEach(Array(queue.items.enumerated()), id: \.element.id) { idx, item in
+                if idx > 0 { SheetDivider() }
                 QueueRow(item: item,
                          onPreview: { previewItem = SheetURL(url: $0) },
                          onCancel: { queue.cancel(item) },
@@ -293,25 +296,26 @@ struct CompressSheet: View {
                          onSave: { saveToPhotos(item) },
                          onExport: { exportItem = SheetURL(url: JobStore.file(named: $0)) },
                          onDiscard: { queue.discard(item) })
+                    .cardRow(top: 9, bottom: 9)
             }
         }
 
-        Section {
+        SheetSection(footer: Text("「清掉已经结束的行」只删列表行，不动文件 —— 留下的那份在下载列表里，丢弃的那份已经删了。")) {
             Button {
                 page = .pick
             } label: {
-                Label("再加几个文件", systemImage: "plus.circle")
+                Label("再加几个文件", systemImage: "plus.circle").cardRow()
             }
             if queue.hasFinishedRows {
+                SheetDivider()
                 Button {
                     queue.clearFinished()
                 } label: {
                     Label("清掉已经结束的行", systemImage: "trash")
+                        .foregroundStyle(.red)
+                        .cardRow()
                 }
             }
-        } footer: {
-            Text("「清掉已经结束的行」只删列表行，不动文件 —— 留下的那份在下载列表里，丢弃的那份已经删了。")
-                .font(.system(size: 11.5))
         }
     }
 
@@ -326,34 +330,40 @@ struct CompressSheet: View {
 
     @ViewBuilder private var pickPage: some View {
         if !queue.items.isEmpty {
-            Section {
+            SheetSection {
                 Button {
                     page = .queue
                 } label: {
                     Label("看队列（\(queue.items.count) 条，\(queue.liveCount) 条还没处理完）",
                           systemImage: "list.bullet")
+                        .cardRow()
                 }
             }
         }
 
-        Section {
+        SheetSection {
             Picker("", selection: $mode) {
                 ForEach(Mode.allCases) { m in Text(m.title).tag(m) }
             }
             .pickerStyle(.segmented)
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
         }
 
-        Section {
+        SheetSection(pickedJobs.isEmpty
+                     ? (mode == .video ? "选视频（可多选）" : "选图片（可多选）")
+                     : "已选 \(pickedJobs.count)/\(candidates.count) 个") {
             if candidates.isEmpty {
                 Text(mode == .video
                      ? "下载列表里还没有能压的视频 —— 也可以直接从相册/文件选（选完就开始压）。"
                      : "下载列表里还没有能压的图片 —— 也可以直接从相册/文件选（选完就开始压）。")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .cardRow()
             }
             // ★ 卡片网格（用户要的"图标格式"）—— 跟「合并视频」那页同一套卡片
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+            LazyVGrid(columns: gridColumns, spacing: 10) {
                 ForEach(candidates) { job in
                     SourceCard(title: job.title,
                                detail: "\(CompressPlan.mb(job.fileSize))MB · 已下载",
@@ -364,59 +374,65 @@ struct CompressSheet: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity)   // ★ List 的行里要显式撑宽，
-                                          //   否则 LazyVGrid 算不出列数、被压成一行
-            .listRowSeparator(.hidden)    // ★ 网格里不要行分隔线
-            .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+            .padding(12)
             if candidates.count > 1 {
+                SheetDivider()
                 Button {
                     if allPicked { pickedJobs.removeAll() }
                     else { pickedJobs = Set(candidates.map(\.id)) }
                 } label: {
                     Label(allPicked ? "取消全选" : "全选（\(candidates.count) 个）",
                           systemImage: allPicked ? "circle.slash" : "checkmark.circle")
+                        .cardRow()
                 }
             }
+            SheetDivider()
             Button {
                 showSourceMenu = true
             } label: {
                 Label("从相册 / 文件选（选完直接开压）", systemImage: "plus.circle")
+                    .cardRow()
             }
-        } header: {
-            Text(pickedJobs.isEmpty
-                 ? (mode == .video ? "选视频（可多选）" : "选图片（可多选）")
-                 : "已选 \(pickedJobs.count)/\(candidates.count) 个")
         }
 
-        Section("压到什么程度") {
+        SheetSection("压到什么程度") {
             // ★★ 一行 5 个小胶囊（用户点名的形态）
             if mode == .video {
                 VideoTierPills(raw: $videoTierRaw)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 11)
             } else {
                 PhotoTierPills(raw: $photoTierRaw)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 11)
             }
             Text(tierHint)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .cardRow(top: 7, bottom: 11)
         }
 
-        Section {
+        SheetSection(footer: Text(mode == .video
+                 ? "加入后自动开始压（一次一个），最多能排 \(CompressPlan.maxQueue) 个。压完的会停在队列里等你决定（留下 / 存相册 / 存文件夹 / 丢弃）—— 不会自己塞进下载列表。"
+                 : "加入后自动开始压（一次一个），最多能排 \(CompressPlan.maxQueue) 个。图片统一存成 JPG、按质量重压（透明通道会丢掉），不缩分辨率。原片不会被改动。")) {
             Button {
                 addSelectedToQueue()
             } label: {
                 Text(pickedJobs.isEmpty ? "先选一个文件" : "加入队列（\(pickedJobs.count) 个）")
                     .font(.system(size: 15, weight: .medium))
                     .frame(maxWidth: .infinity)
+                    .cardRow()
             }
             .disabled(pickedJobs.isEmpty)
-        } footer: {
-            // ★ 注意：`Text(三元)` 是**拼接出来的 String**，不渲染 markdown —— 这里不能写 **
-            Text(mode == .video
-                 ? "加入后自动开始压（一次一个），最多能排 \(CompressPlan.maxQueue) 个。压完的会停在队列里等你决定（留下 / 存相册 / 存文件夹 / 丢弃）—— 不会自己塞进下载列表。"
-                 : "加入后自动开始压（一次一个），最多能排 \(CompressPlan.maxQueue) 个。图片统一存成 JPG、按质量重压（透明通道会丢掉），不缩分辨率。原片不会被改动。")
-                .font(.system(size: 11.5))
         }
+    }
+
+    /// ★ 固定 3 列（工具箱那页同款）。外面是 `ScrollView` → 宽度确定，不会被算成 1 列。
+    private var gridColumns: [GridItem] {
+        [GridItem(.flexible(), spacing: 10),
+         GridItem(.flexible(), spacing: 10),
+         GridItem(.flexible(), spacing: 10)]
     }
 
     // MARK: - 动作
@@ -509,13 +525,6 @@ struct CompressSheet: View {
         }
     }
 
-    /// 下载任务自己抽的那一帧（转 MP4 时抽的）；图片就直接拿那张图
-    private static func sourceThumbURL(_ job: DownloadJob) -> URL? {
-        if let t = job.thumbName { return JobStore.file(named: t) }
-        if job.mediaKind == .image { return job.exportURL() }
-        return nil
-    }
-
     private static func base(_ name: String) -> String {
         let n = (name as NSString).deletingPathExtension
         return n.isEmpty ? name : n
@@ -579,76 +588,6 @@ struct PhotoTierPills: View {
             }
         }
         .padding(.vertical, 2)
-    }
-}
-
-// MARK: - 选源列表里的一行（缩略图 + 名字 + 体积 + 勾选）
-
-/// ★ v1.0.162：用户说"只有一个长长的列表，用着很不舒服" —— 每行补一张预览图，
-/// 一眼能认出是哪个视频；勾选框在右边。
-private struct SourceRow: View {
-    let title: String
-    let detail: String
-    /// 有缩略图就给（下载任务转 MP4 时抽的那一帧；图片就是那张图本身）
-    let thumbURL: URL?
-    let icon: String
-    let on: Bool
-    let tap: () -> Void
-
-    @State private var img: UIImage?
-    @State private var loadedKey: String?
-
-    private var key: String { thumbURL?.path ?? "-" }
-
-    var body: some View {
-        Button(action: tap) {
-            HStack(spacing: 10) {
-                cover
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 14))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Text(detail)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 6)
-                // ★ 三元两边必须是**同一种类型**（`.tertiary` 是 ShapeStyle、
-                //   `Color.accentColor` 是 Color，混着写编译不过 —— run #155 死在这行）
-                Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(on ? Color.accentColor : Color.secondary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .task(id: key) {
-            // 换行/换图才重读（降采样读，别把整张图解进内存）
-            guard loadedKey != key else { return }
-            loadedKey = key
-            guard let u = thumbURL else { img = nil; return }
-            img = await ThumbLoader.loadLocal(u, maxPx: 160)
-        }
-    }
-
-    /// 16:9 小封面。抽不到图就显示占位图标（跟下载页一个规矩）
-    private var cover: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color(.tertiarySystemFill))
-            if let img {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Image(systemName: icon)
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 64, height: 36)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 

@@ -402,8 +402,12 @@ enum Merger {
 
         // 每一路都先"自己收拾干净"：视频统一画布+帧率+像素格式，音频统一采样率+对齐时间轴
         var filters: [String] = []
-        var vRefs: [String] = []
-        var aRefs: [String] = []
+        // ★★ 交给 concat filter 的输入**必须一段一段交错**：[v0][a0][v1][a1]…
+        //   写成「先把所有 [vi] 排完、再接所有 [ai]」的话，ffmpeg 会按位置认流 ——
+        //   它把第二路视频 [v1] 当成第一段的**音频**，直接报
+        //   `Media type mismatch between ... output pad 0 (video) and ... input pad 1 (audio)`
+        //   然后整条命令失败（2026-09-30 本地实测，v1.0.181~183 一直是这个写法）。
+        var segRefs: [String] = []
         for i in pieces.indices {
             if check.needScale {
                 filters.append("[\(i):v]"
@@ -419,10 +423,9 @@ enum Merger {
             //   （这正是解决"音画不同步"的那两条；async 的单位是采样数，1000 ≈ 22ms/秒）
             filters.append("[\(i):a]"
                 + "aresample=48000:async=1000:first_pts=0,asetpts=N/SR/TB[a\(i)]")
-            vRefs.append("[v\(i)]")
-            aRefs.append("[a\(i)]")
+            segRefs.append("[v\(i)][a\(i)]")     // ★ 交错：这一段的视频紧接着它自己的音频
         }
-        filters.append(vRefs.joined() + aRefs.joined()
+        filters.append(segRefs.joined()
                        + "concat=n=\(pieces.count):v=1:a=1[outv][outa]")
 
         var argList: [String] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
