@@ -1736,39 +1736,53 @@ struct DownloadList: View {
                     }
                 } else {
                     VStack(spacing: 0) {
-                        // ★ v1.0.111：顶部四个分类按钮（视频 / 图片 / 文件 / 其他）。
-                        //   以前是列表里按类型分成四段长条 —— 任务一多，想找某一类
-                        //   得一路往下滚；现在点一下只看这一类。
-                        Picker("分类", selection: $filter) {
-                            ForEach(DownloadFilter.allCases) { f in
-                                Text(f.label).tag(f)
+                        // ★★ v1.0.188：**固定的头部 = 搜索框 + 四个分类**（不跟着列表滚）。
+                        //   搜索框改自己画（原来用系统 `.searchable`）—— 位置和样子跟参考图一致，
+                        //   也少一层"系统搜索栏在 sheet 里怎么摆"的不确定性。
+                        VStack(spacing: 9) {
+                            searchField
+                            // ★ v1.0.111：顶部四个分类按钮（视频 / 图片 / 文件 / 其他）。
+                            Picker("分类", selection: $filter) {
+                                ForEach(DownloadFilter.allCases) { f in
+                                    Text(f.label).tag(f)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            // ★ v1.0.159：切分类时，把"现在看不见的那些"从选中里去掉 ——
+                            //   否则会出现「已选 15 个」而屏幕上只勾了 12 个，
+                            //   全选/取消全选的语义也跟着乱。
+                            .onChange(of: filter) { _ in
+                                picked.formIntersection(Set(shownJobs.map(\.id)))
                             }
                         }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 10)
-                        .padding(.bottom, 2)
-                        // ★ v1.0.159：切分类时，把"现在看不见的那些"从选中里去掉 ——
-                        //   否则会出现「已选 15 个」而屏幕上只勾了 12 个，
-                        //   全选/取消全选的语义也跟着乱。
-                        .onChange(of: filter) { _ in
-                            picked.formIntersection(Set(shownJobs.map(\.id)))
-                        }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 6)
+                        .padding(.bottom, 10)
 
-                        List {
-                            Section {
-                                storageBar
-                            }
-                            if shownJobs.isEmpty {
-                                Section {
+                        // ★★ v1.0.188：**列表从 `List` 换成 `ScrollView + LazyVStack`**。
+                        //   为什么非换（用户连着两轮报「滑不动、只有右边能滑」）：
+                        //   `List` 对行的手势/命中判定有自己一套 —— 一行里塞了按钮 + 长按手势之后，
+                        //   手指按在卡片**左半边**往下拉根本不滚。换过两次手势写法都没治住，
+                        //   那就**把 List 本身换掉**：滚动归 ScrollView，卡片我自己画，
+                        //   几何 100% 可控（留白、字号不再受 List 那套默认内边距影响）。
+                        //   代价：丢掉左滑删除 —— ⋯ 菜单里的「删除」和多选里的删除都还在。
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                storageCard
+                                if shownJobs.isEmpty {
                                     Text(query.isEmpty
                                          ? "「\(filter.label)」这个分类下还没有东西"
                                          : "这一类里没搜到")
                                         .font(.system(size: 13))
                                         .foregroundStyle(.secondary)
-                                }
-                            } else {
-                                Section {
+                                        .padding(.vertical, 14)
+                                        .frame(maxWidth: .infinity)
+                                } else {
+                                    Text("\(filter.label) · \(shownJobs.count) 个")
+                                        .font(.system(size: 12.5))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.leading, 4)
+                                        .padding(.top, 2)
                                     ForEach(shownJobs) { job in
                                         JobRow(job: job, pip: center.pip,
                                                onDelete: { center.remove(job) })
@@ -1813,24 +1827,8 @@ struct DownloadList: View {
                                                         picked = [job.id]
                                                     }
                                             )
-                                            .listRowSeparator(.hidden)
-                                            .listRowBackground(Color.clear)
-                                            .listRowInsets(EdgeInsets(top: 4, leading: 10,
-                                                                      bottom: 4, trailing: 10))
                                     }
-                                    .onDelete { idx in
-                                        // ★ 按**对象**删：过滤后的下标和 center.jobs 不是一回事
-                                        let victims = idx.compactMap {
-                                            shownJobs.indices.contains($0) ? shownJobs[$0] : nil
-                                        }
-                                        for j in victims { center.remove(j) }
-                                    }
-                                } header: {
-                                    Text("\(filter.label) · \(shownJobs.count) 个")
                                 }
-                            }
-                            Section {
-                            } footer: {
                                 HStack {
                                     Text(query.isEmpty
                                          ? "共 \(center.jobs.count) 个任务"
@@ -1838,10 +1836,17 @@ struct DownloadList: View {
                                     Spacer()
                                     Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
                                 }
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.top, 4)
                             }
+                            // ★ v1.0.188：卡片左右只留 6pt（用户要求"铺满或最大程度收窄"）
+                            .padding(.horizontal, 6)
+                            .padding(.top, 6)
+                            .padding(.bottom, 40)
                         }
-                        .listStyle(.insetGrouped)
-                        .searchable(text: $query, prompt: "搜索名称、格式或类型")
+                        .background(Color(.systemGroupedBackground))
                         // ★ v1.0.154：进下载列表时统计一次；有任务在跑就自动跟着刷
                         .task {
                             center.refreshUsedSpace()
@@ -2109,6 +2114,46 @@ struct DownloadList: View {
                 + "。到工具箱「压画质省空间」里看进度。"
         }
         exitSelecting()
+    }
+
+    /// ★ v1.0.188：搜索框自己画（原来用系统 `.searchable`）——
+    /// 位置、样子都跟参考图一致，也少一层"系统搜索栏在 sheet 里怎么摆"的不确定性。
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+            TextField("搜索名称、格式或类型", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15))
+                .autocorrectionDisabled(true)
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 36)
+        .background(Color(.tertiarySystemFill),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// ★ v1.0.188：存储那张白卡（照参考图）
+    private var storageCard: some View {
+        storageBar
+            .padding(.vertical, 12)
+            .padding(.horizontal, 12)
+            .background(Color(.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     /// 顶部存储卡（★ v1.0.185 照参考图重做）：左边「已下载 X」，右边「设备剩余 Y」，
@@ -2452,6 +2497,9 @@ struct JobRow: View {
 
             }   // ← else 结束：下面这两块（过程记录）两种形态共用
             if !job.notes.isEmpty {
+                // ★ v1.0.188：加一条分隔线 —— 卡片下沿原来空着一块，
+                //   现在「过程记录」明明白白是这张卡的最后一行（也把那块空白用上了）。
+                Divider().padding(.top, 1)
                 Button {
                     showLog.toggle()
                 } label: {
@@ -2565,9 +2613,9 @@ struct JobRow: View {
         HStack(spacing: 10) {
             thumb.overlay(alignment: .bottomLeading) { playBadge }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(job.title)
-                    .font(.system(size: 14.5, weight: .semibold))
+                    .font(.system(size: 15.5, weight: .semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 metaBlock
@@ -2609,10 +2657,10 @@ struct JobRow: View {
 
     /// 「格式 · 大小 · 时长」—— ★ v1.0.187：**撑满标题右边那一整行的宽度**，
     /// 所以不会再被截成「MP4 · 112.5 M…」（用户 19:52 报的"显示不完整"）。
-    /// 真遇到特别长的（比如 1024×768 · 1.2 GB · 1:52:30）就自动缩一点字号，仍然不省略号。
+    /// ★ v1.0.188：**字号从 11 提到 12.5**（用户 21:24 说"显示得太小"）。
     private var metaBlock: some View {
         Text(metaLine)
-            .font(.system(size: 11).monospacedDigit())
+            .font(.system(size: 12.5).monospacedDigit())
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
@@ -2740,7 +2788,7 @@ struct JobRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .frame(width: 96, height: 54)
+        .frame(width: 100, height: 56)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
