@@ -1635,6 +1635,33 @@ enum DownloadFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// ★ v1.0.185：下载页右上角那个 ↑↓ 排序菜单（照用户给的参考图）。
+enum DownloadSort: String, CaseIterable, Identifiable {
+    case timeDesc, timeAsc, name, size, duration
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .timeDesc: return "下载时间（新→旧）"
+        case .timeAsc:  return "下载时间（旧→新）"
+        case .name:     return "名称"
+        case .size:     return "文件大小"
+        case .duration: return "时长"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .timeDesc: return "clock.arrow.circlepath"
+        case .timeAsc:  return "clock"
+        case .name:     return "textformat.abc"
+        case .size:     return "internaldrive"
+        case .duration: return "timer"
+        }
+    }
+}
+
 struct DownloadList: View {
     @ObservedObject var center: DownloadCenter
     @Binding var isPresented: Bool
@@ -1642,6 +1669,8 @@ struct DownloadList: View {
     @State private var query = ""
     /// ★ v1.0.111：顶部四个分类按钮当前选中的那个（默认「视频」）。
     @State private var filter: DownloadFilter = .video
+    /// ★ v1.0.185：排序方式（右上角 ↑↓ 那个菜单），记住上次选择
+    @AppStorage("dlSort") private var sortRaw = DownloadSort.timeDesc.rawValue
 
     // ── ★ v1.0.127 多选与批量 ──
     /// 多选模式（长按任意一条、或右上角「选择」进入）
@@ -1663,9 +1692,30 @@ struct DownloadList: View {
     private var shownJobs: [DownloadJob] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let base = center.jobs.filter { filter.matches($0.mediaKind) }
-        guard !q.isEmpty else { return base }
-        return base.filter {
-            $0.title.lowercased().contains(q) || $0.sourceURL.lowercased().contains(q)
+        let hit = q.isEmpty ? base : base.filter { matchesSearch($0, q) }
+        return sorted(hit)
+    }
+
+    /// ★ v1.0.185：搜索那行提示写的是「名称、格式或类型」，所以**格式和类型也得能搜**
+    /// （打 "mp4" / "视频" / "PNG" 都要有结果，不只是标题和地址）。
+    private func matchesSearch(_ job: DownloadJob, _ q: String) -> Bool {
+        if job.title.lowercased().contains(q) { return true }
+        if job.sourceURL.lowercased().contains(q) { return true }
+        if job.mediaKind.label.contains(q) { return true }
+        if let e = job.outputName, e.lowercased().contains(q) { return true }
+        return false
+    }
+
+    /// ★ v1.0.185：排序（默认按下载时间新→旧，跟以前一样）
+    private func sorted(_ list: [DownloadJob]) -> [DownloadJob] {
+        switch DownloadSort(rawValue: sortRaw) ?? .timeDesc {
+        case .timeDesc: return list.sorted { $0.createdAt > $1.createdAt }
+        case .timeAsc:  return list.sorted { $0.createdAt < $1.createdAt }
+        case .name:     return list.sorted {
+            $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
+        case .size:     return list.sorted { $0.fileSize > $1.fileSize }
+        case .duration: return list.sorted { $0.duration > $1.duration }
         }
     }
 
@@ -1720,7 +1770,14 @@ struct DownloadList: View {
                             } else {
                                 Section {
                                     ForEach(shownJobs) { job in
-                                        JobRow(job: job, pip: center.pip)
+                                        JobRow(job: job, pip: center.pip,
+                                               onDelete: { center.remove(job) })
+                                            // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
+                                            //   卡与卡之间留缝（所以去掉列表分隔线）。
+                                            .padding(10)
+                                            .background(
+                                                Color(.secondarySystemGroupedBackground),
+                                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                                             // ★ v1.0.127 多选态：盖一层透明拦截层 ——
                                             //   这样点整行就是"选中/取消"，**不会误触到行内的按钮**
                                             //   （播放、存相册那些按钮在多选时本来也不该生效）。
@@ -1745,6 +1802,10 @@ struct DownloadList: View {
                                                 selecting = true
                                                 picked = [job.id]
                                             }
+                                            .listRowSeparator(.hidden)
+                                            .listRowBackground(Color.clear)
+                                            .listRowInsets(EdgeInsets(top: 5, leading: 14,
+                                                                      bottom: 5, trailing: 14))
                                     }
                                     .onDelete { idx in
                                         // ★ 按**对象**删：过滤后的下标和 center.jobs 不是一回事
@@ -1769,7 +1830,7 @@ struct DownloadList: View {
                             }
                         }
                         .listStyle(.insetGrouped)
-                        .searchable(text: $query, prompt: "搜标题或地址")
+                        .searchable(text: $query, prompt: "搜索名称、格式或类型")
                         // ★ v1.0.154：进下载列表时统计一次；有任务在跑就自动跟着刷
                         .task {
                             center.refreshUsedSpace()
@@ -1782,8 +1843,8 @@ struct DownloadList: View {
                     }
                 }
             }
-            .navigationTitle("下载")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("我的下载")
+            .navigationBarTitleDisplayMode(.large)
             // ★ iOS 15 的老坑：`.toolbar { }` 里**不能写 if**（v1.0.97 实错过）——
             //   条件必须写在 ToolbarItem 内部。
             .toolbar {
@@ -1795,6 +1856,21 @@ struct DownloadList: View {
                         //   以前只能长按进多选 —— 藏得太深，用户反馈"批量处理没有全选"，
                         //   其实是连多选都很难发现。
                         Button("选择") { selecting = true; picked.removeAll() }
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    // ★ v1.0.185：排序（照参考图右上角那个 ↑↓）
+                    if !center.jobs.isEmpty {
+                        Menu {
+                            Picker("排序", selection: $sortRaw) {
+                                ForEach(DownloadSort.allCases) { s in
+                                    Label(s.label, systemImage: s.icon).tag(s.rawValue)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                        }
+                        .accessibilityLabel("排序")
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -2016,29 +2092,54 @@ struct DownloadList: View {
         exitSelecting()
     }
 
-    /// 顶部存储条：这个 App 占了多少、设备还剩多少。
-    /// 分母取「占用 + 可用」—— 这样这条子反映的是「本 App 在整机可用空间里的分量」，
-    /// 而不是一个没参照物的百分比。
+    /// 顶部存储卡（★ v1.0.185 照参考图重做）：左边「已下载 X」，右边「设备剩余 Y」，
+    /// 下面一条**按类别上色**的分段条（蓝=视频 / 橙=图片 / 紫=音频 / 青=文件，灰=剩余）。
+    /// 分段比一个单色进度条有用：一眼看出"空间都被什么吃了"。
     private var storageBar: some View {
-        let used = center.usedSpace
         let free = Self.deviceFreeSpace
-        let total = max(1, used + free)
-        return VStack(alignment: .leading, spacing: 6) {
+        let segs = storageSegments
+        let total = max(1, segs.reduce(Int64(0)) { $0 + $1.bytes } + free)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "internaldrive")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text("下载占用 \(DownloadJob.sizeText(used))")
-                    .font(.system(size: 12, weight: .medium))
-                Spacer()
-                Text("设备可用 \(DownloadJob.sizeText(free))")
+                Text("已下载 \(DownloadJob.sizeText(center.usedSpace))")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 6)
+                Text("设备剩余 \(DownloadJob.sizeText(free))")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             }
-            ProgressView(value: Double(used), total: Double(total))
-                .progressViewStyle(.linear)
+            GeometryReader { g in
+                HStack(spacing: 1) {
+                    ForEach(segs) { s in
+                        Rectangle()
+                            .fill(s.color)
+                            .frame(width: max(0, g.size.width
+                                * CGFloat(Double(s.bytes) / Double(total))))
+                    }
+                    Rectangle().fill(Color(.systemGray5))
+                }
+            }
+            .frame(height: 8)
+            .clipShape(Capsule())
         }
         .padding(.vertical, 2)
+    }
+
+    /// 分类型统计已用空间（只统计有文件大小的那些）
+    private var storageSegments: [StoreSeg] {
+        let kinds: [(DownloadJob.MediaKind, Color)] =
+            [(.video, .blue), (.image, .orange), (.audio, .purple), (.doc, .teal)]
+        return kinds.compactMap { k, c in
+            let n = center.jobs.filter { $0.mediaKind == k }
+                .reduce(Int64(0)) { $0 + max(0, $1.fileSize) }
+            return n > 0 ? StoreSeg(bytes: n, color: c) : nil
+        }
+    }
+
+    private struct StoreSeg: Identifiable {
+        let id = UUID()
+        let bytes: Int64
+        let color: Color
     }
 
     /// 设备可用空间 —— 实现搬到了 `JobStore.deviceFreeSpace`
@@ -2074,6 +2175,9 @@ struct JobRow: View {
     /// 故意用裸 let 而不是 @ObservedObject：这里不需要订阅画中画的每次变动，
     /// 订阅了反而会让列表每一行都跟着重绘。
     let pip: PiPProgress
+    /// ★ v1.0.185：「⋯」菜单里那个「删除」—— 删除这件事得由列表那边做
+    ///   （要进回收站、要从 `center.jobs` 里摘掉），所以用回调传进去。
+    var onDelete: (() -> Void)? = nil
     /// ★ v1.0.118：**订阅"看到哪儿了"** —— 进度记录以前是纯静态的，写进去没有任何通知，
     ///   这一行的 body 不会重画 → 缩略图底部那条进度线永远不出现（用户实测报的就是这个）。
     ///   这里只是订阅（值本身不参与布局），线照旧从 `watch.fraction(...)` 取。
@@ -2086,12 +2190,21 @@ struct JobRow: View {
     /// ★ v1.0.111：图片的「查看」入口（下好的图片点开看大图）
     @State private var viewSheet: SheetURL?
     @State private var showLog = false
+    /// ★ v1.0.185：「⋯」更多菜单（照参考图的操作表）
+    @State private var showMenu = false
+    /// ★ v1.0.185：「文件信息」小卡片
+    @State private var showInfo = false
     /// 缩略图（转码成功后抽的那一帧）。读盘一次就存下来，
     /// 不放在 body 里每次重算都读 —— 列表滚动时会很难看。
     @State private var thumbImage: UIImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
+            if folded {
+                // ★ v1.0.185：**已完成**的条目 = 参考图那种紧凑一行
+                //   （大缩略图 + 标题 + 「格式 · 大小 · 时长」+ 圆形播放/查看 + ⋯）
+                finishedRow
+            } else {
             // 左缩略图 + 右信息：列表里一眼能认出是哪个片子
             HStack(alignment: .top, spacing: 10) {
                 thumb
@@ -2230,12 +2343,7 @@ struct JobRow: View {
                         Button {
                             // ★ 每次现取地址 —— 本机服务端口每次启动都可能变，
                             //   用存下来的旧地址就是白屏的根源之一
-                            if let u = job.localPlaybackURL() {
-                                showLog = false
-                                playSheet = SheetURL(url: u)
-                            } else {
-                                job.show("这个文件现在播不了")
-                            }
+                            doPlay()
                         } label: {
                             Label("播放", systemImage: "play.fill")
                                 .font(.system(size: 12.5, weight: .medium))
@@ -2249,23 +2357,8 @@ struct JobRow: View {
                             // ★★ v1.0.166：改走**播放代理**（同一条毛病，根因见 `MediaProxy`）——
                             //   AVPlayer 自己带不上头（私有键对 HLS 不可靠）→ 防盗链的站必 403。
                             // ★★ v1.0.167：跟回收站那条**走同一套** —— 先体检，死了说人话。
-                            let hs = job.playbackHeaders
-                            let src = job.sourceURL
-                            job.show("正在检查这个地址…")
-                            Task { @MainActor in
-                                if let why = await MediaProxy.probe(src, headers: hs) {
-                                    job.show("播不了 —— " + why)
-                                    return
-                                }
-                                if let proxied = MediaProxy.wrap(src, headers: hs) {
-                                    playSheet = SheetURL(url: proxied, headers: nil)
-                                } else if let u = URL(string: src) {
-                                    // 代理起不来 → 退回原地址直连（头照旧带上）
-                                    playSheet = SheetURL(url: u, headers: hs)
-                                } else {
-                                    job.show("地址不合法")
-                                }
-                            }
+                            // ★ v1.0.185：整段收进 `doPlay()`，「⋯」菜单里的「播放」共用同一套。
+                            doPlay()
                         } label: {
                             Label("在线播放", systemImage: "play")
                                 .font(.system(size: 12.5, weight: .medium))
@@ -2276,11 +2369,7 @@ struct JobRow: View {
                         // ★ v1.0.111：图片没得"播"，给「查看」—— 点开看大图。
                         //   以前图片下完在列表里只有一行字，想确认下的是哪张图都没辙。
                         Button {
-                            if let u = job.exportURL() {
-                                viewSheet = SheetURL(url: u)
-                            } else {
-                                job.show("文件不在了")
-                            }
+                            doViewImage()
                         } label: {
                             Label("查看", systemImage: "photo")
                                 .font(.system(size: 12.5, weight: .medium))
@@ -2303,11 +2392,7 @@ struct JobRow: View {
                     .disabled(!job.canSaveToPhotos)
 
                     Button {
-                        if let u = job.exportURL() {
-                            exportSheet = SheetURL(url: u)
-                        } else {
-                            job.show("文件不在了")
-                        }
+                        doExport()
                     } label: {
                         Label("存文件夹", systemImage: "folder")
                             .font(.system(size: 12))
@@ -2320,11 +2405,7 @@ struct JobRow: View {
                     // ★ v1.0.119：分享（系统分享面板）—— 跟"存文件夹"并排，
                     //   两者不冲突：存文件夹是直接选位置，分享是发给别的 App / 存到文件。
                     Button {
-                        if let u = job.exportURL() {
-                            shareSheet = SheetURL(url: u)
-                        } else {
-                            job.show("文件不在了")
-                        }
+                        doShare()
                     } label: {
                         Label("分享", systemImage: "square.and.arrow.up")
                             .font(.system(size: 12))
@@ -2350,6 +2431,7 @@ struct JobRow: View {
                 }
             }
 
+            }   // ← else 结束：下面这两块（过程记录）两种形态共用
             if !job.notes.isEmpty {
                 Button {
                     showLog.toggle()
@@ -2430,6 +2512,179 @@ struct JobRow: View {
         .fullScreenCover(item: $viewSheet) { s in
             ImageViewerSheet(url: s.url, title: job.title)
         }
+        // ★ v1.0.185：右边那个「⋯」= 系统底部操作表（跟用户给的参考图一致：标题是文件名）
+        .confirmationDialog(job.outputName ?? job.title,
+                            isPresented: $showMenu, titleVisibility: .visible) {
+            if job.mediaKind == .video {
+                Button("播放") { doPlay() }
+            } else if job.mediaKind == .image {
+                Button("查看") { doViewImage() }
+            }
+            Button("分享") { doShare() }
+            Button("保存到相册") { Task { await job.saveToPhotos() } }
+                .disabled(!job.canSaveToPhotos)
+            Button("保存到［文件］") { doExport() }
+            Button("文件信息") { showInfo = true }
+            Button("复制源文件地址") { doCopyLink() }
+            if let onDelete {
+                Button("删除", role: .destructive) { onDelete() }
+            }
+        }
+        .sheet(isPresented: $showInfo) {
+            JobInfoSheet(job: job)
+        }
+    }
+
+    // MARK: - ★ v1.0.185 紧凑一行（照用户给的参考图）
+
+    /// **已完成、且文件还在** → 走紧凑那一行。
+    /// 进行中 / 失败 / 文件丢了 的条目仍走原来那套详细的（进度、原因、暂停重试都还要）。
+    private var folded: Bool { job.finished && !job.fileMissing }
+
+    /// 紧凑行：大缩略图 + 标题 + 「格式 · 大小 · 时长」+ 圆形播放/查看 + ⋯
+    private var finishedRow: some View {
+        HStack(spacing: 12) {
+            thumb.overlay(alignment: .bottomLeading) { playBadge }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(job.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(metaLine)
+                    .font(.system(size: 11.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                // 该说的话一句不少，只是不再占一排按钮
+                if job.failed == nil && !job.mp4Ready && job.mediaKind == .video {
+                    Label("MP4 没转出来", systemImage: "info.circle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                }
+                if let n = job.notice {
+                    Text(n)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.green)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 2)
+
+            primaryButton
+
+            Button {
+                showMenu = true
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("更多")
+        }
+    }
+
+    /// 「格式 · 大小 · 时长」—— 参考图那一行小字
+    private var metaLine: String {
+        var s: [String] = [formatText]
+        if job.fileSize > 0 { s.append(DownloadJob.sizeText(job.fileSize)) }
+        if job.duration > 0 { s.append(DownloadJob.durationText(job.duration)) }
+        return s.joined(separator: " · ")
+    }
+
+    /// 文件格式：先看成品后缀（MP4 / MOV / JPG…），拿不到就退回类别名
+    private var formatText: String {
+        if let n = job.outputName, !n.isEmpty {
+            let e = (n as NSString).pathExtension.uppercased()
+            if !e.isEmpty { return e }
+        }
+        return job.mediaKind.label
+    }
+
+    /// 圆形主按钮：视频=播放（本地优先、没有就线上），图片=查看；其余类别不给
+    @ViewBuilder private var primaryButton: some View {
+        switch job.mediaKind {
+        case .video:
+            circleButton("play.fill", "播放") { doPlay() }
+        case .image:
+            circleButton("photo", "查看") { doViewImage() }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func circleButton(_ icon: String, _ label: String,
+                              tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Color.accentColor))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// 缩略图左下角那个小播放三角（照参考图；只有视频才画）
+    @ViewBuilder private var playBadge: some View {
+        if job.mediaKind == .video {
+            Image(systemName: "play.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+                .padding(5)
+        }
+    }
+
+    // MARK: - ★ v1.0.185 动作（列表里那排按钮和「⋯」菜单共用同一套）
+
+    /// 播放：**本地优先**；本地没有就退回在线（带防盗链头 + 先体检，死了说人话）
+    private func doPlay() {
+        if job.mediaKind == .video, let u = job.localPlaybackURL() {
+            showLog = false
+            playSheet = SheetURL(url: u)
+            return
+        }
+        let hs = job.playbackHeaders
+        let src = job.sourceURL
+        job.show("正在检查这个地址…")
+        Task { @MainActor in
+            if let why = await MediaProxy.probe(src, headers: hs) {
+                job.show("播不了 —— " + why)
+                return
+            }
+            if let proxied = MediaProxy.wrap(src, headers: hs) {
+                playSheet = SheetURL(url: proxied, headers: nil)
+            } else if let u = URL(string: src) {
+                // 代理起不来 → 退回原地址直连（头照旧带上）
+                playSheet = SheetURL(url: u, headers: hs)
+            } else {
+                job.show("地址不合法")
+            }
+        }
+    }
+
+    private func doViewImage() {
+        if let u = job.exportURL() { viewSheet = SheetURL(url: u) } else { job.show("文件不在了") }
+    }
+
+    private func doShare() {
+        if let u = job.exportURL() { shareSheet = SheetURL(url: u) } else { job.show("文件不在了") }
+    }
+
+    private func doExport() {
+        if let u = job.exportURL() { exportSheet = SheetURL(url: u) } else { job.show("文件不在了") }
+    }
+
+    /// 复制源地址 —— 出问题时把它发出去，或者贴到浏览器里再下一次
+    private func doCopyLink() {
+        UIPasteboard.general.string = job.sourceURL
+        job.show("源地址已复制")
     }
 
     /// 左侧缩略图（16:9）。
@@ -2514,6 +2769,75 @@ struct JobRow: View {
             Text(text).font(.system(size: 11).monospacedDigit())
         }
         .foregroundStyle(.secondary)
+    }
+}
+
+/// ★ v1.0.185：「⋯」→「文件信息」那张小卡片（照参考图的菜单项）。
+/// 为什么单独给一张：列表上现在是紧凑行，规格只挤得下一行；想细看时得有地方看全。
+struct JobInfoSheet: View {
+    @ObservedObject var job: DownloadJob
+    @Environment(\.dismiss) private var dismiss
+
+    private var formatText: String {
+        if let n = job.outputName, !n.isEmpty {
+            let e = (n as NSString).pathExtension.uppercased()
+            if !e.isEmpty { return e }
+        }
+        return job.mediaKind.label
+    }
+
+    private var rows: [(String, String)] {
+        var r: [(String, String)] = [("标题", job.title), ("状态", job.phase)]
+        if let f = job.failed { r.append(("失败原因", f)) }
+        r.append(("类型", job.mediaKind.label))
+        r.append(("格式", formatText))
+        if job.fileSize > 0 { r.append(("大小", DownloadJob.sizeText(job.fileSize))) }
+        if job.duration > 0 { r.append(("时长", DownloadJob.durationText(job.duration))) }
+        if let res = job.resolution, !res.isEmpty { r.append(("画面", res)) }
+        r.append(("下载于", JobRecord.formatter.string(from: job.createdAt)))
+        if let n = job.outputName { r.append(("本地文件", n)) }
+        r.append(("源地址", job.sourceURL))
+        return r
+    }
+
+    var body: some View {
+        NavigationView {
+            SheetPage {
+                SheetSection {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                        if idx > 0 { SheetDivider() }
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(row.0)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 62, alignment: .leading)
+                            Text(row.1)
+                                .font(.system(size: 13))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .cardRow(top: 10, bottom: 10)
+                    }
+                }
+                SheetSection(footer: Text("地址那行可以长按选中复制；「⋯」菜单里的「复制源文件地址」是一步到位。")) {
+                    Button {
+                        UIPasteboard.general.string = job.sourceURL
+                        dismiss()
+                    } label: {
+                        Label("复制源文件地址", systemImage: "link").cardRow()
+                    }
+                }
+            }
+            .navigationTitle("文件信息")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
     }
 }
 
