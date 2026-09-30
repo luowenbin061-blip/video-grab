@@ -23,6 +23,9 @@ struct MergeSheet: View {
     @State private var progress: Double = 0
     @State private var noteText = ""
     @State private var errorText: String?
+    /// 规格只差在分辨率/声道时，把差异文本拿在手里 → 弹一次问他要不要照合
+    @State private var confirmText: String?
+    @State private var showConfirm = false
 
     /// 能合进来的：视频、且成品**真的在磁盘上**
     private var candidates: [DownloadJob] {
@@ -93,7 +96,7 @@ struct MergeSheet: View {
                             }
                         } else {
                             Button(pickedJobs.count < 2 ? "至少选两条" : "开始合并") {
-                                Task { await run() }
+                                Task { await run(force: false) }
                             }
                             .disabled(pickedJobs.count < 2)
                         }
@@ -113,6 +116,15 @@ struct MergeSheet: View {
                     Button(running ? "合并中…" : "关闭") { isPresented = false }
                         .disabled(running)
                 }
+            }
+            .alert("这几条的规格不完全一样", isPresented: $showConfirm) {
+                Button("仍然合并") {
+                    confirmText = nil
+                    Task { await run(force: true) }
+                }
+                Button("取消", role: .cancel) { confirmText = nil }
+            } message: {
+                Text(confirmText ?? "")
             }
         }
     }
@@ -166,7 +178,7 @@ struct MergeSheet: View {
 
     // MARK: - 干活
 
-    private func run() async {
+    private func run(force: Bool) async {
         let grouped = parts
         guard !grouped.isEmpty else { return }
         running = true
@@ -196,7 +208,7 @@ struct MergeSheet: View {
             let total = grouped.count
             let title = group.first?.title ?? "合并"
             do {
-                try await Merger.merge(sources, output: out) { p, msg in
+                try await Merger.merge(sources, output: out, force: force) { p, msg in
                     Task { @MainActor in
                         // 把"这一段"的进度摊到整体上，不然分段时进度条会反复回零
                         progress = (Double(i) + p) / Double(total)
@@ -204,7 +216,15 @@ struct MergeSheet: View {
                     }
                 }
             } catch {
-                errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                // ★ 规格只差在分辨率/声道 → **不直接失败**，先弹一次把差异摆给他看，
+                //   他点「仍然合并」才硬拼。（编码不同是 fatal，走到的是 else 那条。）
+                if let f = error as? Merger.Fail, case .mismatched = f {
+                    confirmText = msg
+                    showConfirm = true
+                } else {
+                    errorText = msg
+                }
                 return
             }
 

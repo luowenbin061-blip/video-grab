@@ -35,14 +35,20 @@ enum Merger {
         var seconds: Double
         var bytes: Int64
 
-        /// 判"能不能直接拼"的指纹（分辨率 + 视频编码 + 声道数）
-        var fingerprint: String { "\(width)x\(height)/\(videoCodec)/\(audioChannels)" }
+        /// 判"能不能直接拼"的指纹 —— ★ 只认**分辨率 + 视频编码**。
+        ///   声道数**不算**：ffmpeg 照搬每条流，它不影响能不能拼；
+        ///   算进去只会把本来能合的片子挡在门外（2026-09-30 实测踩到）。
+        var fingerprint: String { "\(width)x\(height)/\(videoCodec)" }
+
+        /// 给人看的规格串 —— 合并前的提示要**逐条列出来**（只说"规格不一样"等于没说）
+        var describe: String { "\(width)×\(height) · \(videoCodec) · \(audioChannels) 声道" }
     }
 
     enum Fail: LocalizedError {
         case tooFew
         case unreadable(String)
-        case mismatched(String)
+        case mismatched(String)      // 规格有差异 —— 带回差异文本，让调用方决定要不要强合
+        case codecMix(String)        // 视频编码不同 —— 真的不能合（会花屏）
         case ffmpegFailed(Int32)
         case emptyOutput
 
@@ -53,7 +59,9 @@ enum Merger {
             case .unreadable(let n):
                 return "读不出「\(n)」的画面信息，这条可能坏了"
             case .mismatched(let d):
-                return "这几条的规格不一样，直接拼会花屏：\n\(d)\n（要合并得重新编码，慢很多）"
+                return d
+            case .codecMix(let d):
+                return d
             case .ffmpegFailed(let c):
                 return "合并失败（ffmpeg 退出码 \(c)）"
             case .emptyOutput:
@@ -117,30 +125,75 @@ enum Merger {
 
     // MARK: - 合并
 
-    /// 合并成一条 MP4。
-    /// - Parameter onProgress: (0…1, 人话)。进度靠**输出文件大小 ÷ 输入总大小**算 ——
-    ///   `-c copy` 的输出大小≈输入之和，所以这个比值站得住，且每 500ms 只读一次文件属性，不碰 ffmpeg。
-    static func merge(_ sources: [Source], output: URL,
-                      onProgress: @escaping (Double, String) -> Void) async throws {
-        guard sources.count >= 2 else { throw Fail.tooFew }
+    /// 合并前的体检结果
+    struct Check {
+        var infos: [Info]
+        var fatal: String?          // 不能合（编码不同）
+        var warnings: [String]      // 能合但有代价
+        var report: String          // 给人看的：差异 + 逐条规格
+        var totalBytes: Int64
+        var totalSec: Double
+    }
 
+    /// 体检一次。
+    ///
+    /// ★★ 为什么改成"先体检、再由调用方决定"（2026-09-30 用户实测后）：
+    ///   原来一发现规格不同就**直接拒绝** —— 结果**同一部剧下的几集也被拒**。
+    ///   而那几集往往只差分辨率或声道（源站各集清晰度不一样很常见），
+    ///   `-c copy` 拼起来**通常照样能播**。一律拒绝 = 把功能废掉。
+    ///   现在分两层：
+    ///     · **视频编码不同**（H.264 混 H.265）→ 真的不能合，拦住；
+    ///     · **只差分辨率 / 声道** → 能合，但把差异**逐条列出来**让他自己定。
+    static func inspect(_ sources: [Source]) async throws -> Check {
         var infos: [Info] = []
         for s in sources {
             guard let i = await probe(s.url) else { throw Fail.unreadable(s.title) }
             infos.append(i)
         }
 
-        // ① 参数一致性：不一致就直接拒绝，别产出坏文件
-        let groups = Dictionary(grouping: infos, by: { $0.fingerprint })
-        if groups.count > 1 {
-            let desc = groups.map { fp, list in
-                "· \(fp) —— \(list.count) 条"
-            }.sorted().joined(separator: "\n")
-            throw Fail.mismatched(desc)
+        let codecs = Set(infos.map { $0.videoCodec })
+        var fatal: String? = nil
+        if codecs.count > 1 {
+            fatal = "这几条的视频编码不一样（\(codecs.sorted().joined(separator: " / "))），"
+                + "合出来会是花屏 —— 建议分开合。"
         }
 
-        let totalBytes = infos.reduce(Int64(0)) { $0 + $1.bytes }
-        let totalSec = infos.reduce(0.0) { $0 + $1.seconds }
+        var warnings: [String] = []
+        let sizes = Set(infos.map { "\($0.width)×\($0.height)" })
+        if sizes.count > 1 {
+            warnings.append("· 分辨率不一样：\(sizes.sorted().joined(separator: " / "))\n"
+                + "  切换处可能黑一下、画面比例会变，但通常能看。")
+        }
+        let chans = Set(infos.map { "\($0.audioChannels)" })
+        if chans.count > 1 {
+            warnings.append("· 声道数不一样：\(chans.sorted().map { "\($0)" }.joined(separator: " / ")) 声道"
+                + "（一般不影响）")
+        }
+
+        let lines = zip(sources, infos).map { "· \($0.title)：\($1.describe)" }
+        let report = (warnings + ["" , "各条的规格："] + lines).joined(separator: "\n")
+
+        return Check(infos: infos, fatal: fatal, warnings: warnings, report: report,
+                     totalBytes: infos.reduce(Int64(0)) { $0 + $1.bytes },
+                     totalSec: infos.reduce(0.0) { $0 + $1.seconds })
+    }
+
+    /// 合并成一条 MP4。
+    /// - Parameter force: 规格有差异时是否照合（差异只到"分辨率/声道"这一层才用得上；
+    ///   视频编码不同一律拦）。
+    /// - Parameter onProgress: (0…1, 人话)。进度靠**输出文件大小 ÷ 输入总大小**算 ——
+    ///   `-c copy` 的输出大小≈输入之和，所以这个比值站得住，且每 500ms 只读一次文件属性，不碰 ffmpeg。
+    static func merge(_ sources: [Source], output: URL, force: Bool = false,
+                      onProgress: @escaping (Double, String) -> Void) async throws {
+        guard sources.count >= 2 else { throw Fail.tooFew }
+
+        // ① 先体检 —— 判定和合本身分开，界面才能"先问过他再合"
+        let check = try await inspect(sources)
+        if let bad = check.fatal { throw Fail.codecMix(bad) }
+        if !check.warnings.isEmpty, !force { throw Fail.mismatched(check.report) }
+
+        let totalBytes = check.totalBytes
+        let totalSec = check.totalSec
 
         // ② concat 列表文件（ffmpeg 的 concat demuxer 格式）
         let listURL = output.deletingLastPathComponent()
