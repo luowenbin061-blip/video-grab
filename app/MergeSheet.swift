@@ -2,32 +2,29 @@ import SwiftUI
 
 /// 「合并视频」这张卡 —— 从工具箱进。
 ///
-/// 用途：一部短剧下了好几集，一集一个文件，看着散、播着断；合成一条连着看。
+/// 用途：下了好几集，一集一个文件，看着散、播着断；合成一条连着看。
 ///
-/// ★ 为什么默认按**时间从早到晚**排：集数通常是按顺序下的，
-///   而程序并不知道"哪条是第几集"（标题里也可能没有集号）——
-///   所以顺序**默认按下载时间**，并且**把选中的编号摆在行上**，让他一眼看清合出来的先后对不对。
-///   （不给他拖拽排序：真要调，取消重选更直接。）
+/// ★ 为什么默认按**时间从早到晚**排：集数通常按顺序下，程序并不知道"哪条是第几集"，
+///   所以顺序按下载时间，并把**选中的编号摆在行上**，让他一眼看清先后对不对。
 ///
-/// ★ 分段：一部 42 集的剧合成一条会变成 2~3GB 的大文件（他要"合成一条"，
-///   但手机装不下是常态），所以给一个开关让他按每 N 集切段。
+/// ★★ 任务**不在这里跑** —— 交给 `MergeQueue`（单例）。
+///   本卡片只干两件事：**收集选择** + **把队列的进度显示出来**。
+///   这样关掉窗口任务照样跑、进度不丢（用户 2026-09-30 实测报过这个问题）。
 @MainActor
 struct MergeSheet: View {
     let center: DownloadCenter
     @Binding var isPresented: Bool
 
+    /// ★ 状态活在单例里 —— 卡片销毁了它还在
+    @ObservedObject private var queue = MergeQueue.shared
+
     @State private var picked: Set<UUID> = []
-    @State private var splitOn = false
-    @State private var perPart = 10
-    @State private var running = false
-    @State private var progress: Double = 0
-    @State private var noteText = ""
-    @State private var errorText: String?
-    /// 规格只差在分辨率/声道时，把差异文本拿在手里 → 弹一次问他要不要照合
+    @State private var checking = false
+    /// 规格有差异 / 编码不同时，把差异文本拿在手里 → 弹一次确认
     @State private var confirmText: String?
     @State private var showConfirm = false
-    /// 差异是「编码不同」（那种「仍然直接拼」没意义，只会花屏），还是「只差分辨率/声道」
     @State private var fatalMix = false
+    @State private var errorText: String?
 
     /// 能合进来的：视频、且成品**真的在磁盘上**
     private var candidates: [DownloadJob] {
@@ -43,19 +40,37 @@ struct MergeSheet: View {
 
     private var pickedBytes: Int64 { pickedJobs.reduce(0) { $0 + max(0, $1.fileSize) } }
     private var pickedSeconds: Double { pickedJobs.reduce(0) { $0 + max(0, $1.duration) } }
-
-    /// 分几段
-    private var parts: [[DownloadJob]] {
-        let all = pickedJobs
-        guard splitOn, perPart > 0, all.count > perPart else { return all.isEmpty ? [] : [all] }
-        return stride(from: 0, to: all.count, by: perPart).map {
-            Array(all[$0..<min($0 + perPart, all.count)])
-        }
-    }
+    private var busy: Bool { queue.isRunning || checking }
 
     var body: some View {
         NavigationView {
             List {
+                // ── 正在跑：无论卡片是刚打开还是"关掉又进来"，都能看到它在跑 ──
+                if queue.isRunning {
+                    Section("正在合并（关掉这个窗口它也会继续）") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ProgressView(value: queue.progress)
+                            Text(queue.phase).font(.footnote).foregroundStyle(.secondary)
+                            if let e = queue.etaText {
+                                Text("大概还要 \(e)")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                if let f = queue.failure, !queue.isRunning {
+                    Section {
+                        Text(f).font(.footnote).foregroundStyle(.red)
+                    }
+                }
+                if let out = queue.lastOutput, queue.state == .done {
+                    Section {
+                        Text("✔ 已合并：\(out)\n已经放进下载列表了。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+
                 if candidates.isEmpty {
                     Section {
                         Text("还没有可以合并的视频。先在下载页下几集，再回来合。")
@@ -63,42 +78,30 @@ struct MergeSheet: View {
                     }
                 } else {
                     Section {
-                        ForEach(candidates) { job in
-                            row(job)
-                        }
+                        ForEach(candidates) { job in row(job) }
                     } header: {
                         Text("选要合并的（按下载时间从早到晚）")
                     } footer: {
                         Text("行左边的数字就是合成后的先后顺序。想改顺序就取消重选。")
                     }
 
-                    Section("怎么合") {
-                        Toggle("分段合成", isOn: $splitOn)
-                            .disabled(running)
-                        if splitOn {
-                            Picker("每段集数", selection: $perPart) {
-                                Text("5 集").tag(5)
-                                Text("10 集").tag(10)
-                                Text("20 集").tag(20)
-                            }
-                            .disabled(running)
-                        }
-                        if !pickedJobs.isEmpty {
-                            Text(summaryText)
-                                .font(.footnote)
+                    if !pickedJobs.isEmpty {
+                        Section("这条会变成什么样") {
+                            Text(summaryText).font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                     }
 
                     Section {
-                        if running {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ProgressView(value: progress)
-                                Text(noteText).font(.footnote).foregroundStyle(.secondary)
+                        if busy {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text(checking ? "正在检查这几条…" : "正在合并…")
+                                    .font(.footnote).foregroundStyle(.secondary)
                             }
                         } else {
                             Button(pickedJobs.count < 2 ? "至少选两条" : "开始合并") {
-                                Task { await run(force: false) }
+                                Task { await prepare() }
                             }
                             .disabled(pickedJobs.count < 2)
                         }
@@ -106,42 +109,34 @@ struct MergeSheet: View {
                 }
 
                 if let errorText {
-                    Section {
-                        Text(errorText).font(.footnote).foregroundStyle(.red)
-                    }
+                    Section { Text(errorText).font(.footnote).foregroundStyle(.red) }
                 }
             }
             .navigationTitle("合并视频")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(running ? "合并中…" : "关闭") { isPresented = false }
-                        .disabled(running)
+                    // ★ 合并中也能关 —— 任务在后台跑，重新进来还能看到进度
+                    Button("关闭") {
+                        isPresented = false
+                        queue.tidyIfFinished()
+                    }
                 }
             }
             .alert(fatalMix ? "这几条的编码不一样" : "这几条的规格不完全一样",
                    isPresented: $showConfirm) {
-                if !fatalMix {
-                    Button("仍然直接拼（快；规格不同时画面可能卡住）") {
-                        confirmText = nil
-                        Task { await run(force: true) }
-                    }
-                }
                 Button("重新编码后合并（慢，但画质损失最小）") {
                     confirmText = nil
-                    Task { await run(force: false, reencode: true) }
+                    startRun(force: true)
                 }
                 Button("取消", role: .cancel) { confirmText = nil }
             } message: {
-                // ★ 他问过"到底该选哪个" —— 与其让他记，不如让弹窗自己说。
-                Text((confirmText ?? "")
-                     + "\n\n建议选「重新编码后合并」：它只放大不缩小、能跳过的段不重压，"
-                     + "画质损失最小。直接拼只适合「你确定没问题、只想快看一眼」的场合。")
+                Text(confirmText ?? "")
             }
         }
     }
 
-    /// 一行：编号 + 缩略图 + 标题 + 时长/大小
+    /// 一行：编号 + 标题 + 时长/大小
     private func row(_ job: DownloadJob) -> some View {
         let idx = pickedJobs.firstIndex(where: { $0.id == job.id })
         return Button {
@@ -162,7 +157,7 @@ struct MergeSheet: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(running)
+        .disabled(busy)
     }
 
     private func detail(_ job: DownloadJob) -> String {
@@ -181,114 +176,86 @@ struct MergeSheet: View {
         let n = pickedJobs.count
         let mins = Int((pickedSeconds / 60).rounded())
         let size = ByteCountFormatter.string(fromByteCount: pickedBytes, countStyle: .file)
-        var line = "已选 \(n) 条 · 合计约 \(max(1, mins)) 分钟 · 约 \(size)"
-        if splitOn, parts.count > 1 {
-            line += "\n按每 \(perPart) 集切成 \(parts.count) 段"
-        }
-        return line
+        return "已选 \(n) 条 · 合计约 \(max(1, mins)) 分钟 · 约 \(size)\n"
+            + "合成一条；画面尺寸取最大那一档（只放大、不缩小，画质损失最小）。"
     }
 
     // MARK: - 干活
 
-    private func run(force: Bool, reencode: Bool = false) async {
-        let grouped = parts
-        guard !grouped.isEmpty else { return }
-        running = true
+    private func sources() -> [Merger.Source] {
+        pickedJobs.compactMap { job -> Merger.Source? in
+            guard let n = job.outputName else { return nil }
+            return Merger.Source(url: JobStore.file(named: n), title: job.title)
+        }
+    }
+
+    /// 点「开始合并」：**先自己体检一次**（决定要不要弹窗问），再把任务交给队列
+    private func prepare() async {
+        let srcs = sources()
+        guard srcs.count >= 2 else { return }
+        checking = true
+        defer { checking = false }
         errorText = nil
-        defer { running = false }
-
-        let fm = FileManager.default
-        let stamp = DownloadJob.stamp(Date())
-        var made = 0
-
-        for (i, group) in grouped.enumerated() {
-            let sources: [Merger.Source] = group.compactMap { job in
-                guard let n = job.outputName else { return nil }
-                return Merger.Source(url: JobStore.file(named: n), title: job.title)
+        do {
+            let check = try await Merger.inspect(srcs)
+            if let bad = check.fatal {
+                fatalMix = true
+                confirmText = bad
+                showConfirm = true
+            } else if !check.warnings.isEmpty {
+                fatalMix = false
+                confirmText = check.report
+                showConfirm = true
+            } else {
+                startRun(force: false)          // 全一致 → 直接跑（那条路是"零损失、秒级"）
             }
-            guard sources.count >= 2 else { continue }
-
-            // 文件名：整条就用首条的标题；分段再带上是第几段
-            let head = group.first?.title ?? "合并"
-            let base = DownloadJob.safeFileName(head)
-            let name = grouped.count > 1
-                ? "\(base)_第\(i + 1)段_\(stamp).mp4"
-                : "\(base)_合并_\(stamp).mp4"
-            let out = JobStore.file(named: name)
-            try? fm.removeItem(at: out)
-
-            let total = grouped.count
-            let title = group.first?.title ?? "合并"
-            do {
-                let tick: (Double, String) -> Void = { p, msg in
-                    Task { @MainActor in
-                        // 把"这一段"的进度摊到整体上，不然分段时进度条会反复回零
-                        progress = (Double(i) + p) / Double(total)
-                        noteText = total > 1 ? "第 \(i + 1)/\(total) 段 · \(msg)" : msg
-                    }
-                }
-                if reencode {
-                    // 规格真的对不上 → 逐集重编码成统一规格，再拼
-                    try await Merger.mergeByReencoding(sources, output: out, onProgress: tick)
-                } else {
-                    try await Merger.merge(sources, output: out, force: force, onProgress: tick)
-                }
-            } catch {
-                let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                // ★ 规格只差在分辨率/声道 → **不直接失败**，先弹一次把差异摆给他看，
-                //   他点「仍然合并」才硬拼。（编码不同是 fatal，走到的是 else 那条。）
-                if let f = error as? Merger.Fail {
-                    switch f {
-                    case .codecMix(let d):
-                        // 编码不同：直接拼必然花屏 → 只给"重编码"这条路
-                        fatalMix = true; confirmText = d; showConfirm = true
-                    case .mismatched(let d):
-                        fatalMix = false; confirmText = d; showConfirm = true
-                    default:
-                        errorText = msg
-                    }
-                } else {
-                    errorText = msg
-                }
-                return
-            }
-
-            register(name: name, title: title, group: group, seconds: group.reduce(0) { $0 + $1.duration },
-                     bytes: JobStore.size(of: name), firstJob: group.first)
-            made += 1
+        } catch {
+            errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
 
-        if made > 0 {
-            center.save()
-            noteText = "合并完成"
-            isPresented = false
-        } else {
-            errorText = "没有合成任何东西（每条至少要 2 条）"
+    /// 真正开跑 —— 状态由 `MergeQueue` 管，这里只负责"输出名 + 完成后登记进下载列表"
+    private func startRun(force: Bool) {
+        let srcs = sources()
+        guard srcs.count >= 2 else { return }
+        _ = force
+
+        let head = srcs.first?.title ?? "合并"
+        let name = "\(DownloadJob.safeFileName(head))_合并_\(DownloadJob.stamp(Date())).mp4"
+        // ★ 缩略图**先取出来**（值类型）—— 闭包不依赖 View 的状态
+        let thumb = pickedJobs.first?.thumbName
+        let count = srcs.count
+        let firstTitle = head
+        let center = self.center
+
+        queue.onFinished = { outputName, title in
+            register(name: outputName, title: title, count: count,
+                     thumbSource: thumb, center: center)
         }
+        queue.start(sources: srcs, outputName: name, output: JobStore.file(named: name))
+        _ = firstTitle
     }
 
     /// 把成品登记成下载列表里的一条 —— 复用导入那条路（`local://` 开头、产物字段共用），
     /// 所以列表卡片 / 播放 / 存相册 / 存文件夹全都不用改。
-    private func register(name: String, title: String, group: [DownloadJob],
-                          seconds: Double, bytes: Int64, firstJob: DownloadJob?) {
-        let job = DownloadJob(title: "\(title)（合并 \(group.count) 条）",
+    private func register(name: String, title: String, count: Int,
+                          thumbSource: String?, center: DownloadCenter) {
+        let job = DownloadJob(title: "\(title)（合并 \(count) 条）",
                               sourceURL: "local://merge",
                               kind: .video)
         job.outputName = name
         job.mp4Ready = true
-        job.fileSize = bytes
-        job.duration = seconds
+        job.fileSize = JobStore.size(of: name)
         job.phase = "合并完成"
         job.finished = true
-        job.notes.append("· 由 \(group.count) 条已下载的视频合并而成")
-        // 缩略图借首条那张（复制一份，按新 id 命名）——
-        // 不复制的话这条记录在列表里就是个空白格
-        if let t = firstJob?.thumbName, JobStore.exists(named: t) {
+        job.notes.append("· 由 \(count) 条视频合并而成")
+        if let t = thumbSource, JobStore.exists(named: t) {
             let mine = DownloadJob.thumbName(for: job.id)
             try? FileManager.default.copyItem(at: JobStore.file(named: t),
-                                             to: JobStore.file(named: mine))
+                                              to: JobStore.file(named: mine))
             job.thumbName = mine
         }
         center.jobs.insert(job, at: 0)
+        center.save()
     }
 }

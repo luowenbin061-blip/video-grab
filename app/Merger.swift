@@ -400,9 +400,12 @@ enum Merger {
         if check.audioSame {
             argList += ["-c:a", "copy"]                  // 音频本来就一致 → 原样搬
         } else {
-            // ★ aresample=async=1：HLS 产物的音频时间戳常有跳动，它强制连续（DeepSeek 提的，采纳）
-            argList += ["-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                        "-af", "aresample=async=1"]
+            // ★★ 2026-09-30 实测后把 `-af aresample=async=1` 删掉了：
+            //   它是“预防性”加的（防音频时间戳跳动），但会在时间戳只是“不准”时**往里塞静音** →
+            //   音频被拉长 → **声音越走越晚、跟画面对不上**（用户实测报的）。
+            //   ★ 教训：**只修确实看到的症状，不做预防性加固** ——
+            //     上一个被删的 `-fflags +genpts` 是同一个毛病。
+            argList += ["-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2"]
         }
         argList.append(output.path)
 
