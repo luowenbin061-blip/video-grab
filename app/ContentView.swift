@@ -1774,7 +1774,10 @@ struct DownloadList: View {
                                                onDelete: { center.remove(job) })
                                             // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
                                             //   卡与卡之间留缝（所以去掉列表分隔线）。
-                                            .padding(10)
+                                            // ★ v1.0.187：照用户要求把卡片**左右留白收窄**
+                                            //   （里 9 + 外 10 = 每侧 19pt，原来是 24pt）。
+                                            .padding(.vertical, 9)
+                                            .padding(.horizontal, 10)
                                             .background(
                                                 Color(.secondarySystemGroupedBackground),
                                                 in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -1796,16 +1799,24 @@ struct DownloadList: View {
                                                         }
                                                 }
                                             }
-                                            // 长按任意一条 → 进多选（跟 iOS 相册一个手感）
-                                            .onLongPressGesture(minimumDuration: 0.4) {
-                                                guard !selecting else { return }
-                                                selecting = true
-                                                picked = [job.id]
-                                            }
+                                            // ★ v1.0.187：长按进多选改用 **simultaneousGesture**。
+                                            //   以前是 `.onLongPressGesture` —— 它会把触摸"占住"，
+                                            //   手指按在卡片上往下拉时列表发涩甚至不动
+                                            //   （用户 20:50 报「滑不动」的两个原因之一）。
+                                            //   并存手势 + 默认 10pt 最大位移：一滑动它自己就失败，
+                                            //   滚动照常；**按住不动 0.45 秒**才进多选。
+                                            .simultaneousGesture(
+                                                LongPressGesture(minimumDuration: 0.45)
+                                                    .onEnded { _ in
+                                                        guard !selecting else { return }
+                                                        selecting = true
+                                                        picked = [job.id]
+                                                    }
+                                            )
                                             .listRowSeparator(.hidden)
                                             .listRowBackground(Color.clear)
-                                            .listRowInsets(EdgeInsets(top: 5, leading: 14,
-                                                                      bottom: 5, trailing: 14))
+                                            .listRowInsets(EdgeInsets(top: 4, leading: 10,
+                                                                      bottom: 4, trailing: 10))
                                     }
                                     .onDelete { idx in
                                         // ★ 按**对象**删：过滤后的下标和 center.jobs 不是一回事
@@ -1843,8 +1854,11 @@ struct DownloadList: View {
                     }
                 }
             }
-            .navigationTitle("我的下载")
-            .navigationBarTitleDisplayMode(.large)
+            // ★ v1.0.187：按用户要求**去掉页面顶部那行大字标题** ——
+            //   它不承担任何功能，还把屏幕最上面那块占掉了。
+            //   导航栏只留左边「选择」、右边「排序」。
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             // ★ iOS 15 的老坑：`.toolbar { }` 里**不能写 if**（v1.0.97 实错过）——
             //   条件必须写在 ToolbarItem 内部。
             .toolbar {
@@ -1859,7 +1873,9 @@ struct DownloadList: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    // ★ v1.0.185：排序（照参考图右上角那个 ↑↓）
+                    // ★ v1.0.187：按用户要求 —— **去掉「完成」，把这个位置让给「排序」**，
+                    //   并且排序按钮改成**文字「排序」**，不用图标。
+                    //   （关这个页面：往下滑收起就行，不需要一个专门的按钮。）
                     if !center.jobs.isEmpty {
                         Menu {
                             Picker("排序", selection: $sortRaw) {
@@ -1868,16 +1884,16 @@ struct DownloadList: View {
                                 }
                             }
                         } label: {
-                            Image(systemName: "arrow.up.arrow.down")
+                            Text("排序")
                         }
                         .accessibilityLabel("排序")
                     }
                 }
+                // ★ 「完成」只在**多选态**出现 —— 不然勾了一堆没路退出多选。
+                //   （平时那个"关页面"的完成按钮已经按用户要求去掉了。）
                 ToolbarItem(placement: .confirmationAction) {
                     if selecting {
-                        Button("完成") { exitSelecting() }     // 退出多选
-                    } else {
-                        Button("完成") { center.save(); isPresented = false }
+                        Button("完成") { exitSelecting() }
                     }
                 }
             }
@@ -1907,6 +1923,9 @@ struct DownloadList: View {
             }
         }
         .navigationViewStyle(.stack)
+        // ★ v1.0.187：没有「完成」按钮了，关页面靠往下滑 —— 那就在收起时补一次落盘，
+        //   别让「列表记录的保存」只挂在那个已经不存在的按钮上（防丢数据）。
+        .onDisappear { center.save() }
     }
 
     // MARK: - ★ v1.0.127 多选与批量
@@ -2543,18 +2562,15 @@ struct JobRow: View {
 
     /// 紧凑行：大缩略图 + 标题 + 「格式 · 大小 · 时长」+ 圆形播放/查看 + ⋯
     private var finishedRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             thumb.overlay(alignment: .bottomLeading) { playBadge }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(job.title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 14.5, weight: .semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(metaLine)
-                    .font(.system(size: 11.5).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                metaBlock
                 // 该说的话一句不少，只是不再占一排按钮
                 if job.failed == nil && !job.mp4Ready && job.mediaKind == .video {
                     Label("MP4 没转出来", systemImage: "info.circle.fill")
@@ -2568,8 +2584,12 @@ struct JobRow: View {
                         .lineLimit(2)
                 }
             }
-
-            Spacer(minLength: 2)
+            // ★★ v1.0.187 关键改动：**用 maxWidth 占满中间这一列**。
+            //   以前这儿放的是 `Spacer(minLength: 2)` —— 它会跟文字**抢宽度**：
+            //   结果标题右边被压窄、三项信息被截成「MP4 · 112.5 M…」，
+            //   而且文字和右边按钮之间空出一大块（用户 19:52 报的「留白过大 + 显示不完整」
+            //   就是这个原因，两个问题一个根）。
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             primaryButton
 
@@ -2585,6 +2605,18 @@ struct JobRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel("更多")
         }
+    }
+
+    /// 「格式 · 大小 · 时长」—— ★ v1.0.187：**撑满标题右边那一整行的宽度**，
+    /// 所以不会再被截成「MP4 · 112.5 M…」（用户 19:52 报的"显示不完整"）。
+    /// 真遇到特别长的（比如 1024×768 · 1.2 GB · 1:52:30）就自动缩一点字号，仍然不省略号。
+    private var metaBlock: some View {
+        Text(metaLine)
+            .font(.system(size: 11).monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 「格式 · 大小 · 时长」—— 参考图那一行小字
@@ -2708,7 +2740,7 @@ struct JobRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .frame(width: 104, height: 58)
+        .frame(width: 96, height: 54)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
@@ -2731,13 +2763,17 @@ struct JobRow: View {
             }
         }
         .task(id: key) {
+            // ★★ v1.0.187：这里以前是 `UIImage(contentsOfFile:)` —— **主线程整张解码**！
+            //   一屏 20 条 = 20 张图在主线程上同步读盘 + 解码（1080p 的抽帧解出来约 8MB/张），
+            //   列表滑动必然一顿一顿、甚至划不动（用户 20:50 报「滑不动」的**主因**就在这儿）。
+            //   改成走 ThumbLoader：**降采样 + 后台队列解码 + 缓存** —— 图片那条路本来就是它。
             thumbImage = nil
             if let u = job.thumbURL {
-                thumbImage = UIImage(contentsOfFile: u.path)
+                thumbImage = await ThumbLoader.loadLocal(u, maxPx: 200)
                 return
             }
             if job.mediaKind == .image, let f = job.exportURL() {
-                thumbImage = await ThumbLoader.loadLocal(f)
+                thumbImage = await ThumbLoader.loadLocal(f, maxPx: 200)
             }
         }
     }
