@@ -178,6 +178,69 @@ enum Merger {
                      totalSec: infos.reduce(0.0) { $0 + $1.seconds })
     }
 
+    /// **重新编码后合并** —— 规格真的对不上时（尤其编码不同）唯一的出路。
+    ///
+    /// ★ 为什么不是「一条命令 concat filter 全搞定」：十几集一起走 `-filter_complex concat`，
+    ///   命令行会长到离谱、内存也顶不住。这里改成**逐集先转成统一规格、再走一遍 concat copy**：
+    ///   每一步都简单、能报进度，最后那步仍然只是"搬运"。
+    ///
+    /// 代价（必须让他知道，不能默默变慢）：**慢**（每集都要重编码）、**画质会掉一点**、
+    /// 中间文件会临时占地方（收尾自动删）。
+    static func mergeByReencoding(_ sources: [Source], output: URL,
+                                  onProgress: @escaping (Double, String) -> Void) async throws {
+        guard sources.count >= 2 else { throw Fail.tooFew }
+        let check = try await inspect(sources)
+
+        // 统一到"最窄的那一档" —— 不放大：放大只费时间、不长信息
+        let widths = check.infos.map { $0.width }.filter { $0 > 0 }
+        guard let narrow = widths.min() else { throw Fail.unreadable(sources[0].title) }
+        let targetW = max(2, narrow - (narrow % 2))      // h264 要求偶数
+
+        let fm = FileManager.default
+        var tmps: [URL] = []
+        defer { for t in tmps { try? fm.removeItem(at: t) } }   // 中间文件用完必删
+
+        let n = sources.count
+        for (i, s) in sources.enumerated() {
+            onProgress(Double(i) / Double(n + 1), "正在重编码第 \(i + 1)/\(n) 集…")
+            let tmp = JobStore.file(named: "mergetmp_\(UUID().uuidString.prefix(8)).mp4")
+            try? fm.removeItem(at: tmp)
+
+            // ★ 这里的参数是"统一"的目的地：同编码 / 同宽 / 同像素格式 / 同音频参数，
+            //   转完之后它们才真的能走 concat copy。
+            let args: [String] = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", s.url.path,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-sn", "-dn",
+                "-vf", "scale=\(targetW):-2",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                "-movflags", "+faststart",
+                tmp.path,
+            ]
+            let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+                var argv = args.map { strdup($0) }
+                let c = HookFFmpeg(Int32(args.count), &argv)
+                for p in argv { free(p) }
+                return c
+            }.value
+            guard code == 0, JobStore.size(of: tmp.lastPathComponent) > 0 else {
+                throw Fail.ffmpegFailed(code)
+            }
+            tmps.append(tmp)
+        }
+
+        // 转完就都是同一规格了 → 复用"只搬运"那条路拼起来（force 因为指纹里还带着原分辨率）
+        let converted = tmps.map { Source(url: $0, title: $0.lastPathComponent) }
+        onProgress(Double(n) / Double(n + 1), "正在拼接…")
+        try await merge(converted, output: output, force: true) { p, msg in
+            // 逐集那 0…n/(n+1) 已经报过了，这里把最后一段摊进去
+            onProgress(Double(n) / Double(n + 1) + p / Double(n + 1), msg)
+        }
+    }
+
     /// 合并成一条 MP4。
     /// - Parameter force: 规格有差异时是否照合（差异只到"分辨率/声道"这一层才用得上；
     ///   视频编码不同一律拦）。

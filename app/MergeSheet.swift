@@ -26,6 +26,8 @@ struct MergeSheet: View {
     /// 规格只差在分辨率/声道时，把差异文本拿在手里 → 弹一次问他要不要照合
     @State private var confirmText: String?
     @State private var showConfirm = false
+    /// 差异是「编码不同」（那种「仍然直接拼」没意义，只会花屏），还是「只差分辨率/声道」
+    @State private var fatalMix = false
 
     /// 能合进来的：视频、且成品**真的在磁盘上**
     private var candidates: [DownloadJob] {
@@ -117,10 +119,17 @@ struct MergeSheet: View {
                         .disabled(running)
                 }
             }
-            .alert("这几条的规格不完全一样", isPresented: $showConfirm) {
-                Button("仍然合并") {
+            .alert(fatalMix ? "这几条的编码不一样" : "这几条的规格不完全一样",
+                   isPresented: $showConfirm) {
+                if !fatalMix {
+                    Button("仍然直接拼（快，可能花屏）") {
+                        confirmText = nil
+                        Task { await run(force: true) }
+                    }
+                }
+                Button("重新编码后合并（慢，画质略降）") {
                     confirmText = nil
-                    Task { await run(force: true) }
+                    Task { await run(force: false, reencode: true) }
                 }
                 Button("取消", role: .cancel) { confirmText = nil }
             } message: {
@@ -178,7 +187,7 @@ struct MergeSheet: View {
 
     // MARK: - 干活
 
-    private func run(force: Bool) async {
+    private func run(force: Bool, reencode: Bool = false) async {
         let grouped = parts
         guard !grouped.isEmpty else { return }
         running = true
@@ -208,20 +217,33 @@ struct MergeSheet: View {
             let total = grouped.count
             let title = group.first?.title ?? "合并"
             do {
-                try await Merger.merge(sources, output: out, force: force) { p, msg in
+                let tick: (Double, String) -> Void = { p, msg in
                     Task { @MainActor in
                         // 把"这一段"的进度摊到整体上，不然分段时进度条会反复回零
                         progress = (Double(i) + p) / Double(total)
                         noteText = total > 1 ? "第 \(i + 1)/\(total) 段 · \(msg)" : msg
                     }
                 }
+                if reencode {
+                    // 规格真的对不上 → 逐集重编码成统一规格，再拼
+                    try await Merger.mergeByReencoding(sources, output: out, onProgress: tick)
+                } else {
+                    try await Merger.merge(sources, output: out, force: force, onProgress: tick)
+                }
             } catch {
                 let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 // ★ 规格只差在分辨率/声道 → **不直接失败**，先弹一次把差异摆给他看，
                 //   他点「仍然合并」才硬拼。（编码不同是 fatal，走到的是 else 那条。）
-                if let f = error as? Merger.Fail, case .mismatched = f {
-                    confirmText = msg
-                    showConfirm = true
+                if let f = error as? Merger.Fail {
+                    switch f {
+                    case .codecMix(let d):
+                        // 编码不同：直接拼必然花屏 → 只给"重编码"这条路
+                        fatalMix = true; confirmText = d; showConfirm = true
+                    case .mismatched(let d):
+                        fatalMix = false; confirmText = d; showConfirm = true
+                    default:
+                        errorText = msg
+                    }
                 } else {
                     errorText = msg
                 }
