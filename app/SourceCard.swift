@@ -1,14 +1,18 @@
 import SwiftUI
 import UIKit
 
-/// 选片用的**卡片**（「合并视频」和「压画质」两处共用）。
+/// 选片用的**图标卡片**（「合并视频」和「压画质」两处共用）。
 ///
-/// ★ 用户 2026-09-30：「选择列表能不能做成**图标格式**，不要做成列表格式，
-///   并且都带上缩略图来供用户更好的识别」。
-///   原来那版（v1.0.162）是"列表 + 每行一张小图"——他还是觉得不好认。
-///   这版改成**网格里的卡片**：一张大缩略图 + 片名 + 时长/大小，一眼扫过去就能挑。
+/// ★★ 用户 2026-09-30 18:38 给了验收标准（相册/文件那种**图标格式**）：
+///   **缩略图居中 + 名称居中 + 一行小字**，排成网格；**没有大卡片底色**。
+///   之前那版是"封面撑满整格 + 文字左对齐 + 白色卡片底" —— 不是他要的。
 ///
-/// ★ 缩略图读取复用 `ThumbLoader`（**降采样**读，别把整张图解进内存）。
+/// ★★ 上一版还有一个**致命写法**（就是"缩略图撑满整屏"的根因）：
+///   给 `ZStack{ 底 + Image().resizable().scaledToFill() }` 挂一个
+///   **16:9 的 `aspectRatio` + `.fill`** —— 在**高度不受限**的上下文里，
+///   `.fill` 会拿图片的**原始尺寸**当理想尺寸，封面于是被撑到几千点高，
+///   把整格撑爆（用户截图：图片糊满屏幕）。
+///   **改法：高度写死、宽度跟随格子**（下面 `coverH`）。确定、不可能被内容撑开。
 struct SourceCard: View {
     let title: String
     let detail: String
@@ -19,6 +23,9 @@ struct SourceCard: View {
     let on: Bool
     let tap: () -> Void
 
+    /// 缩略图那块的高度 —— **写死**，宽度跟着格子走（3 列时约 104×60 ≈ 16:9）
+    private let coverH: CGFloat = 60
+
     @State private var img: UIImage?
     @State private var loadedKey: String?
 
@@ -26,39 +33,26 @@ struct SourceCard: View {
 
     var body: some View {
         Button(action: tap) {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .topTrailing) {
-                    cover
-                    // ★ 选中标：有图的时候直接压在图上，得给个阴影才看得见
-                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 19))
-                        .foregroundStyle(on ? Color.accentColor : Color.white)
-                        .background(Circle().fill(on ? Color.white : Color.black.opacity(0.35)))
-                        .padding(5)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 12.5))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(detail)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 6)
+            VStack(spacing: 5) {
+                cover
+                Text(title)
+                    .font(.system(size: 11.5))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
             }
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground)))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(on ? Color.accentColor : Color.clear, lineWidth: 2))
+            .frame(maxWidth: .infinity, alignment: .top)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .task(id: key) {
-            // 换片才重读（降采样读）
+            // 换片才重读（降采样读，别把整张图解进内存）
             guard loadedKey != key else { return }
             loadedKey = key
             guard let u = thumbURL else { img = nil; return }
@@ -66,23 +60,39 @@ struct SourceCard: View {
         }
     }
 
-    /// 16:9 封面。抽不到图就显示占位图标（跟下载页一个规矩）
+    /// 缩略图（就是"图标"那一块）：居中、固定高度、圆角；选中套一圈亮边
     private var cover: some View {
         ZStack {
-            Rectangle().fill(Color(.tertiarySystemFill))
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color(.tertiarySystemFill))
             if let img {
-                Image(uiImage: img).resizable().scaledToFill()
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
             } else {
                 Image(systemName: icon)
-                    .font(.system(size: 24))
+                    .font(.system(size: 20))
                     .foregroundStyle(.secondary)
             }
         }
-        .aspectRatio(16.0 / 9.0, contentMode: .fill)
-        .clipped()
+        // ★★ 先定高、再撑满宽 —— 顺序和写法都不能改（改回 aspectRatio(.fill) 就会重演撑爆）
+        .frame(height: coverH)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(on ? Color.accentColor : Color.clear, lineWidth: 2.5)
+        )
+        .overlay(alignment: .topTrailing) {
+            // ★ 选中标：压在缩略图右上角（有图时得有个底才看得清）
+            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 17))
+                .foregroundStyle(on ? Color.accentColor : Color.white)
+                .background(Circle().fill(on ? Color.white : Color.black.opacity(0.35)))
+                .padding(4)
+        }
     }
 }
-
 
 extension DownloadJob {
     /// 卡片要用的缩略图地址（有就给）—— 合并页和压缩页共用同一套取法
