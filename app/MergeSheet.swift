@@ -127,13 +127,16 @@ struct MergeSheet: View {
                         Task { await run(force: true) }
                     }
                 }
-                Button("重新编码后合并（慢，画质略降）") {
+                Button("重新编码后合并（慢，但画质损失最小）") {
                     confirmText = nil
                     Task { await run(force: false, reencode: true) }
                 }
                 Button("取消", role: .cancel) { confirmText = nil }
             } message: {
-                Text(confirmText ?? "")
+                // ★ 他问过"到底该选哪个" —— 与其让他记，不如让弹窗自己说。
+                Text((confirmText ?? "")
+                     + "\n\n建议选「重新编码后合并」：它只放大不缩小、能跳过的段不重压，"
+                     + "画质损失最小。直接拼只适合「你确定没问题、只想快看一眼」的场合。")
             }
         }
     }

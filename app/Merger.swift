@@ -1,23 +1,32 @@
 import AVFoundation
+import CoreMedia
 import Foundation
 
-/// 把几条已下载的成品**合并成一条**（整部剧一次看完）。
+/// 把几条视频**合并成一条**（整部剧连着看、规格乱七八糟混着合都行）。
 ///
-/// ══ 为什么不重新编码 ══
+/// ══ 两条路 ══
 ///
-/// 同一部剧的各集通常同源、同参数，`-c copy` 只搬数据、不重编码 ——
-/// 12 集几十秒就能合完，画质零损失。这条路跟 `FFmpegConverter` 的"换封装"是同一个套路
-/// （那边已经在真机上跑了很久，`HookFFmpeg` 的调用姿势直接照抄）。
+/// · **直接搬**（`-c copy`）：各段参数**真的一模一样**时，一个像素都不动 —— 秒级、零损失。
+/// · **重新编码**：参数不一样时躲不掉（要改画面尺寸），但**损失可以做到最小**。
 ///
-/// ★★ **合并前必须先查各集参数是否一致**：不一致时 `-c copy` **不会报错**，
-///   而是产出花屏 / 音画不同步的坏文件 —— 那种坏法比失败更糟（用户以为成功了）。
-///   所以这里先探一遍（分辨率 / 视频编码 / 采样率），不一致就**拒绝**并说明原因。
+/// ★★ **画质优先是硬要求**（用户 2026-09-30 原话「画质降低特别特别特别在意」）。三条原则：
+///
+///   1. **只放大、不缩小** —— 画布取"**面积最大**的那一档"。
+///      缩小时信息**真的没了**；放大只是变虚、不丢信息。所以谁都不该被缩小。
+///   2. **能不重编码就不重编码** —— 以前是**每一段都被压一遍**，这是白丢画质。
+///      参数跟目标真一样的段**直接搬**（零损失），只转不一样的。
+///   3. **码率取源里最高的**（不是平均）—— 平均会把高码率那几段压过头。
+///
+/// ══ 怎么判"参数真的一样" ══
+///
+/// **不能只看分辨率** —— 那是表面。H.264 真正决定"能不能直接拼"的是 **SPS/PPS 参数集那串字节**
+/// （MP4 里只有一份，拼接时不会更新 → 不一样就"画面卡住、声音继续"，用户实测踩过）。
+/// 所以用 `CMVideoFormatDescriptionGetH264ParameterSetAtIndex` 把那串字节取出来**逐字节比对**；
+/// 不是 H.264 的（H.265 等）退回"编码名 + 宽高"当指纹 —— 保守，但**宁可多转一段也不漏判**。
 ///
 /// ══ 参数怎么探 ══
 ///
-/// 用 `AVURLAsset`，**不用 ffprobe** —— ffmpeg/ffprobe 在进程内跑，
-/// **拿不到它们的 stdout**（`Compressor` 里为了拿进度都得写 `-progress <文件>`）。
-/// 而 AVFoundation 是现成的、纯 Swift 的，拿分辨率/编码/时长足够了。
+/// 用 `AVURLAsset`，**不用 ffprobe** —— ffmpeg/ffprobe 在进程内跑，**拿不到它们的 stdout**。
 enum Merger {
 
     /// 一条待合并的输入
@@ -32,25 +41,26 @@ enum Merger {
         var height: Int
         var videoCodec: String
         var audioChannels: Int
+        var audioSampleRate: Int
         var seconds: Double
         var bytes: Int64
-        /// 标称帧率（0 = 读不出）—— 统一规格时要一并统一，否则拼接后时间戳会乱
         var fps: Double
+        /// ★ "能不能直接拼"的真指纹：H.264 用 **SPS/PPS 的字节**；其他编码退回"编码名+宽高"
+        var paramKey: String
 
-        /// 判"能不能直接拼"的指纹 —— ★ 只认**分辨率 + 视频编码**。
-        ///   声道数**不算**：ffmpeg 照搬每条流，它不影响能不能拼；
-        ///   算进去只会把本来能合的片子挡在门外（2026-09-30 实测踩到）。
-        var fingerprint: String { "\(width)x\(height)/\(videoCodec)" }
+        /// 给人看的规格串 —— 提示里要**逐条列出来**（只说"规格不一样"等于没说）
+        var describe: String {
+            "\(width)×\(height) · \(videoCodec) · \(audioChannels) 声道"
+        }
 
-        /// 给人看的规格串 —— 合并前的提示要**逐条列出来**（只说"规格不一样"等于没说）
-        var describe: String { "\(width)×\(height) · \(videoCodec) · \(audioChannels) 声道" }
+        var pixels: Int { width * height }
     }
 
     enum Fail: LocalizedError {
         case tooFew
         case unreadable(String)
-        case mismatched(String)      // 规格有差异 —— 带回差异文本，让调用方决定要不要强合
-        case codecMix(String)        // 视频编码不同 —— 真的不能合（会花屏）
+        case mismatched(String)      // 参数有差异 —— 带回差异文本，让调用方决定
+        case codecMix(String)        // 视频编码不同 —— 直接拼必然出问题
         case ffmpegFailed(Int32)
         case emptyOutput
 
@@ -74,45 +84,55 @@ enum Merger {
 
     // MARK: - 探测
 
-    /// 读一条素材的分辨率 / 编码 / 声道 / 时长 / 字节数。
-    /// 拿不到视轨就返回 nil（说明这条不是能拼的视频）。
     static func probe(_ url: URL) async -> Info? {
         let asset = AVURLAsset(url: url)
         guard let tracks = try? await asset.load(.tracks) else { return nil }
         guard let v = tracks.first(where: { $0.mediaType == .video }) else { return nil }
 
         let size = (try? await v.load(.naturalSize)) ?? .zero
+        let w = Int(abs(size.width)), h = Int(abs(size.height))
         var codec = "?"
+        var key = ""
         if let descs = try? await v.load(.formatDescriptions), let d = descs.first {
-            let sub = CMFormatDescriptionGetMediaSubType(d)
-            codec = fourCC(sub)
+            codec = fourCC(CMFormatDescriptionGetMediaSubType(d))
+            key = parameterKey(d, codec: codec, w: w, h: h)
         }
-        var channels = 0
-        if let a = tracks.first(where: { $0.mediaType == .audio }) {
-            if let descs = try? await a.load(.formatDescriptions), let d = descs.first,
-               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(d) {
-                channels = Int(asbd.pointee.mChannelsPerFrame)
-            }
+        var channels = 0, rate = 0
+        if let a = tracks.first(where: { $0.mediaType == .audio }),
+           let descs = try? await a.load(.formatDescriptions), let d = descs.first,
+           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(d) {
+            channels = Int(asbd.pointee.mChannelsPerFrame)
+            rate = Int(asbd.pointee.mSampleRate)
         }
         let fps = Double((try? await v.load(.nominalFrameRate)) ?? 0)
         let sec = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
-        let bytes = Self.bytes(of: url)
+        let n = Self.bytes(of: url)
 
-        return Info(width: Int(abs(size.width)), height: Int(abs(size.height)),
-                    videoCodec: codec, audioChannels: channels,
-                    seconds: sec.isFinite ? sec : 0, bytes: bytes,
-                    fps: fps.isFinite ? fps : 0)
+        return Info(width: w, height: h, videoCodec: codec,
+                    audioChannels: channels, audioSampleRate: rate,
+                    seconds: sec.isFinite ? sec : 0, bytes: n,
+                    fps: fps.isFinite ? fps : 0,
+                    paramKey: key)
     }
 
-    /// 文件字节数（拿不到算 0）—— 写法照抄项目里的 `Compressor.size`：
-    /// `(try? …)?[.size]`（`try?` 只包住那次调用），别写成 `try? (…[.size])`。
-    private static func bytes(of url: URL) -> Int64 {
-        guard let n = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
-        else { return 0 }
-        return n.int64Value
+    /// ★★ "能不能直接拼"的真指纹。H.264 取 **SPS/PPS 的字节**；其他编码退回"编码名 + 宽高"。
+    private static func parameterKey(_ d: CMFormatDescription, codec: String,
+                                     w: Int, h: Int) -> String {
+        guard codec == "H.264" else { return "\(codec)-\(w)x\(h)" }
+        var out = ""
+        for i in 0..<2 {                       // 0 = SPS，1 = PPS
+            var ptr: UnsafePointer<UInt8>?
+            var size = 0
+            let st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                d, parameterSetIndex: i,
+                parameterSetPointerOut: &ptr, parameterSetSizeOut: &size,
+                parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
+            guard st == noErr, let p = ptr, size > 0 else { continue }
+            out += Data(bytes: p, count: size).base64EncodedString()
+        }
+        return out.isEmpty ? "\(codec)-\(w)x\(h)" : out
     }
 
-    /// 四条字符的编码标识 → 可读名（认不出就原样返回，别假装认识）
     private static func fourCC(_ c: FourCharCode) -> String {
         let bytes = [UInt8((c >> 24) & 0xFF), UInt8((c >> 16) & 0xFF),
                      UInt8((c >> 8) & 0xFF), UInt8(c & 0xFF)]
@@ -127,27 +147,35 @@ enum Merger {
         }
     }
 
-    // MARK: - 合并
-
-    /// 合并前的体检结果
-    struct Check {
-        var infos: [Info]
-        var fatal: String?          // 不能合（编码不同）
-        var warnings: [String]      // 能合但有代价
-        var report: String          // 给人看的：差异 + 逐条规格
-        var totalBytes: Int64
-        var totalSec: Double
+    /// 文件字节数（拿不到算 0）—— 写法照抄项目里的 `Compressor.size`
+    private static func bytes(of url: URL) -> Int64 {
+        guard let n = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
+        else { return 0 }
+        return n.int64Value
     }
 
-    /// 体检一次。
-    ///
-    /// ★★ 为什么改成"先体检、再由调用方决定"（2026-09-30 用户实测后）：
-    ///   原来一发现规格不同就**直接拒绝** —— 结果**同一部剧下的几集也被拒**。
-    ///   而那几集往往只差分辨率或声道（源站各集清晰度不一样很常见），
-    ///   `-c copy` 拼起来**通常照样能播**。一律拒绝 = 把功能废掉。
-    ///   现在分两层：
-    ///     · **视频编码不同**（H.264 混 H.265）→ 真的不能合，拦住；
-    ///     · **只差分辨率 / 声道** → 能合，但把差异**逐条列出来**让他自己定。
+    // MARK: - 体检
+
+    struct Check {
+        var infos: [Info]
+        var fatal: String?
+        var warnings: [String]
+        var report: String
+        var totalBytes: Int64
+        var totalSec: Double
+        /// 目标画布（★ 取"面积最大那一档" —— 只放大、不缩小）
+        var targetW: Int
+        var targetH: Int
+        var targetFps: String
+        var targetBps: Int
+        /// 每一段单独看：**要不要重编码**（跟目标真一致的段不用 —— 那是零损失）
+        var needTranscode: [Bool]
+        /// 全部段的参数真的完全一样（这种情况直接搬，零损失、秒级）
+        var allSame: Bool
+        /// 声音参数全一致（一致就原样搬，不重编码）
+        var audioSame: Bool
+    }
+
     static func inspect(_ sources: [Source]) async throws -> Check {
         var infos: [Info] = []
         for s in sources {
@@ -159,166 +187,100 @@ enum Merger {
         var fatal: String? = nil
         if codecs.count > 1 {
             fatal = "这几条的视频编码不一样（\(codecs.sorted().joined(separator: " / "))），"
-                + "合出来会是花屏 —— 建议分开合。"
+                + "直接拼必然出问题 —— 需要走「重新编码后合并」。"
         }
 
-        var warnings: [String] = []
-        let sizes = Set(infos.map { "\($0.width)×\($0.height)" })
-        if sizes.count > 1 {
-            warnings.append("· 分辨率不一样：\(sizes.sorted().joined(separator: " / "))\n"
-                + "  切换处可能黑一下、画面比例会变，但通常能看。")
+        // ★★ 目标画布 = **面积最大的那一档**（画质优先：谁都不被缩小）
+        guard let target = infos.max(by: { $0.pixels < $1.pixels }) else {
+            throw Fail.unreadable(sources[0].title)
         }
-        let chans = Set(infos.map { "\($0.audioChannels)" })
-        if chans.count > 1 {
-            warnings.append("· 声道数不一样：\(chans.sorted().map { "\($0)" }.joined(separator: " / ")) 声道"
-                + "（一般不影响）")
+        let tW = max(2, target.width - (target.width % 2))
+        let tH = max(2, target.height - (target.height % 2))
+        let tFps = String(format: "%.3f",
+                          min(60, max(12, infos.map { $0.fps }.filter { $0 > 0 }.max() ?? 30)))
+        // ★ 码率取源里**最高**的（不是平均）—— 平均会把高码率那几段压过头
+        let bpsList = infos.compactMap { i -> Double? in
+            guard i.seconds > 0.5, i.bytes > 0 else { return nil }
+            return Double(i.bytes) * 8.0 / i.seconds
+        }
+        let tBps = Int(min(max(bpsList.max() ?? 2_000_000, 800_000), 12_000_000))
+
+        // 声音参数是否全一致（一致就 `-c:a copy`，不重编码）
+        let audioSame = Set(infos.map { "\($0.audioChannels)/\($0.audioSampleRate)" }).count == 1
+            && infos.allSatisfy { $0.audioChannels > 0 }
+
+        // 每段要不要转：**跟目标"真一样"才跳过**（尺寸 + SPS/PPS 指纹 + 帧率）
+        let need: [Bool] = infos.map { i in
+            var sameFps = true
+            if i.fps > 0, target.fps > 0 { sameFps = abs(i.fps - target.fps) < 0.5 }
+            return !(i.width == tW && i.height == tH && i.paramKey == target.paramKey && sameFps)
+        }
+        let allSame = !need.contains(true)
+
+        var warnings: [String] = []
+        if !allSame {
+            let sizes = Set(infos.map { "\($0.width)×\($0.height)" })
+            if sizes.count > 1 {
+                warnings.append("· 画面尺寸不一样：\(sizes.sorted().joined(separator: " / "))\n"
+                    + "  会统一到最大的一档（\(tW)×\(tH)）—— 小的被放大，**不会被缩小**。")
+            }
+            if Set(infos.map { $0.audioChannels }).count > 1 {
+                warnings.append("· 声道数不一样："
+                    + Set(infos.map { "\($0.audioChannels)" }).sorted().joined(separator: " / ") + " 声道")
+            }
         }
 
         let lines = zip(sources, infos).map { "· \($0.title)：\($1.describe)" }
-        let report = (warnings + ["" , "各条的规格："] + lines).joined(separator: "\n")
+        let report = (warnings + ["", "各条的规格："] + lines).joined(separator: "\n")
 
         return Check(infos: infos, fatal: fatal, warnings: warnings, report: report,
                      totalBytes: infos.reduce(Int64(0)) { $0 + $1.bytes },
-                     totalSec: infos.reduce(0.0) { $0 + $1.seconds })
+                     totalSec: infos.reduce(0.0) { $0 + $1.seconds },
+                     targetW: tW, targetH: tH, targetFps: tFps, targetBps: tBps,
+                     needTranscode: need, allSame: allSame, audioSame: audioSame)
     }
 
-    /// **重新编码后合并** —— 规格真的对不上时（尤其编码不同）唯一的出路。
-    ///
-    /// ★ 为什么不是「一条命令 concat filter 全搞定」：十几集一起走 `-filter_complex concat`，
-    ///   命令行会长到离谱、内存也顶不住。这里改成**逐集先转成统一规格、再走一遍 concat copy**：
-    ///   每一步都简单、能报进度，最后那步仍然只是"搬运"。
-    ///
-    /// 代价（必须让他知道，不能默默变慢）：**慢**（每集都要重编码）、**画质会掉一点**、
-    /// 中间文件会临时占地方（收尾自动删）。
-    static func mergeByReencoding(_ sources: [Source], output: URL,
-                                  onProgress: @escaping (Double, String) -> Void) async throws {
-        guard sources.count >= 2 else { throw Fail.tooFew }
-        let check = try await inspect(sources)
+    // MARK: - 直接搬（零损失）
 
-        // ★★ 统一到"最窄的那一档"整张画布（**宽和高都要定死**）—— 不放大：放大只费时间、不长信息。
-        //
-        //   为什么不能只统一宽（v1.0.175 就是这么写的、被用户实测打回来了）：
-        //   高度是 `-2` 按比例算的 → **各集宽高比不一样时高度还是不一样**
-        //   → 拼出来段间 H.264 参数变化 → **音频正常、画面卡在第一段**（播放器不重新初始化）。
-        //   所以这里改成：先选一条"参考尺寸"（最窄的那条），其余全部 scale + **pad 补黑边**到它。
-        guard let ref = check.infos.filter({ $0.width > 0 && $0.height > 0 })
-            .min(by: { $0.width < $1.width }) else {
-            throw Fail.unreadable(sources[0].title)
-        }
-        let targetW = max(2, ref.width - (ref.width % 2))
-        let targetH = max(2, ref.height - (ref.height % 2))
-        // 帧率也统一：取各集里**最大**的（不掉帧），认不出就当 30
-        let maxFps = check.infos.map { $0.fps }.filter { $0 > 0 }.max() ?? 30
-        let targetFps = String(format: "%.3f", min(60, max(12, maxFps)))
-
-        // ★★ 目标码率：按各集的**加权平均**（总字节 × 8 ÷ 总秒数），再夹到合理区间。
-        //   为什么必须自己算：**硬件编码器不认 `-crf`**，只认 `-b:v`（这一点照抄 `Compressor`，
-        //   那条路在真机上跑很久了）。取源的平均码率 = 尽量保真、又不会把文件搞大。
-        let avgBps = check.totalSec > 0 ? Double(check.totalBytes) * 8.0 / check.totalSec : 0
-        let targetBps = Int(min(max(avgBps, 800_000), 8_000_000))
-
-        let fm = FileManager.default
-        var tmps: [URL] = []
-        defer { for t in tmps { try? fm.removeItem(at: t) } }   // 中间文件用完必删
-
-        let n = sources.count
-        for (i, s) in sources.enumerated() {
-            onProgress(Double(i) / Double(n + 1), "正在重编码第 \(i + 1)/\(n) 集…")
-            let tmp = JobStore.file(named: "mergetmp_\(UUID().uuidString.prefix(8)).mp4")
-            try? fm.removeItem(at: tmp)
-
-            // ★ 这里的参数是"统一"的目的地：同编码 / 同宽 / 同像素格式 / 同音频参数，
-            //   转完之后它们才真的能走 concat copy。
-            let args: [String] = [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-i", s.url.path,
-                "-map", "0:v:0", "-map", "0:a:0?",
-                "-sn", "-dn",
-                // 缩放 + 补黑边 + 统一像素宽高比：**输出尺寸必须和参考尺寸完全一致**，
-                // 差一个像素都可能让播放器在切段时卡住画面。
-                "-vf", "scale=\(targetW):\(targetH):force_original_aspect_ratio=decrease,"
-                    + "pad=\(targetW):\(targetH):(ow-iw)/2:(oh-ih)/2,setsar=1",
-                "-r", targetFps,
-                // ★ 硬件编码（`h264_videotoolbox`）：软件编码 libx264 在手机上慢太多 ——
-                //   实测选择时**本该照抄 `Compressor`**，那条路一直用硬件、真机验证过。
-                //   代价：同码率下质量比软件略差一点点，但他这条路的目的只是"统一规格"，
-                //   不是为了压得更小，够用。
-                "-c:v", "h264_videotoolbox", "-b:v", "\(targetBps)",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                // ★ 中间文件**不加 +faststart**：它马上就被读走拼掉了，
-                //   加它等于白多跑一遍完整 I/O（成品那条路才需要）。
-                tmp.path,
-            ]
-            let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
-                var argv = args.map { strdup($0) }
-                let c = HookFFmpeg(Int32(args.count), &argv)
-                for p in argv { free(p) }
-                return c
-            }.value
-            guard code == 0, JobStore.size(of: tmp.lastPathComponent) > 0 else {
-                throw Fail.ffmpegFailed(code)
-            }
-            tmps.append(tmp)
-        }
-
-        // 转完就都是同一规格了 → 复用"只搬运"那条路拼起来（force 因为指纹里还带着原分辨率）
-        let converted = tmps.map { Source(url: $0, title: $0.lastPathComponent) }
-        onProgress(Double(n) / Double(n + 1), "正在拼接…")
-        try await merge(converted, output: output, force: true) { p, msg in
-            // 逐集那 0…n/(n+1) 已经报过了，这里把最后一段摊进去
-            onProgress(Double(n) / Double(n + 1) + p / Double(n + 1), msg)
-        }
-    }
-
-    /// 合并成一条 MP4。
-    /// - Parameter force: 规格有差异时是否照合（差异只到"分辨率/声道"这一层才用得上；
-    ///   视频编码不同一律拦）。
-    /// - Parameter onProgress: (0…1, 人话)。进度靠**输出文件大小 ÷ 输入总大小**算 ——
-    ///   `-c copy` 的输出大小≈输入之和，所以这个比值站得住，且每 500ms 只读一次文件属性，不碰 ffmpeg。
+    /// 各段参数真一致时走这条：只搬运、不重编码 —— 秒级、**画质一个像素都不动**。
+    /// - Parameter force: 参数有差异时是否照拼（界面问过他之后才传 true）
     static func merge(_ sources: [Source], output: URL, force: Bool = false,
                       onProgress: @escaping (Double, String) -> Void) async throws {
         guard sources.count >= 2 else { throw Fail.tooFew }
-
-        // ① 先体检 —— 判定和合本身分开，界面才能"先问过他再合"
         let check = try await inspect(sources)
-        if let bad = check.fatal { throw Fail.codecMix(bad) }
+        if let bad = check.fatal, !force { throw Fail.codecMix(bad) }
         if !check.warnings.isEmpty, !force { throw Fail.mismatched(check.report) }
+        try await concatCopy(sources.map { $0.url }, output: output,
+                             totalBytes: check.totalBytes, onProgress: onProgress)
+    }
 
-        let totalBytes = check.totalBytes
-        let totalSec = check.totalSec
-
-        // ② concat 列表文件（ffmpeg 的 concat demuxer 格式）
+    /// 只搬运的拼接（两条路最后都走它）。
+    /// ★ `-fflags +genpts`：防拼接处时间戳不连续。
+    private static func concatCopy(_ urls: [URL], output: URL, totalBytes: Int64,
+                                   onProgress: @escaping (Double, String) -> Void) async throws {
         let listURL = output.deletingLastPathComponent()
             .appendingPathComponent("merge_\(UUID().uuidString.prefix(8)).txt")
-        let listBody = sources.map { "file \(concatQuoted($0.url.path))" }.joined(separator: "\n") + "\n"
-        guard (try? listBody.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
+        let body = urls.map { "file \(concatQuoted($0.path))" }.joined(separator: "\n") + "\n"
+        guard (try? body.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
             throw Fail.ffmpegFailed(-1)
         }
         defer { try? FileManager.default.removeItem(at: listURL) }
 
-        // ③ 起 ffmpeg（姿势照抄 `FFmpegConverter`）
-        var argList: [String] = [
-            "ffmpeg",
-            "-hide_banner", "-loglevel", "error",
-            "-y",
+        var args: [String] = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-fflags", "+genpts",
             "-f", "concat", "-safe", "0", "-i", listURL.path,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
+            "-map", "0:v:0", "-map", "0:a:0?",
             "-sn", "-dn",
-            "-c", "copy",                    // 只搬运，不重编码
+            "-c", "copy",
         ]
         // 大文件不加 +faststart（那是两遍 I/O，见 FFmpegConverter 的说明）
         if totalBytes < FFmpegConverter.faststartLimit {
-            argList += ["-movflags", "+faststart"]
+            args += ["-movflags", "+faststart"]
         }
-        argList.append(output.path)
+        args.append(output.path)
 
-        // ★ 必须 `let` 之后再进并发闭包（run #138 / #164 的坑）
-        let args = argList
-        let mins = Int((totalSec / 60).rounded())
-        onProgress(0.02, "正在合并 \(sources.count) 条 · 约 \(max(1, mins)) 分钟")
-
+        onProgress(0.02, "正在合并…")
         let outURL = output
         let poller = Task {
             while !Task.isCancelled {
@@ -330,11 +292,10 @@ enum Merger {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
-
         let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
             var argv = args.map { strdup($0) }
             let c = HookFFmpeg(Int32(args.count), &argv)
-            for p in argv { free(p) }            // 必须释放（照抄 FFmpegConverter 的规矩）
+            for p in argv { free(p) }
             return c
         }.value
         poller.cancel()
@@ -343,16 +304,86 @@ enum Merger {
             try? FileManager.default.removeItem(at: output)
             throw Fail.ffmpegFailed(code)
         }
-        let outBytes = Self.bytes(of: output)
-        guard outBytes > 0 else {
+        guard Self.bytes(of: output) > 0 else {
             try? FileManager.default.removeItem(at: output)
             throw Fail.emptyOutput
         }
         onProgress(1.0, "合并完成")
     }
 
-    /// ffmpeg concat 列表里的路径写法：**整条用单引号包住，内部的单引号写成 `'\''`**。
-    /// 标题里带引号、空格、中文都很常见，不转义就会拼出一个读不了的文件。
+    // MARK: - 重新编码（参数不一样时的路，画质损失做到最小）
+
+    /// ★★ 两条保画质的动作都在这里：
+    ///   1. **能跳过的跳过** —— 参数跟目标真一样的段**直接搬**（零损失），只转不一样的；
+    ///   2. **只放大不缩小** —— 目标画布是"面积最大那一档"。
+    static func mergeByReencoding(_ sources: [Source], output: URL,
+                                  onProgress: @escaping (Double, String) -> Void) async throws {
+        guard sources.count >= 2 else { throw Fail.tooFew }
+        let check = try await inspect(sources)
+        let n = sources.count
+
+        var pieces: [URL] = []
+        var tmps: [URL] = []
+        defer { for t in tmps { try? FileManager.default.removeItem(at: t) } }   // 中间文件用完必删
+
+        for (i, s) in sources.enumerated() {
+            if !check.needTranscode[i] {
+                pieces.append(s.url)          // ★ 达标 → 原文件直接进列表，零损失
+                continue
+            }
+            onProgress(Double(i) / Double(n + 1), "正在重编码第 \(i + 1)/\(n) 集…")
+            let tmp = JobStore.file(named: "mergetmp_\(UUID().uuidString.prefix(8)).mp4")
+            try? FileManager.default.removeItem(at: tmp)
+
+            // 缩放 + 补黑边到目标画布（像素宽高比也统一）
+            let vf = "scale=\(check.targetW):\(check.targetH):force_original_aspect_ratio=decrease,"
+                + "pad=\(check.targetW):\(check.targetH):(ow-iw)/2:(oh-ih)/2,setsar=1"
+            var args: [String] = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", s.url.path,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-sn", "-dn",
+                "-vf", vf,
+                "-r", check.targetFps,
+                // ★ 硬件编码（软件编码在手机上太慢）；它不认 -crf，只认 -b:v
+                "-c:v", "h264_videotoolbox",
+                "-b:v", "\(check.targetBps)",
+                "-maxrate", "\(Int(Double(check.targetBps) * 1.5))",
+                "-bufsize", "\(check.targetBps * 2)",
+                "-pix_fmt", "yuv420p",
+                "-g", "60",
+            ]
+            // 声音参数全一致时**原样搬**（省一遍编码，也不动音质）
+            if check.audioSame {
+                args += ["-c:a", "copy"]
+            } else {
+                args += ["-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2"]
+            }
+            args.append(tmp.path)
+
+            let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+                var argv = args.map { strdup($0) }
+                let c = HookFFmpeg(Int32(args.count), &argv)
+                for p in argv { free(p) }
+                return c
+            }.value
+            guard code == 0, JobStore.size(of: tmp.lastPathComponent) > 0 else {
+                throw Fail.ffmpegFailed(code)
+            }
+            tmps.append(tmp)
+            pieces.append(tmp)
+        }
+
+        let skipped = check.needTranscode.filter { !$0 }.count
+        onProgress(Double(n) / Double(n + 1),
+                   skipped > 0 ? "正在拼接（\(skipped) 条免重编码）…" : "正在拼接…")
+        try await concatCopy(pieces, output: output, totalBytes: check.totalBytes) { p, msg in
+            onProgress(Double(n) / Double(n + 1) + p / Double(n + 1), msg)
+        }
+    }
+
+    /// ffmpeg concat 列表里的路径：**整条用单引号包住，内部单引号写成 `'\''`**。
+    /// （标题里带引号/空格/中文很常见，不转义就会拼出一个读不了的文件。）
     static func concatQuoted(_ path: String) -> String {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
