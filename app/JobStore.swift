@@ -183,7 +183,10 @@ enum JobStore {
         //   下一次 save() 会拿空列表把文件**覆盖**，所有任务的元数据全没
         //   （视频文件还在盘上，但列表对不上号，等于"账本自己清空"）。
         //   现在三步兜底：① 坏档先备份留证；② 逐条抢救（坏一条丢一条）；③ 返回救回来的。
-        let badCopy = dir.appendingPathComponent("records_损坏备份_\(DownloadJob.stamp(Date())).json")
+        //   （时间戳就地格式化 —— DownloadJob.stamp 挂在主线程上，这里调不了。）
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let badCopy = dir.appendingPathComponent("records_损坏备份_\(f.string(from: Date())).json")
         try? FileManager.default.removeItem(at: badCopy)
         try? FileManager.default.copyItem(at: recordsURL, to: badCopy)
 
