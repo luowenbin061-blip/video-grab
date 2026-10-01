@@ -1833,9 +1833,9 @@ struct DownloadList: View {
                                     ForEach(shownJobs) { job in
                                         JobRow(job: job, pip: center.pip,
                                                onDelete: { center.remove(job) },
+                                               onResume: { center.resume(job) },
                                                logExpanded: expandedLog.contains(job.id),
-                                               onSetLog: { open in setLog(job.id, open: open) },
-                                               onResume: { center.resume(job) })
+                                               onSetLog: { open in setLog(job.id, open: open) })
                                             // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
                                             //   卡与卡之间留缝（所以去掉列表分隔线）。
                                             // ★ v1.0.187：照用户要求把卡片**左右留白收窄**
