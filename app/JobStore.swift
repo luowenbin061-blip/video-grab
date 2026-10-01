@@ -177,15 +177,44 @@ enum JobStore {
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         // 单个字段对不上也不该让整份记录读不出来 —— 旧版本写的记录要能兼容
-        return (try? dec.decode([JobRecord].self, from: d)) ?? []
+        if let list = try? dec.decode([JobRecord].self, from: d) { return list }
+
+        // ★★ v1.0.195（AI 审查 P0）：以前整份解码失败就 `return []` —— 更糟的是
+        //   下一次 save() 会拿空列表把文件**覆盖**，所有任务的元数据全没
+        //   （视频文件还在盘上，但列表对不上号，等于"账本自己清空"）。
+        //   现在三步兜底：① 坏档先备份留证；② 逐条抢救（坏一条丢一条）；③ 返回救回来的。
+        let badCopy = dir.appendingPathComponent("records_损坏备份_\(DownloadJob.stamp(Date())).json")
+        try? FileManager.default.removeItem(at: badCopy)
+        try? FileManager.default.copyItem(at: recordsURL, to: badCopy)
+
+        var rescued: [JobRecord] = []
+        if let arr = (try? JSONSerialization.jsonObject(with: d)) as? [[String: Any]] {
+            for one in arr {
+                guard let oneData = try? JSONSerialization.data(withJSONObject: one) else { continue }
+                if let rec = try? dec.decode(JobRecord.self, from: oneData) { rescued.append(rec) }
+            }
+        }
+        return rescued
     }
 
-    static func save(_ records: [JobRecord]) {
+    /// 写成功与否现在有返回值了（调用方暂不分支，但**写前的备份**一定做 —— 那是最后的保险）
+    @discardableResult
+    static func save(_ records: [JobRecord]) -> Bool {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let d = try? enc.encode(records) else { return }
-        try? d.write(to: recordsURL, options: .atomic)
+        guard let d = try? enc.encode(records) else { return false }
+
+        // ★ v1.0.195（AI 审查 P0）：写新档前把**当前这份**复制成"上一份备份" ——
+        //   就算这次写入因为磁盘满失败，也还有一份能捞的。
+        //   （空列表不值得备份：那就是 `[]` 两个字节。）
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: recordsURL.path),
+           (attrs[.size] as? Int64 ?? 0) > 2 {
+            let backup = dir.appendingPathComponent("records_上一份.json")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.copyItem(at: recordsURL, to: backup)
+        }
+        return (try? d.write(to: recordsURL, options: .atomic)) != nil
     }
 }
 

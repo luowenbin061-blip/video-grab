@@ -547,11 +547,21 @@ final class DownloadJob: ObservableObject, Identifiable {
         task = nil
         var list: [String?] = [outputName, playlistName, baseName + ".ts"]
         if !keepThumb { list.append(thumbName) }
+        // ★★ v1.0.195（彬彬 13:31 亲测 + AI 审查）：**分片草稿箱必须一起删** ——
+        //   下载的分片全在 `parts_<uuid>/` 里，而"没下完"的任务 outputName 还是 nil，
+        //   以前这份名单几乎全是 nil → 删除时实际上啥也没删，
+        //   几百 MB 半成品一直占着盘，只能去设置里手动"清理下载缓存"。
+        //   `removeItem` 对目录是递归删，直接生效；回收站"找回"后重新下载会重建它，不影响。
+        list.append("parts_\(id.uuidString)")
+        Self.removeJoinedMarker(id: id)      // 拼接完成标记（几十字节，不删就成了孤儿）
         // ★★ 必须先定成 `let` 再进并发闭包 —— 直接把 `var` 捕获进 `Task.detached` 会编译不过：
         //   `error: reference to captured var 'names' in concurrently-executing code`
         //   （run #164 就挂在这；run #138 也踩过同一条，是同一个坑。）
         let names = list
         Task.detached(priority: .utility) {
+            // 给被取消的 run 留半秒收尾（它可能还差最后一个 .atomic 写入），
+            // 不然刚删完它又补写一片，草稿箱就剩个尾巴。
+            try? await Task.sleep(nanoseconds: 800_000_000)
             JobStore.remove(names)
         }
     }

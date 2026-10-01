@@ -1,0 +1,1147 @@
+════════════════════════════════════════════════════════════════
+  VideoGrab 代码审查简报（自用 iOS App）—— 请找「硬伤 / 隐性 bug / 缺什么功能」
+════════════════════════════════════════════════════════════════
+
+【0】你要做什么
+你是资深 iOS(Swift/SwiftUI) 工程师 + 稳定性/安全审查者。下面是一个**单人自用**的 iOS 应用
+（不是上架产品、不对外分发）的完整情况介绍 + 精选源码。
+请找出三类问题：
+  A. 硬伤：会崩溃 / 丢数据 / 泄露隐私 / 安全问题；
+  B. 隐性 bug：并发、内存、边界条件、状态机、生命周期、框架用法陷阱；
+  C. 缺什么功能值得补（结合"单人自用、追剧下载"这个场景，不要提商业化/上架相关的）。
+
+回答要求（很重要）：
+  1. 每条都要**落到具体文件和具体行为**（例如"MergeQueue.start 只走重编码"），
+     写清**触发条件 → 后果 → 怎么改**；只说"建议加错误处理"这类空话的直接不要写。
+  2. **不确定就写不确定**。我只能给你这份简报，看不到的代码请写「需看源码」，**不要编造**。
+  3. 最多 15 条，开头先按 P0/P1/P2 排好序（表格最佳）。
+  4. 最后单独一段：**"如果只改三处，改哪三处"**，并说明理由。
+  5. 简报里若有内容被截断（你看不完整），请明确说明哪些部分没看到。
+
+【1】这是什么
+- 名字：**VideoGrab（视频抓取）**。iOS 16.6 真机（iPhone 13），**TrollStore 侧载未签名 IPA**，**单人自用**。
+- 干什么：
+  · 内置浏览器（WKWebView）打开影视站 → **嗅探 HLS / m3u8** → 分片下载 → 合成 MP4 → 存在 App 私有目录；
+  · 下载列表里可播放（内置播放器）、存相册、存到「文件」、分享、删除（进回收站还能找回）；
+  · 工具箱：「压画质省空间」（重新编码压小）、「合并视频」（多条合成一条，内嵌 ffmpeg）；
+  · 「共享给电脑」：App 起本地 HTTP 服务，同 Wi-Fi 的电脑用浏览器直接下载手机里的视频。
+- 目标站点：苹果 CMS V10 的聚合影视站（**防盗链**：要 Referer / Cookie；视频是 **HLS**，
+  常见 **AES-128 加密**，key 也可能带防盗链）；也会下抖音/TikTok 那类 TS 流。
+- 开发机：**Windows 10，没有 Mac** → iOS 编译走 **GitHub Actions 云 CI**（XcodeGen + xcodebuild，
+  产未签名 IPA），本地用脚本推送/取包/校验（sha256 + 包内版本号）。
+- 用户最在意的三件事：**下载稳定性（失败/卡死/闪退/内存）、画质、UI 观感**。
+
+【2】技术栈与关键机制
+- Swift + SwiftUI（deployment target iOS 15，真机 16.6）。
+- **内嵌 ffmpeg**：`Hook.m` 用 setjmp/longjmp 兜住 ffmpeg 的 `exit()`，进程内直接调 `FFmpeg_main`。
+  代价：**拿不到 ffmpeg 的 stdout / stderr**（所以进度只能靠"输出文件大小"估，也不能用 ffprobe，
+  探参数一律走 AVFoundation）。
+- **后台保活靠画中画（PiP）**：Info.plist 开 `audio` 后台模式，用 sample-buffer PiP 把下载进度画进小窗，
+  系统据此继续给运行时间（锁屏/切走都能继续下）。
+- **本地 HTTP 服务（LocalHTTPServer）**：内置播放器读不了本地 .ts，所以 App 自己起 HTTP 把本地文件
+  以 HLS 形式喂给 AVPlayer；「共享给电脑」时改绑 0.0.0.0（同 Wi-Fi 可见）+ 访问口令。
+- 合并 / 压缩各有**单例后台队列**：关掉界面任务照跑，工具箱对应格子显示角标 + 估剩余时间。
+- 所有文件落在 Application Support 私有目录（JobStore 统一命名）；列表记录是一个 JSON（原子写）。
+- 播放走 `MediaProxy`：AVPlayer 自己带不上 Referer/Cookie（私有键对 HLS 不可靠），
+  所以对防盗链的地址先用 URLSession 体检、再套一层本机代理把请求头补上。
+
+【3】模块清单（app/ 目录，文件 → 行数）
+  AudioSession.swift                72 行
+  BookmarkExporter.swift           110 行
+  BookmarkImporter.swift           210 行
+  Bookmarks.swift                  417 行
+  BookmarksView.swift              511 行
+  BrowserModel.swift              2480 行
+  BrowserTab.swift                 133 行
+  BrowserView.swift                 19 行
+  CompressPlan.swift               234 行
+  CompressQueue.swift              477 行
+  CompressSheet.swift              802 行
+  Compressor.swift                 295 行
+  ContentView.swift               3285 行
+  DataBackup.swift                 180 行
+  DownloadJob.swift               1408 行
+  Downloader.swift                 570 行
+  Exporter.swift                   205 行
+  FFmpegConverter.swift            171 行
+  FileBin.swift                    129 行
+  FileDownloader.swift             166 行
+  HomePageView.swift               244 行
+  HomeShortcuts.swift              257 行
+  Hook.m                            61 行
+  Importer.swift                   139 行
+  JobStore.swift                   243 行
+  LanPage.swift                    507 行
+  LivePreview.swift                178 行
+  LocalHTTPServer.swift           1177 行
+  LongPressMenu.swift              186 行
+  M3U8.swift                       340 行
+  MediaProxy.swift                 406 行
+  MergeQueue.swift                 101 行
+  MergeSheet.swift                 287 行
+  Merger.swift                     514 行
+  NetWarmup.swift                   46 行
+  NoImageMode.swift                 71 行
+  Orientation.swift                 24 行
+  PageError.swift                  176 行
+  PagePDF.swift                    260 行
+  PhotoSaver.swift                 115 行
+  PiPProgress.swift                558 行
+  PlayerSheet.swift               1029 行
+  PlaylistAnchor.swift              55 行
+  PlaylistRelay.swift              394 行
+  RecycleBinView.swift             398 行
+  SettingsView.swift               360 行
+  ShareSheet.swift                  43 行
+  SheetKit.swift                    93 行
+  SortCenterView.swift             149 行
+  SourceCard.swift                 103 行
+  SourceProbe.swift                293 行
+  TSRemuxer.swift                 1138 行
+  TabGrid.swift                    395 行
+  TabStore.swift                   252 行
+  ThumbLoader.swift                132 行
+  Toolbox.swift                    353 行
+  TrustedHosts.swift                79 行
+  VideoGrab-Bridging-Header.h        8 行
+  VideoGrabApp.swift                17 行
+  WatchProgress.swift              155 行
+  （另有 assets/资源 与 resources/sniffer.js —— 嗅探用的注入脚本）
+
+【4】关键数据流
+4.1 下载（最核心）：嗅探拿到 m3u8 地址 → 解析清单（M3U8.swift，支持 master/媒体清单、AES-128）
+    → 并发下分片到 `parts/` → 全部到位后 remux 成 MP4（优先 `-c copy`，必要时转码）
+    → 抽一帧当缩略图 → 写列表记录。中途可暂停/继续（按分片粒度续传）。
+4.2 合并：Merger.inspect 先体检（用 AVFoundation 探宽高/编码/声道/帧率/码率，以及 H.264 的
+    SPS/PPS 字节指纹）→ 全一致就 `-c copy`（零损失、秒级）；不一致就一条命令
+    `concat filter` 重编码（画布取面积最大那档 = 只放大不缩小，码率取源里最高，
+    视频用硬件编码 h264_videotoolbox）。
+4.3 压画质：CompressQueue 串行逐个压（手机只有一个硬件编码器），压完停在"待决定"，
+    由用户选 留下 / 存相册 / 存文件夹 / 丢弃；**原片一律不动**。
+4.4 共享给电脑：LocalHTTPServer 绑 0.0.0.0 + 口令，列目录 + 直接下载。
+
+【5】精选代码（带文件名与行号；完整项目 1145KB，这里只挑最可能藏 bug 的部分）
+说明：为控制长度，只放了**逻辑层**（下载/合并/落盘/压缩/任务状态机）。
+界面层（SwiftUI）只描述结构：下载页 = 顶栏（自己画）+ 搜索框 + 分类分段 + `ScrollView`（普通 `VStack`）
++ 多选条；每行是一张卡（缩略图 / 标题 / 「格式·大小·时长」/ 播放按钮 / 「⋯」菜单）。
+已知界面陷阱（不必再报）：行级长按手势会抢触摸；懒加载列表里行内 @State 会随行重建丢失。
+
+──────── 合并：体检 + 两条合并路径（ffmpeg 命令全在这儿） ────────
+（Merger.swift  第 179-482 行）
+    static func inspect(_ sources: [Source]) async throws -> Check {
+        var infos: [Info] = []
+        for s in sources {
+            guard let i = await probe(s.url) else { throw Fail.unreadable(s.title) }
+            infos.append(i)
+        }
+        let codecs = Set(infos.map { $0.videoCodec })
+        var fatal: String? = nil
+        if codecs.count > 1 {
+            fatal = "这几条的视频编码不一样（\(codecs.sorted().joined(separator: " / "))），"
+                + "直接拼必然出问题 —— 需要走「重新编码后合并」。"
+        }
+        guard let target = infos.max(by: { $0.pixels < $1.pixels }) else {
+            throw Fail.unreadable(sources[0].title)
+        }
+        let tW = max(2, target.width - (target.width % 2))
+        let tH = max(2, target.height - (target.height % 2))
+        let tFps = String(format: "%.3f",
+                          min(60, max(12, infos.map { $0.fps }.filter { $0 > 0 }.max() ?? 30)))
+        let bpsList = infos.compactMap { i -> Double? in
+            guard i.seconds > 0.5, i.bytes > 0 else { return nil }
+            return Double(i.bytes) * 8.0 / i.seconds
+        }
+        let tBps = Int(min(max(bpsList.max() ?? 2_000_000, 800_000), 12_000_000))
+        let audioSame = Set(infos.map { "\($0.audioChannels)/\($0.audioSampleRate)" }).count == 1
+            && infos.allSatisfy { $0.audioChannels > 0 }
+        let allSame = infos.allSatisfy { i in
+            var sameFps = true
+            if i.fps > 0, target.fps > 0 { sameFps = abs(i.fps - target.fps) < 0.5 }
+            return i.width == tW && i.height == tH && i.paramKey == target.paramKey && sameFps
+        }
+        var warnings: [String] = []
+        if !allSame {
+            let sizes = Set(infos.map { "\($0.width)×\($0.height)" })
+            if sizes.count > 1 {
+                warnings.append("· 画面尺寸不一样：\(sizes.sorted().joined(separator: " / "))\n"
+                    + "  会统一到最大的一档（\(tW)×\(tH)）—— 小的被放大，**不会被缩小**。")
+            }
+            if Set(infos.map { $0.audioChannels }).count > 1 {
+                warnings.append("· 声道数不一样："
+                    + Set(infos.map { "\($0.audioChannels)" }).sorted().joined(separator: " / ") + " 声道")
+            }
+        }
+        let lines = zip(sources, infos).map { "· \($0.title)：\($1.describe)" }
+        let report = (warnings + ["", "各条的规格："] + lines).joined(separator: "\n")
+        return Check(infos: infos, fatal: fatal, warnings: warnings, report: report,
+                     totalBytes: infos.reduce(Int64(0)) { $0 + $1.bytes },
+                     totalSec: infos.reduce(0.0) { $0 + $1.seconds },
+                     targetW: tW, targetH: tH, targetFps: tFps, targetBps: tBps,
+                     allSame: allSame, audioSame: audioSame,
+                     needScale: !infos.allSatisfy { $0.width == tW && $0.height == tH })
+    }
+    static func merge(_ sources: [Source], output: URL, force: Bool = false,
+                      onProgress: @escaping (Double, String) -> Void) async throws {
+        guard sources.count >= 2 else { throw Fail.tooFew }
+        let check = try await inspect(sources)
+        if let bad = check.fatal, !force { throw Fail.codecMix(bad) }
+        if !check.warnings.isEmpty, !force { throw Fail.mismatched(check.report) }
+        try await concatCopy(sources.map { $0.url }, output: output,
+                             totalBytes: check.totalBytes, onProgress: onProgress)
+    }
+    private static func concatCopy(_ urls: [URL], output: URL, totalBytes: Int64,
+                                   onProgress: @escaping (Double, String) -> Void) async throws {
+        let listURL = output.deletingLastPathComponent()
+            .appendingPathComponent("merge_\(UUID().uuidString.prefix(8)).txt")
+        let body = urls.map { "file \(concatQuoted($0.path))" }.joined(separator: "\n") + "\n"
+        guard (try? body.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
+            throw Fail.ffmpegFailed(-1)
+        }
+        defer { try? FileManager.default.removeItem(at: listURL) }
+        var argList: [String] = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "concat", "-safe", "0", "-i", listURL.path,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-sn", "-dn",
+            "-c", "copy",
+        ]
+        if totalBytes < FFmpegConverter.faststartLimit {
+            argList += ["-movflags", "+faststart"]
+        }
+        argList.append(output.path)
+        let args = argList
+        onProgress(0.02, "正在合并…")
+        let outURL = output
+        let poller = Task {
+            while !Task.isCancelled {
+                let n = Self.bytes(of: outURL)
+                if totalBytes > 0, n > 0 {
+                    let p = min(0.97, Double(n) / Double(totalBytes))
+                    onProgress(p, "正在合并… \(Int(p * 100))%")
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+            var argv = args.map { strdup($0) }
+            let c = HookFFmpeg(Int32(args.count), &argv)
+            for p in argv { free(p) }
+            return c
+        }.value
+        poller.cancel()
+        guard code == 0 else {
+            try? FileManager.default.removeItem(at: output)
+            throw Fail.ffmpegFailed(code)
+        }
+        guard Self.bytes(of: output) > 0 else {
+            try? FileManager.default.removeItem(at: output)
+            throw Fail.emptyOutput
+        }
+        onProgress(1.0, "合并完成")
+    }
+    static func mergeByReencoding(_ sources: [Source], output: URL,
+                                  onProgress: @escaping (Double, String) -> Void) async throws {
+        guard sources.count >= 2 else { throw Fail.tooFew }
+        let check = try await inspect(sources)
+        let n = sources.count
+        var pieces: [URL] = sources.map { $0.url }
+        var tmps: [URL] = []
+        defer { for t in tmps { try? FileManager.default.removeItem(at: t) } }
+        let byCodec = Dictionary(grouping: check.infos, by: { $0.videoCodec })
+        if byCodec.count > 1 {
+            let main = byCodec.max { $0.value.count < $1.value.count }?.key ?? "H.264"
+            for (i, info) in check.infos.enumerated() where info.videoCodec != main {
+                onProgress(Double(i) / Double(n + 1), "正在统一编码（第 \(i + 1)/\(n) 条）…")
+                let tmp = JobStore.file(named: "mergetmp_\(UUID().uuidString.prefix(8)).mp4")
+                try? FileManager.default.removeItem(at: tmp)
+                try await transcodeToH264(from: sources[i].url, to: tmp, check: check)
+                tmps.append(tmp)
+                pieces[i] = tmp
+            }
+        }
+        let allHaveAudio = check.infos.allSatisfy { $0.audioChannels > 0 }
+        if !allHaveAudio {
+            let listURL = output.deletingLastPathComponent()
+                .appendingPathComponent("merge_\(UUID().uuidString.prefix(8)).txt")
+            let body = pieces.map { "file \(concatQuoted($0.path))" }.joined(separator: "\n") + "\n"
+            guard (try? body.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
+                throw Fail.ffmpegFailed(-1)
+            }
+            defer { try? FileManager.default.removeItem(at: listURL) }
+            onProgress(0.02, "正在合并…")
+            let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+                var a: [String] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                                   "-f", "concat", "-safe", "0", "-i", listURL.path,
+                                   "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
+                                   "-c", "copy", output.path]
+                var argv = a.map { strdup($0) }
+                let c = HookFFmpeg(Int32(a.count), &argv)
+                for p in argv { free(p) }
+                return c
+            }.value
+            guard code == 0, Self.bytes(of: output) > 0 else {
+                try? FileManager.default.removeItem(at: output)
+                throw Fail.ffmpegFailed(code)
+            }
+            onProgress(1.0, "合并完成")
+            return
+        }
+        var filters: [String] = []
+        var segRefs: [String] = []
+        for i in pieces.indices {
+            if check.needScale {
+                filters.append("[\(i):v]"
+                    + "scale=\(check.targetW):\(check.targetH):"
+                    + "force_original_aspect_ratio=decrease,"
+                    + "pad=\(check.targetW):\(check.targetH):(ow-iw)/2:(oh-ih)/2,"
+                    + "setsar=1,fps=\(check.targetFps),format=yuv420p[v\(i)]")
+            } else {
+                filters.append("[\(i):v]"
+                    + "fps=\(check.targetFps),format=yuv420p[v\(i)]")
+            }
+            filters.append("[\(i):a]"
+                + "aresample=48000:async=1000:first_pts=0,asetpts=N/SR/TB[a\(i)]")
+            segRefs.append("[v\(i)][a\(i)]")     // ★ 交错：这一段的视频紧接着它自己的音频
+        }
+        filters.append(segRefs.joined()
+                       + "concat=n=\(pieces.count):v=1:a=1[outv][outa]")
+        var argList: [String] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        for p in pieces { argList += ["-i", p.path] }
+        argList += [
+            "-filter_complex", filters.joined(separator: ";"),
+            "-map", "[outv]", "-map", "[outa]",
+            "-c:v", "h264_videotoolbox",
+            "-b:v", "\(check.targetBps)",
+            "-maxrate", "\(Int(Double(check.targetBps) * 1.5))",
+            "-bufsize", "\(check.targetBps * 2)",
+            "-pix_fmt", "yuv420p",
+            "-g", "60",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+        ]
+        if check.totalBytes < FFmpegConverter.faststartLimit {
+            argList += ["-movflags", "+faststart"]
+        }
+        argList.append(output.path)
+        let args = argList
+        onProgress(0.02, "正在合并…")
+        let outURL = output
+        let poller = Task {
+            while !Task.isCancelled {
+                let sz = Self.bytes(of: outURL)
+                if check.totalBytes > 0, sz > 0 {
+                    let p = min(0.97, Double(sz) / Double(check.totalBytes))
+                    onProgress(p, "正在合并… \(Int(p * 100))%")
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
+            var argv = args.map { strdup($0) }
+            let c = HookFFmpeg(Int32(args.count), &argv)
+            for p in argv { free(p) }
+            return c
+        }.value
+        poller.cancel()
+        guard code == 0 else {
+            try? FileManager.default.removeItem(at: output)
+            throw Fail.ffmpegFailed(code)
+        }
+        guard Self.bytes(of: output) > 0 else {
+            try? FileManager.default.removeItem(at: output)
+            throw Fail.emptyOutput
+        }
+        onProgress(1.0, "合并完成")
+    }
+
+──────── 分片下载：主流程 / 取清单 / 下分片 / 解密 ────────
+（Downloader.swift  第 151-571 行）
+    func run(sourceURL: URL, skipJoin: Bool = false) async throws -> Output {
+        try FileManager.default.createDirectory(at: options.tempDir,
+                                                withIntermediateDirectories: true)
+        onProgress(Progress(stage: .prepare, done: 0, total: 0, bytes: 0, message: "读取 m3u8…"))
+        let firstLoad = try await loadPlaylist(url: sourceURL)
+        let first = firstLoad.playlist
+        var head = firstLoad.head
+        let playlist: M3U8Playlist
+        if first.isMaster {
+            guard let v = first.bestVariant() else { throw Fail.noVariant }
+            let label = v.resolution ?? (v.bandwidth.map { "\($0 / 1000)kbps" } ?? "默认清晰度")
+            onProgress(Progress(stage: .prepare, done: 0, total: 0, bytes: 0,
+                                message: "选中清晰度 \(label)，读取分片列表…"))
+            let vLoad = try await loadPlaylist(url: v.url)
+            playlist = vLoad.playlist
+            head = vLoad.head
+        } else {
+            playlist = first
+        }
+        if let why = playlist.unsupportedReason { throw Fail.unsupported(why) }
+        guard !playlist.segmentURLs.isEmpty else {
+            if !playlist.badAddressLines.isEmpty {
+                throw Fail.noAddress(head, playlist.badAddressLines)
+            }
+            throw Fail.noSegment(head)
+        }
+        let segs = playlist.segmentURLs
+        let total = segs.count
+        writeSegmentDurations(playlist.segmentDurations, dir: options.tempDir)
+        var done = 0
+        var bytesDone: Int64 = 0
+        await withTaskGroup(of: Int64?.self) { group in
+            var next = 0
+            var inflight = 0
+            let limit = max(1, options.concurrency)
+            func addTask(_ i: Int) {
+                group.addTask {
+                    do {
+                        return try await downloadSegment(index: i,
+                                                         url: segs[i],
+                                                         playlist: playlist)
+                    } catch {
+                        return nil
+                    }
+                }
+                inflight += 1
+            }
+            while next < total && inflight < limit {
+                addTask(next); next += 1
+            }
+            while let n = await group.next() {
+                inflight -= 1
+                guard let n else {
+                    group.cancelAll()
+                    break
+                }
+                done += 1
+                bytesDone += n
+                onProgress(Progress(stage: .download, done: done, total: total,
+                                    bytes: bytesDone,
+                                    message: "下载分片 \(done)/\(total)"))
+                if next < total { addTask(next); next += 1 }
+            }
+        }
+        guard done == total else {
+            throw Fail.badStatus(0, "有 \(total - done) 个分片没下完，已保留已下载的部分，可再点一次继续")
+        }
+        if skipJoin {
+            onProgress(Progress(stage: .finished, done: total, total: total,
+                                bytes: bytesDone, message: "分片已下齐"))
+            return Output(fileURL: options.outputURL,
+                          duration: playlist.totalDuration,
+                          segmentCount: total,
+                          joinedBytes: 0,
+                          writtenSegments: 0,
+                          playlist: playlist)
+        }
+        onProgress(Progress(stage: .join, done: 0, total: total, bytes: bytesDone, message: "正在拼接…"))
+        let fm = FileManager.default
+        if fm.fileExists(atPath: options.outputURL.path) {
+            try? fm.removeItem(at: options.outputURL)
+        }
+        fm.createFile(atPath: options.outputURL.path, contents: nil)
+        let out = try FileHandle(forWritingTo: options.outputURL)
+        var keyCache: [URL: Data] = [:]
+        var written: Int64 = 0          // ★ v1.0.101：写进成品的真实字节数
+        var writtenCount = 0            // ★ v1.0.140：真的写进成品的分片个数
+        var missing: [Int] = []         // ★ v1.0.140：拼接时发现磁盘上不见了的分片
+        for (i, _) in segs.enumerated() {
+            let part = partURL(i)
+            guard let data = try? Data(contentsOf: part) else {
+                missing.append(i)
+                continue
+            }
+            let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
+                                                   keyCache: &keyCache)
+            out.write(payload)
+            written += Int64(payload.count)
+            writtenCount += 1
+            if i % 25 == 0 {
+                onProgress(Progress(stage: .join, done: i + 1, total: total,
+                                    bytes: bytesDone, message: "拼接 \(i + 1)/\(total)"))
+            }
+        }
+        try? out.close()
+        if !missing.isEmpty {
+            try? fm.removeItem(at: options.outputURL)
+            throw Fail.missingSegment(missing)
+        }
+        onProgress(Progress(stage: .finished, done: total, total: total, bytes: bytesDone, message: "完成"))
+        return Output(fileURL: options.outputURL,
+                      duration: playlist.totalDuration,
+                      segmentCount: total,
+                      joinedBytes: written,
+                      writtenSegments: writtenCount,
+                      playlist: nil)
+    }
+    private func request(for url: URL) -> URLRequest {
+        var r = URLRequest(url: url, timeoutInterval: options.timeout)
+        r.setValue(options.userAgent, forHTTPHeaderField: "User-Agent")
+        if let ref = options.referer, !ref.isEmpty {
+            r.setValue(ref, forHTTPHeaderField: "Referer")
+        }
+        if let ck = options.cookie, !ck.isEmpty {
+            r.setValue(ck, forHTTPHeaderField: "Cookie")
+        }
+        return r
+    }
+    private struct Loaded {
+        let playlist: M3U8Playlist
+        let head: String
+    }
+    static let gb18030 = String.Encoding(
+        rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+    private func loadPlaylist(url: URL) async throws -> Loaded {
+        let (data, resp) = try await URLSession.shared.data(for: request(for: url))
+        if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+            throw Fail.badStatus(h.statusCode, url.absoluteString)
+        }
+        let text: String
+        let wasUTF8: Bool
+        if let u = String(data: data, encoding: .utf8) {
+            text = u; wasUTF8 = true
+        } else if let g = String(data: data, encoding: Self.gb18030) {
+            text = g; wasUTF8 = false
+        } else {
+            text = String(data: data, encoding: .isoLatin1) ?? ""
+            wasUTF8 = false
+        }
+        let finalURL = resp.url ?? url
+        var head = String(text.prefix(160))
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        if !wasUTF8 { head = "[这份清单不是 UTF-8，已按 GB18030 读] " + head }
+        return Loaded(playlist: M3U8Playlist.parse(text: text, baseURL: finalURL), head: head)
+    }
+    private func partURL(_ i: Int) -> URL {
+        options.tempDir.appendingPathComponent(DLName.segment(i))
+    }
+    private func oldPartURL(_ i: Int) -> URL {
+        options.tempDir.appendingPathComponent(DLName.oldSegment(i))
+    }
+    private func writeSegmentDurations(_ durs: [Double], dir: URL) {
+        guard !durs.isEmpty else { return }
+        let text = durs.map { $0.isFinite ? String(format: "%.3f", $0) : "0" }
+                      .joined(separator: "\n")
+        try? Data(text.utf8).write(to: dir.appendingPathComponent(Self.durationsFileName),
+                                   options: .atomic)
+    }
+    static let durationsFileName = "durations.txt"
+    private func doneMarkerURL(_ index: Int) -> URL {
+        partURL(index).appendingPathExtension("ok")
+    }
+    private func downloadSegment(index: Int, url: URL, playlist: M3U8Playlist) async throws -> Int64 {
+        let dest = partURL(index)
+        let old = oldPartURL(index)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dest.path), fm.fileExists(atPath: old.path) {
+            try? fm.moveItem(at: old, to: dest)
+            try? fm.moveItem(at: old.appendingPathExtension("ok"),
+                             to: dest.appendingPathExtension("ok"))
+        }
+        if let sz = try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int, sz > 0 {
+            if let marked = try? String(contentsOf: doneMarkerURL(index), encoding: .utf8),
+               Int(marked.trimmingCharacters(in: .whitespacesAndNewlines)) == sz {
+                return 0                                     // 标记对得上 → 真的是完整的
+            }
+            if !FileManager.default.fileExists(atPath: doneMarkerURL(index).path) {
+                try? String(sz).write(to: doneMarkerURL(index), atomically: true, encoding: .utf8)
+                return 0                                     // 老文件：只认这一次
+            }
+        }
+        var lastErr: Error?
+        for attempt in 0...options.retry {
+            do {
+                let (data, resp) = try await URLSession.shared.data(for: request(for: url))
+                let http = resp as? HTTPURLResponse
+                if let h = http, !(200...299).contains(h.statusCode) {
+                    throw Fail.badStatus(h.statusCode, url.lastPathComponent)
+                }
+                guard !data.isEmpty else { throw Fail.badStatus(0, "空响应") }
+                if let h = http, h.expectedContentLength > 0,
+                   Int64(data.count) != h.expectedContentLength {
+                    throw Fail.badContent(index,
+                        "声明 \(h.expectedContentLength) 字节、实际只收到 \(data.count) 字节")
+                }
+                let ext = url.pathExtension.lowercased()
+                let isPlainTS = (playlist.key == nil) && ext != "m4s" && ext != "mp4"
+                if isPlainTS, let first = data.first, first != 0x47 {
+                    throw Fail.badContent(index, String(format: "开头是 0x%02X，不像视频分片", first))
+                }
+                try data.write(to: dest, options: .atomic)
+                try? String(data.count).write(to: doneMarkerURL(index), atomically: true, encoding: .utf8)
+                return Int64(data.count)
+            } catch {
+                lastErr = error
+                if attempt < options.retry {
+                    try? await Task.sleep(nanoseconds: UInt64(300_000_000 * (attempt + 1)))
+                }
+            }
+        }
+        throw lastErr ?? Fail.badStatus(0, "下载失败")
+    }
+    private func decodeIfNeeded(data: Data, playlist: M3U8Playlist, index: Int,
+                                keyCache: inout [URL: Data]) async throws -> Data {
+        guard let key = playlist.key,
+              key.method.uppercased() == "AES-128",
+              let keyURI = key.uri else {
+            return data   // 明文，直接返回
+        }
+        let kRaw: Data
+        if let cached = keyCache[keyURI] {
+            kRaw = cached
+        } else {
+            let (d, resp) = try await URLSession.shared.data(for: request(for: keyURI))
+            if let h = resp as? HTTPURLResponse, !(200...299).contains(h.statusCode) {
+                throw Fail.decryptFailed
+            }
+            guard d.count >= 16 else { throw Fail.decryptFailed }
+            keyCache[keyURI] = d
+            kRaw = d
+        }
+        var iv: Data
+        if let explicit = key.iv {
+            iv = explicit
+        } else {
+            var be = UInt32(playlist.mediaSequence + index).bigEndian
+            iv = Data(count: 16)
+            withUnsafeBytes(of: &be) { iv.replaceSubrange(12..<16, with: $0) }
+        }
+        return try Self.aes128CBCDecrypt(data: data,
+                                        key: Data(kRaw.prefix(16)),
+                                        iv: Data(iv.prefix(16)))
+    }
+    static func aes128CBCDecrypt(data: Data, key: Data, iv: Data) throws -> Data {
+        var out = Data(count: data.count + kCCBlockSizeAES128)
+        var moved = 0
+        let status: CCCryptorStatus = key.withUnsafeBytes { (kp: UnsafeRawBufferPointer) -> CCCryptorStatus in
+            iv.withUnsafeBytes { (ip: UnsafeRawBufferPointer) -> CCCryptorStatus in
+                data.withUnsafeBytes { (dp: UnsafeRawBufferPointer) -> CCCryptorStatus in
+                    out.withUnsafeMutableBytes { (op: UnsafeMutableRawBufferPointer) -> CCCryptorStatus in
+                        guard let k = kp.baseAddress,
+                              let i = ip.baseAddress,
+                              let d = dp.baseAddress,
+                              let o = op.baseAddress else {
+                            return CCCryptorStatus(kCCMemoryFailure)
+                        }
+                        return CCCrypt(CCOperation(kCCDecrypt),
+                                       CCAlgorithm(kCCAlgorithmAES),
+                                       CCOptions(kCCOptionPKCS7Padding),
+                                       k, kCCKeySizeAES128,
+                                       i,
+                                       d, data.count,
+                                       o, op.count,
+                                       &moved)
+                    }
+                }
+            }
+        }
+        guard status == kCCSuccess else { throw Fail.decryptFailed }
+        return out.prefix(moved)
+    }
+}
+
+──────── 落盘与清理（原子写、临时文件、剩余空间） ────────
+（JobStore.swift  第 1-244 行）
+import Foundation
+enum JobStore {
+    static let dir: URL = {
+        let fm = FileManager.default
+        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let d = base.appendingPathComponent("VideoGrab", isDirectory: true)
+        try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+    private static var recordsURL: URL { dir.appendingPathComponent("records.json") }
+    static func file(named name: String) -> URL {
+        dir.appendingPathComponent(name)
+    }
+    static func exists(named name: String?) -> Bool {
+        guard let name, !name.isEmpty else { return false }
+        return FileManager.default.fileExists(atPath: file(named: name).path)
+    }
+    static func thumbName(for id: UUID) -> String { "thumb_\(id.uuidString).jpg" }
+    static func size(of name: String?) -> Int64 {
+        guard let name, !name.isEmpty else { return 0 }
+        let a = try? FileManager.default.attributesOfItem(atPath: file(named: name).path)
+        return (a?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+    static var deviceFreeSpace: Int64 {
+        let u = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage ?? 0
+    }
+    static func remove(_ names: [String?]) {
+        for n in names {
+            guard let n, !n.isEmpty else { continue }
+            try? FileManager.default.removeItem(at: file(named: n))
+        }
+    }
+    static func totalSize() -> Int64 {
+        let fm = FileManager.default
+        guard let list = try? fm.contentsOfDirectory(at: dir,
+                                                     includingPropertiesForKeys: [.fileSizeKey]) else {
+            return 0
+        }
+        return list.reduce(0) { $0 + sizeOfItem($1, fm: fm) }
+    }
+    private static func sizeOfItem(_ u: URL, fm: FileManager) -> Int64 {
+        let own = try? u.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        if own?.isRegularFile == true {
+            return Int64(own?.fileSize ?? 0)
+        }
+        guard let e = fm.enumerator(at: u,
+                                    includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
+            return 0
+        }
+        var s: Int64 = 0
+        for case let f as URL in e {
+            let v = try? f.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if v?.isRegularFile == true { s += Int64(v?.fileSize ?? 0) }
+        }
+        return s
+    }
+    static func freeSpace() -> Int64? {
+        let u = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage
+    }
+    @discardableResult
+    static func cleanupTemp(keeping activeIDs: Set<String> = [],
+                            keepPartials: Bool = false) -> Int64 {
+        let fm = FileManager.default
+        guard let list = try? fm.contentsOfDirectory(at: dir,
+                                                     includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return 0
+        }
+        var freed: Int64 = 0
+        for u in list {
+            let n = u.lastPathComponent
+            if n.hasPrefix("parts_") {
+                let uid = String(n.dropFirst("parts_".count))
+                if activeIDs.contains(uid) { continue }
+            } else if !n.hasPrefix("joined_") {
+                continue
+            }
+            freed += sizeOfItem(u, fm: fm)
+            try? fm.removeItem(at: u)
+        }
+        if !keepPartials {
+            freed += cleanupPartials()
+        }
+        return freed
+    }
+    @discardableResult
+    static func cleanupPartials() -> Int64 {
+        let fm = FileManager.default
+        guard let list = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
+            return 0
+        }
+        var freed: Int64 = 0
+        for u in list where u.lastPathComponent.contains(".partial.") {
+            freed += sizeOfItem(u, fm: fm)
+            try? fm.removeItem(at: u)
+        }
+        return freed
+    }
+    static func load() -> [JobRecord] {
+        guard let d = try? Data(contentsOf: recordsURL) else { return [] }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return (try? dec.decode([JobRecord].self, from: d)) ?? []
+    }
+    static func save(_ records: [JobRecord]) {
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let d = try? enc.encode(records) else { return }
+        try? d.write(to: recordsURL, options: .atomic)
+    }
+}
+struct JobRecord: Codable {
+    var id: UUID
+    var title: String
+    var sourceURL: String
+    var referrer: String?
+    var ua: String?
+    var createdAt: Date
+    var finishedAt: Date?
+    var finished: Bool
+    var failed: String?
+    var paused: Bool?
+    var outputName: String?
+    var mp4Ready: Bool
+    var playlistName: String?
+    var fileSize: Int64
+    var duration: Double
+    var resolution: String?
+    var phaseText: String
+    var notes: [String]
+    var kind: String?
+    var cookie: String?
+}
+extension JobRecord {
+    static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
+}
+
+──────── 压缩队列：入队 / 跑 / 留下 / 丢弃 / 保活 ────────
+（CompressQueue.swift  第 241-441 行）
+    func enqueue(_ r: Request) -> String? {
+        guard liveCount < CompressPlan.maxQueue else {
+            return "队列满了（最多同时排 \(CompressPlan.maxQueue) 个）。等压完几个再加。"
+        }
+        guard FileManager.default.fileExists(atPath: r.url.path) else {
+            return "这个文件读不到了（可能已经被删了）。"
+        }
+        var name = r.url.lastPathComponent
+        var owns = false
+        let inOurDir = r.url.deletingLastPathComponent().standardizedFileURL ==
+                       JobStore.dir.standardizedFileURL
+        if !inOurDir {
+            let unique = "源_" + Self.stamp() + "_" + name
+            let dest = JobStore.file(named: unique)
+            do {
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try FileManager.default.removeItem(at: dest)
+                }
+                try FileManager.default.moveItem(at: r.url, to: dest)
+                name = unique
+                owns = true
+            } catch {
+                do {
+                    try FileManager.default.copyItem(at: r.url, to: dest)
+                    name = unique
+                    owns = true
+                } catch {
+                    return "这个文件搬不进来：\(error.localizedDescription)"
+                }
+            }
+        }
+        items.append(Item(title: r.title, kind: r.kind, sourceName: name, ownsSource: owns,
+                          srcBytes: r.bytes, duration: r.duration,
+                          videoTier: r.videoTier, photoTier: r.photoTier))
+        save()
+        return nil
+    }
+    func cancel(_ item: Item) {
+        guard item.state == .waiting else { return }
+        item.state = .cancelled
+        item.phase = Status.cancelled.label
+        retire(item)
+        save()
+    }
+    func stopAfterCurrent() {
+        for it in items where it.state == .waiting {
+            it.state = .cancelled
+            it.phase = "已取消（点了停止）"
+            retire(it)
+        }
+        save()
+    }
+    var pendingCount: Int { items.filter { $0.state == .pending }.count }
+    var pendingBytes: Int64 {
+        items.filter { $0.state == .pending }.reduce(0) { $0 + JobStore.size(of: $1.outputName) }
+    }
+    func keep(_ item: Item) {
+        guard item.state == .pending, let out = item.outputName else { return }
+        center?.adoptCompressed(JobStore.file(named: out),
+                                title: item.title + "_压缩版", kind: item.kind)
+        item.state = .kept
+        item.phase = Status.kept.label
+        save()
+    }
+    func discard(_ item: Item) {
+        guard item.state == .pending, let out = item.outputName else { return }
+        try? FileManager.default.removeItem(at: JobStore.file(named: out))
+        item.state = .discarded
+        item.phase = Status.discarded.label
+        item.note = nil
+        save()
+    }
+    func keepAll() { for it in items where it.state == .pending { keep(it) } }
+    func discardAll() { for it in items where it.state == .pending { discard(it) } }
+    func clearFinished() {
+        items.removeAll { !$0.state.isLive }
+        save()
+    }
+    @discardableResult
+    func start() -> String? {
+        guard runner == nil, !isRunning else { return nil }        // 已经在跑，不用管
+        guard waitingCount > 0 else { return nil }
+        let need = CompressPlan.spaceNeeded(outputBytes: waitingOutputBytes)
+        let free = JobStore.deviceFreeSpace
+        guard need <= free else {
+            return "空间不够：这一批大约还要 \(CompressPlan.mb(need))MB，现在只剩 "
+                 + "\(CompressPlan.mb(free))MB。先删几条（或删掉些下载）再开始。"
+        }
+        beginKeepAlive()
+        runner = Task { [weak self] in await self?.runLoop() }
+        return nil
+    }
+    private func runLoop() async {
+        while let idx = CompressPlan.nextRunIndex(slots: items.map { $0.state.slot }) {
+            let item = items[idx]
+            item.state = .running
+            item.phase = "正在压缩…"
+            item.progress = 0
+            setSnapshot(item, detail: "正在压缩…", progress: 0)
+            save()
+            do {
+                let r = try await compress(item)
+                item.outputName = r.url.lastPathComponent
+                item.note = r.note
+                item.state = .pending
+                item.progress = 1
+                item.phase = Status.pending.label
+            } catch {
+                item.failure = error.localizedDescription
+                item.state = .failed
+                item.phase = Status.failed.label
+            }
+            retire(item)
+            save()
+        }
+        finishKeepAlive()
+        runner = nil
+        save()
+    }
+    private func compress(_ item: Item) async throws -> (url: URL, bytes: Int64, note: String) {
+        let input = JobStore.file(named: item.sourceName)
+        let onP: (Double, String) -> Void = { [weak self] p, msg in
+            Task { @MainActor in
+                item.progress = p
+                item.phase = msg
+                self?.setSnapshot(item, detail: msg, progress: p)
+            }
+        }
+        if item.kind == .image {
+            return try await Compressor.runPhoto(input: input, tier: item.photoTier, onProgress: onP)
+        }
+        return try await Compressor.run(input: input, tier: item.videoTier, onProgress: onP)
+    }
+    private func retire(_ item: Item) {
+        guard item.ownsSource else { return }
+        try? FileManager.default.removeItem(at: JobStore.file(named: item.sourceName))
+    }
+    private func beginKeepAlive() {
+        guard Self.keepAliveEnabled, let pip, !pip.isRunning else { return }
+        pip.start()
+        pipByUs = true
+    }
+    private func setSnapshot(_ item: Item, detail: String, progress: Double) {
+        guard pipByUs else { return }        // 没开保活就别折腾小窗
+        snapshot = PiPProgress.Snapshot(title: item.title, detail: detail,
+                                        progress: progress, activeCount: 1)
+    }
+    private func finishKeepAlive() {
+        snapshot = nil
+        guard pipByUs, let pip else { return }
+        pipByUs = false
+        if othersNeedPiP?() == true { return }
+        pip.stop()
+    }
+
+──────── 任务对象：字段与状态 ────────
+（DownloadJob.swift  第 18-108 行）
+final class DownloadJob: ObservableObject, Identifiable {
+    let id: UUID
+    let title: String
+    let sourceURL: String
+    let createdAt: Date
+    let referrer: String
+    let ua: String
+    let cookie: String
+    @Published var phase: String
+    @Published var done = 0
+    @Published var total = 0
+    @Published var paused = false
+    @Published private(set) var stage: HLSDownloader.Stage = .prepare
+    @Published private(set) var bytesDone: Int64 = 0
+    @Published private(set) var convertProgress: Double = 0
+    @Published private(set) var speedBytesPerSec: Int64 = 0
+    @Published var finished: Bool
+    @Published var failed: String?
+    @Published var outputName: String?
+    @Published var thumbName: String?
+    @Published var mp4Ready: Bool
+    @Published var playlistName: String?
+    @Published var remuxError: String?
+    @Published var fileSize: Int64
+    @Published var duration: Double
+    @Published var resolution: String?
+    @Published var notes: [String]
+    var kindHint: MediaKind?
+    @Published var fileMissing = false
+    @Published var savedToPhotos = false
+    @Published var notice: String?
+    var onUpdate: (() -> Void)?
+    private var task: Task<Void, Never>?
+    private var noticeTask: Task<Void, Never>?
+    private var autoRetried = false
+    private var stageMark: [String: Date] = [:]
+    private var memPeak: Int64 = 0
+    private var mainStallMs: Int = 0
+    private var heartbeat: Task<Void, Never>?
+    private var loggedTranscodeStep: Int = -1
+    private static func stageName(_ s: HLSDownloader.Stage) -> String? {
+        switch s {
+        case .prepare:  return nil
+        case .download: return "下载分片"
+        case .join:     return "拼成一整段"
+        case .convert:  return "转成 MP4"
+        case .finished: return nil
+        }
+    }
+
+──────── 任务对象：快照 / 启停 / 可播地址 / 导出地址 ────────
+（DownloadJob.swift  第 291-455 行）
+    func snapshot() -> JobRecord {
+        JobRecord(id: id,
+                  title: title,
+                  sourceURL: sourceURL,
+                  referrer: referrer,
+                  ua: ua,
+                  createdAt: createdAt,
+                  finishedAt: finished ? Date() : nil,
+                  finished: finished,
+                  failed: failed,
+                  paused: paused,
+                  outputName: outputName,
+                  mp4Ready: mp4Ready,
+                  playlistName: playlistName,
+                  fileSize: fileSize,
+                  duration: duration,
+                  resolution: resolution,
+                  phaseText: phase,
+                  notes: notes,
+                  kind: kindHint?.key,
+                  cookie: cookie)
+    }
+    func start() {
+        guard task == nil, !finished, !paused else { return }
+        autoRetried = false
+        task = Task { [weak self] in await self?.run() }
+    }
+    func pause() {
+        guard task != nil else { return }
+        paused = true                 // 先置标志：run() 的取消分支看到它就不会标成完成
+        task?.cancel()
+        task = nil
+        phase = "已暂停（已下的分片保留）"
+        onUpdate?()
+    }
+    func resumeDownload() {
+        guard task == nil, !isActive else { return }
+        notes.append("· 继续下载（已下的 \(done) 个分片保留）")
+        paused = false
+        failed = nil
+        finished = false
+        phase = "继续下载…"
+        start()
+    }
+    func cancel() {
+        task?.cancel()
+        task = nil
+        if !finished {
+            phase = "已取消（已下的分片保留，可再点继续）"
+        }
+    }
+    func localPlaybackURL() -> URL? {
+        guard !fileMissing, let n = outputName else { return nil }
+        if mp4Ready, JobStore.exists(named: n) {
+            return JobStore.file(named: n)
+        }
+        guard let pl = playlistName, JobStore.exists(named: n) else { return nil }
+        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        return LocalHTTPServer.shared.url(pl)
+    }
+    func livePreviewURL() -> URL? {
+        guard livePreviewReady else { return nil }
+        guard LivePreview.canPlay(taskID: id, root: JobStore.dir) else { return nil }
+        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        return LocalHTTPServer.shared.url(LivePreview.relativePath(taskID: id))
+    }
+    var livePreviewReady: Bool {
+        isActive && mediaKind == .video
+            && LivePreview.hasEnoughParts(taskID: id, root: JobStore.dir)
+    }
+    func livePreviewBlockReason() -> String? {
+        LivePreview.blockReason(taskID: id, root: JobStore.dir)
+    }
+    func exportURL() -> URL? {
+        guard let n = outputName, JobStore.exists(named: n) else { return nil }
+        return JobStore.file(named: n)
+    }
+    enum MediaKind: CaseIterable {
+        case video, image, audio, doc
+        var label: String {
+            switch self {
+            case .video: return "视频"
+            case .image: return "图片"
+            case .audio: return "音频"
+            case .doc: return "文件"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .video: return "film"
+            case .image: return "photo"
+            case .audio: return "waveform"
+            case .doc: return "doc"
+            }
+        }
+        var key: String {
+            switch self {
+            case .video: return "video"
+            case .image: return "image"
+            case .audio: return "audio"
+            case .doc: return "doc"
+            }
+        }
+        init?(key: String) {
+            switch key {
+            case "video": self = .video
+            case "image": self = .image
+            case "audio": self = .audio
+            case "doc": self = .doc
+            default: return nil
+            }
+        }
+    }
+    var mediaKind: MediaKind {
+        if let k = Self.kind(fromExtension: (outputName as NSString?)?.pathExtension ?? "") {
+            return k
+        }
+        if let k = kindHint { return k }
+        return .doc
+    }
+
+【6】最近 20 版改了什么（含今天刚踩的坑，供你判断"改出来的新问题"）
+- 下载页在 v1.0.185~1.0.194 之间被反复重写：`List` → `ScrollView + LazyVStack` → **普通 VStack**；
+  `NavigationView`+toolbar 全去掉（顶栏自己画）；`safeAreaInset` 去掉（多选条改成流里的普通视图）；
+  搜索框从系统 `.searchable` 换成自己画的 TextField。
+- **今天最重要的发现**：行级 `.onLongPressGesture` / `.simultaneousGesture(LongPressGesture)`
+  挂在"每一行"上会**抢触摸** → 列表滑不动、行内按钮点不中。已改成系统 `.contextMenu`。
+- 「过程记录」展开状态从"行内 @State"挪到"列表层 Set<UUID>"（懒加载列表会重建行，行内状态会丢）。
+- 合并曾经踩过：concat demuxer 按时间戳拼接 → HLS 产物 duration 不准 → **时长暴涨 3.86 倍**；
+  改用 concat filter 后又发现**输入顺序必须交错** `[v0][a0][v1][a1]…`（写成"所有视频排完再接所有音频"
+  会被 ffmpeg 判成 Media type mismatch 而整条失败）。
+- 缩略图曾经在主线程 `UIImage(contentsOfFile:)` 整张解码 → 一屏 20 张就卡死；已改降采样 + 后台队列。
+
+【7】已知取舍与限制（这些不用再报）
+- 没有 Mac / 无法本地编译，所有验证靠云 CI + 真机实测。
+- 内嵌 ffmpeg 拿不到 stdout（见上），所以进度是估的。
+- iOS 15 上不支持"请求转屏"的公开接口（真机 16.6 没问题）。
+- 合并时如果参数不一致只能重编码（有损），这是**画质优先**下的取舍。
+- 只做单人自用，不做多用户/账号/云端。
+
+【8】请回答什么（按【0】的格式要求）
+A. 硬伤（崩溃 / 丢数据 / 隐私 / 安全）；
+B. 隐性 bug（并发、内存、边界、状态机、SwiftUI 生命周期）；
+C. 值得补的功能（结合"单人自用追剧"场景）；
+D. 如果只改三处，改哪三处。

@@ -289,11 +289,22 @@ struct HLSDownloader {
                 missing.append(i)
                 continue
             }
-            let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
-                                                   keyCache: &keyCache)
-            out.write(payload)
-            written += Int64(payload.count)
-            writtenCount += 1
+            // ★★ v1.0.195（AI 审查 P0）：这一段以前有两个坑 ——
+            //   ① `out.write` 是**不抛错**的版本：磁盘满时静默少写，坏文件照样标"成功"；
+            //   ② decode 抛错时整段直接 throw 出去：句柄没关、残缺的 .ts 留在盘上。
+            //   现在：写入换成会抛错的 `write(contentsOf:)`；本段包 do/catch，
+            //   出错先关句柄、删残件，再把错误抛回去（宁可失败，也不给"看似成功"的坏文件）。
+            do {
+                let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
+                                                       keyCache: &keyCache)
+                try out.write(contentsOf: payload)
+                written += Int64(payload.count)
+                writtenCount += 1
+            } catch {
+                try? out.close()
+                try? fm.removeItem(at: options.outputURL)
+                throw error
+            }
             // 分片**故意不删** —— 见上面那段说明（v1.0.89）。
             // v1.0.101：改由 DownloadJob 在「拼接校验通过」之后立刻清（不再等转码成功），
             // 所以磁盘 2× 只存在于拼接这一小段，而不是整段转码期间。

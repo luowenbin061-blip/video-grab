@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab · AI 代码审查报告（2026-10-01）</title>
+<style>
+  :root { --bg:#12151a; --card:#1b2027; --line:#2b323c; --tx:#e8ecf1; --sub:#9aa5b1;
+          --red:#ff6b6b; --org:#ffb454; --grn:#7bd88f; --blu:#6fb3ff; --dim:#7a8490; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx);
+         font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif; padding:28px 18px 60px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:19px; margin:38px 0 10px; padding-left:10px; border-left:4px solid var(--blu); }
+  h3 { font-size:16px; margin:24px 0 8px; }
+  .sub { color:var(--sub); font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:14px 0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px; }
+  th,td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#20262e; color:var(--sub); font-weight:600; white-space:nowrap; }
+  code { background:#232a33; padding:1px 5px; border-radius:4px; font-size:12.5px;
+         font-family:Consolas,monospace; color:#cfe3ff; word-break:break-all; }
+  .p0 { color:var(--red); font-weight:700; }
+  .p1 { color:var(--org); font-weight:700; }
+  .p2 { color:var(--blu); font-weight:700; }
+  .ok { color:var(--grn); font-weight:700; }
+  .no { color:var(--red); font-weight:700; }
+  .part { color:var(--org); font-weight:700; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px;
+         border:1px solid var(--line); color:var(--sub); margin-right:6px; }
+  .kv { color:var(--sub); }
+  .hl { color:var(--tx); background:#26303b; padding:0 4px; border-radius:4px; }
+  ul { margin:6px 0; padding-left:22px; }
+  li { margin:4px 0; }
+  .warn { border-left:4px solid var(--org); }
+  .good { border-left:4px solid var(--grn); }
+  .bad  { border-left:4px solid var(--red); }
+  pre { background:#0e1116; border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+        overflow-x:auto; font-size:12.5px; color:#cde; }
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>VideoGrab · AI 代码审查报告</h1>
+<div class="sub">2026-10-01 ｜ 审查方：DeepSeek（网页版，简报 4.86 万字）｜ 每条结论已由小满逐条对源码核实</div>
+
+<div class="card">
+<b>一句话结论：</b>DeepSeek 给了 15 条，逐条对源码核实后——
+<span class="ok">9 条成立</span>、<span class="part">3 条部分成立</span>、<span class="no">3 条推翻（代码里有那段，但当前界面根本走不到）</span>。
+真要马上修的是 <span class="p0">4 个 P0</span>：<b>列表记录会被一次解码失败清空</b>、<b>拼接段出错时不清理</b>、
+<b>局域网共享会把 records.json（含 Cookie）给出去</b>、<b>合并和压缩同时跑会踩崩 ffmpeg</b>。
+千问这轮没审成（桥接三次失败），下一轮再补。
+</div>
+
+<h2>一、这次是怎么审的</h2>
+<table>
+<tr><th style="width:130px">环节</th><th>情况</th></tr>
+<tr><td>材料</td><td>《VideoGrab-审查简报.txt》：<b>4.86 万字</b>（概况 + 模块清单 + 数据流 +
+    6 段精选源码：合并 / 分片下载 / 落盘 / 压缩队列 / 任务状态机；界面层只给了结构描述）。
+    文件在 <code>VideoGrab/VideoGrab-审查简报.txt</code>，另有带时间戳的存档副本。</td></tr>
+<tr><td>发送</td><td>DeepSeek：✅ 成功（158 秒，回答 3617 字）。
+    千问：❌ 三次都没成 —— 两次在“往输入框灌 4.8 万字”时页面被关，
+    一次换 1.6 万字短版后只回了句“正在理解你的需求”就结束。</td></tr>
+<tr><td>核实</td><td>15 条全部落到“哪个文件哪一行”逐一核对：9 成立 / 3 部分成立 / 3 推翻。
+    <b>推翻的共同特征还是老一套：它描述的问题在代码里存在，但那条路径当前没有任何调用方。</b></td></tr>
+</table>
+
+<h2>二、P0 —— 真硬伤（建议马上修）</h2>
+
+<div class="card bad">
+<h3 style="margin-top:0">P0-1 ｜ 列表记录可能被一次解码失败“清空” <span class="tag">成立</span></h3>
+<div class="kv">AI 说法：load 解码失败静默返回空数组；save 失败也被静默忽略。</div>
+<p><b>核实：</b>属实，而且后果比它说的更重 ——
+<code>JobStore.swift:176-180</code>：<code>load()</code> 解码失败直接 <code>return []</code>；
+<code>JobStore.swift:187-188</code>：<code>save()</code> 两处 <code>try?</code>，失败静默。
+链路是：records.json 一旦损坏（或升级后字段不兼容）→ 列表变空 →
+<b>之后任何一次 save()（比如新下一个视频）都会用空列表把文件覆盖掉</b> →
+所有任务的标题、文件名对应关系、回收站状态全没（视频文件还在盘上，但列表对不上号了）。</p>
+<p><b>怎么改：</b>① load 失败时先把 records.json 备份成 <code>records_损坏备份.json</code> 再返回空；
+② 逐条容错解码（坏一条丢一条，别全丢）；③ save 失败要能“报出来”（哪怕只是列表页顶部一行红字）；
+④ 顺手做滚动备份（保留最近 3 份）。</p>
+</div>
+
+<div class="card bad">
+<h3 style="margin-top:0">P0-2 ｜ 拼接段出错时不清理，磁盘满时还会静默产出坏文件 <span class="tag">成立</span></h3>
+<div class="kv">AI 说法：拼接循环里 write 不抛错；解密/读盘抛错时句柄不关、残件不删。</div>
+<p><b>核实：</b>属实。<code>Downloader.swift:273</code> 打开句柄 → <code>:292</code> <code>decodeIfNeeded</code>（会抛）
+→ <code>:294</code> <code>out.write(payload)</code> 是 <b>FileHandle 的不抛错版本</b>（磁盘满 = 静默少写）→
+<code>:305</code> 的 <code>try? out.close()</code> 只有正常走完才执行。<b>中间任何一步抛错，句柄不关、残缺的
+.ts 留在盘上</b>。而且拼接完只查了“缺不缺分片”（<code>:306-310</code>），
+<b>没有把 written 和应有字数对一遍</b> —— 静默少写的坏文件能过校验。</p>
+<p><b>怎么改：</b>① 整段包 do/catch，catch 里 <code>try? out.close()</code> + 删 outputURL 再 throw；
+② 循环结束把 <code>written</code> 和清单声明总字数对一遍，对不上按失败处理。</p>
+</div>
+
+<div class="card bad">
+<h3 style="margin-top:0">P0-3 ｜ 局域网共享会把 records.json（含每个站的 Cookie）给出去 <span class="tag">成立</span></h3>
+<div class="kv">AI 说法：共享根目录就是 JobStore.dir，records.json 也在里面，能被下载走。</div>
+<p><b>核实：</b>属实。<code>ContentView.swift:205</code>：<code>enableLAN(root: JobStore.dir)</code>；
+服务的防目录穿越只挡“跑出 root”，<b>不挡 root 里面的任何文件</b>。而 records.json 里存着每个任务的
+sourceURL / <b>referrer / cookie / UA</b>（防登录态）。同一 Wi-Fi 的人拿到口令（口令本身走明文 HTTP）
+就能把这份文件拖走。</p>
+<p><b>怎么改：</b>共享改用<b>白名单虚拟目录</b>：只列“成品视频 + 缩略图”，把 records.json、
+parts_*、durations.txt、merge_*.txt 全排除；顺手把口令改成“每次开启随机、关掉即失效”
+（现在有「记住口令」开关，长期不变就是风险）。</p>
+</div>
+
+<div class="card bad">
+<h3 style="margin-top:0">P0-4 ｜ 合并和压缩能同时跑，内嵌 ffmpeg 会被踩崩 <span class="tag">成立</span></h3>
+<div class="kv">AI 说法：两个队列各自独立，可能同时进 ffmpeg；Hook.m 的 jmp_buf 是全局的，线程安全未知。</div>
+<p><b>核实：</b>属实。<code>Hook.m:17</code> <code>static jmp_buf j;</code> 是<b>全局唯一</b>，
+<code>FFmpeg_exit</code> 一律 longjmp 到“最后一次 setjmp”的点；而
+<code>MergeQueue</code> 和 <code>CompressQueue</code> 是两个互不知晓的独立队列 ——
+你一边压画质一边合并视频，两条路同时进 <code>FFmpeg_main</code>，
+全局状态（nb_input_files 等）互踩 → 轻则输出错乱，重则直接崩。</p>
+<p><b>怎么改：</b>最省事：所有 <code>HookFFmpeg</code> 调用套同一把串行锁（NSLock 即可）；
+或者干脆把两个队列并成一个（都吃 ffmpeg，本来就该排队）。另外 ffmpeg 的调用点建议加
+“同一时间只允许一个”的断言，谁违规谁打日志。</p>
+</div>
+
+<h2>三、P1 / P2 —— 隐性问题</h2>
+<table>
+<tr><th style="width:46px">级别</th><th style="width:34px">结论</th><th>问题（已核实）</th><th style="width:230px">证据与改法</th></tr>
+<tr><td class="p1">P1</td><td class="ok">成立</td>
+    <td>合并的音频滤镜只 <code>aresample=48000</code>，<b>不统一声道布局</b>；
+        遇到“有源没音轨”整条退回 <b>concat demuxer + -c copy</b> —— 那正是当年“时长暴涨 3.86 倍”淘汰掉的老路</td>
+    <td><code>Merger.swift:425</code>（只有 aresample）、<code>:383</code>（allHaveAudio==false 走 demuxer）。
+        改：音频滤镜加 <code>aformat=sample_rates=48000:channel_layouts=stereo</code>；
+        无音轨的源补 <code>anullsrc</code> 静音轨</td></tr>
+<tr><td class="p1">P1</td><td class="ok">成立</td>
+    <td>合并/压缩两条队列之外没有任何 ffmpeg 串行保护（P0-4 的根因，单列一条因为修法独立）</td>
+    <td>全项目 grep 不到 NSLock/Semaphore；<code>Hook.m:17</code> 全局 jmp_buf</td></tr>
+<tr><td class="p1">P1</td><td class="ok">成立</td>
+    <td>分片下载的 catch <b>不区分“取消”</b>：点暂停/取消后还会把重试次数耗完（<code>try? Task.sleep</code> 也吞取消）</td>
+    <td><code>Downloader.swift:474-497</code>。改：catch 里先判 <code>Task.isCancelled</code> 直接 throw；
+        重试前 <code>try Task.checkCancellation()</code></td></tr>
+<tr><td class="p1">P1</td><td class="ok">成立</td>
+    <td>共享走 0.0.0.0 + 明文 HTTP + 口令（公共 Wi-Fi 可嗅探）</td>
+    <td><code>LocalHTTPServer.swift:91</code>。属已知取舍：建议共享页加一句“只在信任的网络开” +
+        口令一次性化</td></tr>
+<tr><td class="p2">P2</td><td class="ok">成立</td>
+    <td><code>snapshot()</code> 里 <code>finishedAt = finished ? Date() : nil</code> —— 完成后每次存档都刷新完成时间
+        （目前只影响共享页的排序显示）</td>
+    <td><code>DownloadJob.swift:301</code> 附近；唯一用途 <code>LocalHTTPServer.swift:719</code>。
+        改：加存储属性，完成那一刻设一次</td></tr>
+<tr><td class="p2">P2</td><td class="ok">成立</td>
+    <td>pause/cancel 后 <code>task = nil</code> 不等旧 run 退出，快速“暂停→继续”可能新旧两个 run 短暂并存
+        （分片写入是 .atomic，兜住了大头）</td>
+    <td><code>DownloadJob.swift:318-346</code>。改：run 挂代次号（generation），旧任务没退干净就不开新的</td></tr>
+<tr><td class="p2">P2</td><td class="part">部分成立</td>
+    <td>分片下载整段进内存（<code>URLSession.data(for:)</code>）——默认并发 6，普通分片（0.5~3MB）峰值约 18MB，
+        没事；<b>遇到超大分片（20MB+）才会顶内存</b></td>
+    <td><code>Downloader.swift:466</code> + <code>:39</code> <code>concurrency = 6</code>。
+        改：换 <code>bytes(for:)</code> 流式落盘</td></tr>
+<tr><td class="p2">P2</td><td class="part">部分成立</td>
+    <td><code>localPlaybackURL()</code> 的 HLS 回退分支判的是 <code>outputName</code> 存在与否 ——
+        正常流程 outputName 都有值，只有异常态才误判</td>
+    <td><code>DownloadJob.swift:358-370</code>。改：回退分支判 <code>playlistName</code> 并放行 outputName 为空的情况</td></tr>
+</table>
+
+<h2>四、推翻的 3 条（代码里有那段，但走不到）</h2>
+<table>
+<tr><th style="width:46px">AI 说的</th><th>核实结果</th></tr>
+<tr><td class="no">推翻</td>
+    <td><b>“CompressQueue 对外部文件先 moveItem，会把原文件搬走”</b> —— 代码属实
+    （<code>CompressQueue.swift:251-267</code>，先搬、搬不动才拷），<b>但全项目只有一个调用方</b>
+    （<code>ContentView.swift:2121</code>），传的是 <code>JobStore.file(named:)</code> ——
+    永远在自家目录里，<code>inOurDir == true</code>，搬的那条分支<b>当前不可达</b>。
+    ★ 记下来：以后若支持“从文件 App 直接选片压缩”，这里就是坑，要改成只拷贝。</td></tr>
+<tr><td class="no">推翻</td>
+    <td><b>“Merger.merge 始终走 concatCopy，force 之后也不改走重编码，参数不一致会产出坏文件”</b> ——
+    代码属实（<code>Merger.swift:249-255</code>），<b>但 Merger.merge 没有任何调用方</b>：
+    实际链路是 MergeSheet → inspect（确认弹窗）→ MergeQueue → <b>mergeByReencoding</b>。
+    所以“硬拼坏文件”不会发生。顺带的真实问题是反的：<b>零损失的 concatCopy 现在没人用</b>
+    （同规格也重编码）—— 这是你为画质做的已知取舍，要不要把“完全同规格就走 copy”接回队列，你定。</td></tr>
+<tr><td class="no">推翻</td>
+    <td><b>“inspect 不看帧率，帧率不同也硬拼”</b> —— <code>Merger.swift:215-221</code>：
+    allSame 的判据 = 尺寸 + <b>SPS/PPS 字节指纹 + 帧率</b>，fps 在里面。它说的 warnings 只列尺寸/声道
+    属实，但 warnings 只影响提示文案，不影响路径选择。</td></tr>
+</table>
+
+<h2>五、缺什么功能（DeepSeek 没给这段，以下是我按“单人自用追剧”场景补的）</h2>
+<table>
+<tr><th style="width:60px">建议</th><th>为什么值得</th><th style="width:300px">代价</th></tr>
+<tr><td><b>失败自动重试</b>（带次数与间隔上限，界面上能看到“第 N 次”）</td>
+    <td>追剧最烦的是半夜下一半失败；现在只有嗅探失败有一次自动重试（<code>autoRetried</code>），下载失败要手点</td>
+    <td>小。状态机已有暂停/继续，套一层就行</td></tr>
+<tr><td><b>records.json 自动备份</b>（保留最近 3 份）</td>
+    <td>配合 P0-1，这是“列表全没”的最后一道保险</td>
+    <td>极小，十几行</td></tr>
+<tr><td><b>连播</b>（列表里点播完一集自动播下一集，可关）</td>
+    <td>追剧场景的高频动作；播放器已有“上次看到哪”的续看</td>
+    <td>中。要在 PlayerSheet 加“播完回调 + 下一集选择”</td></tr>
+<tr><td><b>共享口令一次性化</b>（默认随机、关闭即失效）</td>
+    <td>配合 P0-3，把“长期口令”这个风险去掉</td>
+    <td>小。已有「记住口令」开关，把默认反过来即可</td></tr>
+</table>
+<div class="sub">没列的：字幕、多用户、云同步、界面换肤 —— 要么站点不给数据，要么不是自用刚需，先不碰。</div>
+
+<h2>六、如果只改三处</h2>
+<div class="card good">
+<p>1. <b>JobStore.load/save 健壮化</b>（P0-1）—— 一次解码失败就能把列表清空，这是全项目唯一
+“用户会觉得东西全没了”的路径，而且修法只有十几行。</p>
+<p>2. <b>共享改白名单目录</b>（P0-3）—— records.json 里有你的登录态，这是唯一会“泄出去”的点。</p>
+<p>3. <b>HookFFmpeg 套全局串行锁</b>（P0-4）—— 一把锁堵住“合并+压缩同跑就崩”的整类问题。</p>
+<p class="sub">第四顺位：Downloader 拼接段的清理（P0-2），改法机械，风险低。以上都等你点头再动手。</p>
+</div>
+
+<h2>七、流程回执</h2>
+<pre>
+DeepSeek：[receipt] AGENTCHAT_RUN {"run_id":"ac-6abdd3bcd1716b4ab7bdcab8","skill":"AgentChat-OneWeb","timestamp":"2026-10-01T03:32:45.603Z","exit":0,"provider_used":"DeepSeek","providers_tried":["deepseek"],"total_ms":158440,"images_ok":0,"images_failed":0}
+
+千问（第 1 次，五家并行）：[receipt] AGENTCHAT_RUN {"run_id":"ac-6abdd45eebdcaa378ec4320e",...,"exit":9,"provider_used":null,"providers_tried":["qwen"],"total_ms":146054}
+千问（第 2 次，单独跑）：　 [receipt] AGENTCHAT_RUN {"run_id":"ac-6abdd512dd858e4cb0e3ee0a",...,"exit":9,"provider_used":null,"providers_tried":["qwen"],"total_ms":58110}
+千问（第 3 次，短简报）：　 exit=0 但只回了 58 字占位话（“正在理解你的需求”），未产出审查内容
+</pre>
+<div class="sub">简报存档：VideoGrab/VideoGrab-审查简报.txt（4.86 万字）+ 带时间戳副本。
+DeepSeek 原文：_probe_tmp/_ask2_out/DeepSeek.md。</div>
+
+</div></body>
+</html>

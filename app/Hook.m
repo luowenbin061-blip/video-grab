@@ -16,6 +16,18 @@
 
 static jmp_buf j;
 
+// ★ v1.0.195（AI 审查 P0）：**全局串行锁** ——
+//   合并（MergeQueue）和压缩（CompressQueue）是两条互不知晓的后台队列，
+//   以前能同时进 FFmpeg_main：jmp_buf 是全局唯一的，两路一起 setjmp/longjmp
+//   全局状态（nb_input_files 等）必互踩 → 轻则输出错乱，重则闪退。
+//   有这把锁，谁先拿到谁跑，另一个排队 —— 一把锁堵死整类问题。
+static NSLock *hookLock = nil;
+static dispatch_once_t hookOnce;
+static NSLock *hookLockGet(void) {
+    dispatch_once(&hookOnce, ^{ hookLock = [[NSLock alloc] init]; });
+    return hookLock;
+}
+
 static void resetFFmpeg(void) {
     // ffmpeg 多次运行之间要清掉全局状态，否则第二次跑会带着上一次的文件列表
     extern int nb_input_files;
@@ -52,10 +64,18 @@ int HookMain(int argc, char **argv, int (*realMain)(int, char **), void (*reset)
 
 int HookFFmpeg(int argc, char **argv) {
     extern int FFmpeg_main(int, char **);
-    return HookMain(argc, argv, FFmpeg_main, resetFFmpeg);
+    NSLock *lk = hookLockGet();
+    [lk lock];
+    int r = HookMain(argc, argv, FFmpeg_main, resetFFmpeg);
+    [lk unlock];
+    return r;
 }
 
 int HookFFprobe(int argc, char **argv) {
     extern int FFprobe_main(int, char **);
-    return HookMain(argc, argv, FFprobe_main, resetFFprobe);
+    NSLock *lk = hookLockGet();
+    [lk lock];
+    int r = HookMain(argc, argv, FFprobe_main, resetFFprobe);
+    [lk unlock];
+    return r;
 }
