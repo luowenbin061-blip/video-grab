@@ -32,6 +32,9 @@ final class DownloadJob: ObservableObject, Identifiable {
     @Published var total = 0
     /// 暂停（用户点的，或被系统中断）—— 分片都留在磁盘上，点「继续」从断点接着下
     @Published var paused = false
+    /// ★ v1.0.197：排队中（同时下载数超上限）—— 没在跑、也没占"正在下载"的名额，
+    ///   等有空位由 DownloadCenter.pump() 放行。不落盘：重启后变成"已暂停"，点继续重新排队。
+    @Published var queued = false
     /// 当前阶段 + 本阶段计数 + 累计字节 —— 总百分比和 MB/s 都从这来
     @Published private(set) var stage: HLSDownloader.Stage = .prepare
     @Published private(set) var bytesDone: Int64 = 0
@@ -181,7 +184,9 @@ final class DownloadJob: ObservableObject, Identifiable {
         }
     }
 
-    var isActive: Bool { !finished && failed == nil && !paused }
+    /// "正在下载"—— **排队中的不算**：排队任务没在跑，不该占"同时下载"的名额，
+    /// 也不该触发保活、存储刷新这类"有活干"的逻辑。
+    var isActive: Bool { !finished && failed == nil && !paused && !queued }
 
     // MARK: - 速度（MB/s）
 
@@ -333,8 +338,18 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     /// 「继续 / 重试」是同一个动作：从已下的分片接着下（下过的不会重下）。
     /// 按钮文案分开（暂停→继续、失败→重试）只是给用户看的语义，底层没有区别。
+    /// 排队：把状态重置成"随时能跑"，但先等着（pump() 有空位时 start() 放行）
+    func queueUp(limit: Int) {
+        paused = false
+        failed = nil
+        finished = false
+        queued = true
+        phase = "排队中…（同时下载上限 \(limit) 个）"
+        onUpdate?()
+    }
+
     func resumeDownload() {
-        guard task == nil, !isActive else { return }
+        guard task == nil, !queued, !isActive else { return }
         notes.append("· 继续下载（已下的 \(done) 个分片保留）")
         paused = false
         failed = nil

@@ -43,6 +43,8 @@ struct SettingsView: View {
     /// 后台自动嗅探（★ v1.0.104 起默认**关**）。关着时：不自动扫页面、不自动刷新结果，
     /// 但抓请求照旧、长按下载照旧。打开嗅探面板时会自动扫一次。
     @AppStorage("autoSniff") private var autoSniff = false
+    /// ★ v1.0.197：同时下载数（0 = 不限）。DownloadCenter.maxConcurrentKey 同一个键。
+    @AppStorage(DownloadCenter.maxConcurrentKey) private var maxConcurrent = 0
     /// 已经放行过的网站数（证书不被信任、但按设置一律放行）。进页面时读一次。
     @State private var trustedCount = 0
     /// 启动主页（v1.0.90）。**留空 = 每次打开只显示空白页**。
@@ -87,6 +89,26 @@ struct SettingsView: View {
                     Text("画中画")
                 } footer: {
                     Text("下载保活：开了会立刻出现一个小窗，里面是下载进度；随时关小窗即可停用。\n播放小窗：在 App 里播视频时切到别的 App，画面缩成小窗继续播（也能直接点播放器上的画中画按钮）。\n压缩保活（默认开）：压画质省空间排队开压时会自动起小窗，切到别的 App 也能一直压；关掉的话**压的时候别切走、也别锁屏** —— 切走会被系统挂起，那一条会从头再来。\n两个小窗同时只能有一个 —— 播放时下载/压缩保活窗会先让位，播完自动还回来。")
+                }
+
+                Section {
+                    // ★ v1.0.197：同时下载数 —— 超出上限的任务自动排队（先排先走）
+                    Picker("同时下载", selection: $maxConcurrent) {
+                        Text("1 个").tag(1)
+                        Text("3 个").tag(3)
+                        Text("5 个").tag(5)
+                        Text("不限").tag(0)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: maxConcurrent) { _ in
+                        downloads.pump()      // 上限调大 → 排队中的立刻放出来
+                    }
+                } header: {
+                    Text("下载")
+                } footer: {
+                    Text("同时下载的任务数，超出的自动排队等空位（先排先走，任务上会显示「排队中」）。\n"
+                         + "改小只影响之后开跑的任务 —— 正在跑的不打断。\n"
+                         + "重启 App 后，排队的会变成「已暂停」，点继续重新排队。")
                 }
 
                 Section {

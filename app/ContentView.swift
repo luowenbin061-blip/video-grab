@@ -31,7 +31,7 @@ final class DownloadCenter: ObservableObject {
         job.onUpdate = { [weak self] in self?.save() }
         jobs.insert(job, at: 0)
         save()
-        job.start()
+        begin(job)
         return job
     }
 
@@ -102,11 +102,51 @@ final class DownloadCenter: ObservableObject {
         job.cancel()
         // ★ 顺序要紧：**先登记进回收站**（要拿 job 的完整快照），再移出列表、再删文件。
         //   反过来就什么都留不下了。
+        waiting.removeAll { $0 == job.id }       // 排队里的也一并出列
         FileBin.shared.put(job)
         jobs.removeAll { $0.id == job.id }
         // ★ keepThumb：缩略图留着 —— 回收站里靠它认人（只有几十 KB）
         job.deleteFiles(keepThumb: true)
         save()
+    }
+
+    // ══ ★ v1.0.197：同时下载数限制（设置页可选 1 / 3 / 5 / 不限）══
+    /// 0 = 不限（默认，跟老行为一样）。设置页「同时下载」写的就是这个键。
+    static let maxConcurrentKey = "dlMaxConcurrent"
+    /// 排队中的任务 id（先排先走）。内存态：重启后排队任务恢复成「已暂停」，点继续重新排队。
+    var waiting: [UUID] = []
+
+    /// **所有"要开跑"的入口都走这里**（新增下载 / 继续 / 重试）：
+    /// 没超上限就直接跑；超了就把状态重置成"排队"，等有空位由 pump() 放行。
+    func begin(_ job: DownloadJob, resume: Bool = false) {
+        let limit = UserDefaults.standard.integer(forKey: Self.maxConcurrentKey)
+        if limit <= 0 || jobs.filter({ $0.isActive }).count < limit {
+            if resume { job.resumeDownload() } else { job.start() }
+            return
+        }
+        guard !job.queued else { return }        // 已经在排队的，不用再排一遍
+        job.queueUp(limit: limit)
+        if !waiting.contains(job.id) { waiting.append(job.id) }
+        save()
+    }
+
+    /// 「继续 / 重试」按钮的入口（JobRow 没有中心引用，用回调拐到这里）
+    func resume(_ job: DownloadJob) { begin(job, resume: true) }
+
+    /// 有空位就把排队任务放出来（先排先走）。幂等，随便多调几次都没副作用。
+    /// 触发点：save()（任务完成/失败/暂停/删除都会走到）+ 设置里改上限时。
+    func pump() {
+        let limit = UserDefaults.standard.integer(forKey: Self.maxConcurrentKey)
+        guard limit > 0, !waiting.isEmpty else { return }
+        var running = jobs.filter { $0.isActive }.count
+        while running < limit, !waiting.isEmpty {
+            let id = waiting.removeFirst()
+            guard let job = jobs.first(where: { $0.id == id }),
+                  !job.finished, job.failed == nil, !job.paused else { continue }  // 已删/状态已变
+            job.queued = false
+            job.start()
+            running += 1
+        }
     }
 
     /// 从回收站「找回」：把记录放回下载列表。
@@ -126,6 +166,9 @@ final class DownloadCenter: ObservableObject {
         // ★ v1.0.154：任务增删都会改已用空间 —— 顺手刷一次（后台做，不卡界面）
         refreshUsedSpace()
         keepUsedSpaceFreshWhileBusy()
+        // ★ v1.0.197：任务状态一变就看看有没有排队的可以放出来
+        //   （完成/失败/暂停/删除都会走到 save —— 这正是"空位出现"的所有时机）
+        pump()
     }
 
     var activeCount: Int { jobs.filter { $0.isActive }.count }
@@ -1791,7 +1834,8 @@ struct DownloadList: View {
                                         JobRow(job: job, pip: center.pip,
                                                onDelete: { center.remove(job) },
                                                logExpanded: expandedLog.contains(job.id),
-                                               onSetLog: { open in setLog(job.id, open: open) })
+                                               onSetLog: { open in setLog(job.id, open: open) },
+                                               onResume: { center.resume(job) })
                                             // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
                                             //   卡与卡之间留缝（所以去掉列表分隔线）。
                                             // ★ v1.0.187：照用户要求把卡片**左右留白收窄**
@@ -2262,6 +2306,8 @@ struct JobRow: View {
     /// ★ v1.0.185：「⋯」菜单里那个「删除」—— 删除这件事得由列表那边做
     ///   （要进回收站、要从 `center.jobs` 里摘掉），所以用回调传进去。
     var onDelete: (() -> Void)? = nil
+    /// 「继续 / 重试」也走回调 —— 要过"同时下载数"那道闸门（DownloadCenter.resume）
+    var onResume: (() -> Void)? = nil
     /// ★ v1.0.118：**订阅"看到哪儿了"** —— 进度记录以前是纯静态的，写进去没有任何通知，
     ///   这一行的 body 不会重画 → 缩略图底部那条进度线永远不出现（用户实测报的就是这个）。
     ///   这里只是订阅（值本身不参与布局），线照旧从 `watch.fraction(...)` 取。
@@ -2420,14 +2466,16 @@ struct JobRow: View {
                 //   以前恢复出来的任务可能三个标志都不满足（既没完成也没失败），
                 //   于是「继续/重试」一个都不显示，用户只能删任务。
                 Button {
-                    job.resumeDownload()
+                    onResume?()
                 } label: {
-                    Label(job.paused ? "继续" : "重试",
-                          systemImage: job.paused ? "play.circle.fill" : "arrow.clockwise")
+                    Label(job.queued ? "排队中…" : (job.paused ? "继续" : "重试"),
+                          systemImage: job.queued ? "hourglass"
+                            : (job.paused ? "play.circle.fill" : "arrow.clockwise"))
                         .font(.system(size: 12.5, weight: .medium))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(job.queued)          // 排队中的再点也只是原地排队，按掉防误触
             }
 
             // 操作按钮
