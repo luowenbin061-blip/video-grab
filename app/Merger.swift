@@ -372,33 +372,18 @@ enum Merger {
         //   代价：同时打开所有输入（内存占用高）—— 一次 3~5 段够用。
         //
         //   ★ 前提：concat filter 要求**每一路都有音频流**。有段没音轨时退回老的 demuxer 路。
-        let allHaveAudio = check.infos.allSatisfy { $0.audioChannels > 0 }
-        if !allHaveAudio {
-            let listURL = output.deletingLastPathComponent()
-                .appendingPathComponent("merge_\(UUID().uuidString.prefix(8)).txt")
-            let body = pieces.map { "file \(concatQuoted($0.path))" }.joined(separator: "\n") + "\n"
-            guard (try? body.write(to: listURL, atomically: true, encoding: .utf8)) != nil else {
-                throw Fail.ffmpegFailed(-1)
-            }
-            defer { try? FileManager.default.removeItem(at: listURL) }
-            onProgress(0.02, "正在合并…")
-            let code = await Task.detached(priority: .userInitiated) { () -> Int32 in
-                var a: [String] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                                   "-f", "concat", "-safe", "0", "-i", listURL.path,
-                                   "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-                                   "-c", "copy", output.path]
-                var argv = a.map { strdup($0) }
-                let c = HookFFmpeg(Int32(a.count), &argv)
-                for p in argv { free(p) }
-                return c
-            }.value
-            guard code == 0, Self.bytes(of: output) > 0 else {
-                try? FileManager.default.removeItem(at: output)
-                throw Fail.ffmpegFailed(code)
-            }
-            onProgress(1.0, "合并完成")
-            return
-        }
+        // ★★ v1.0.199：这里原本有一条"有条源没音轨就退回 concat demuxer + -c copy"的旁路
+        //   （按时间戳拼，就是当年时长暴涨 3.86 倍那条路）—— **整条删掉**。
+        //   现在没音轨的那一段在滤镜图里用 anullsrc 现造静音轨（见下面的循环），
+        //   所有源一律走 concat filter 这条正路，不再有"退回老路"这个分支。
+
+        // ★★ v1.0.199（AI 审查 P1，DeepSeek 复核过方向）：**音频的声道布局也必须统一**。
+        //   concat filter 要求每一路音频的「采样率 / 声道布局 / 采样格式 / 时基」全一致 ——
+        //   以前只 aresample 统一了采样率，mono 和 stereo 混着进去就是
+        //   "Input channel layouts mismatch"，整条合并直接失败。
+        //   目标布局：**全是单声道才用 mono，否则一律 stereo**（不做无意义的上混）。
+        let wantStereo = check.infos.contains { $0.audioChannels > 1 }
+        let aLayout = wantStereo ? "stereo" : "mono"
 
         // 每一路都先"自己收拾干净"：视频统一画布+帧率+像素格式，音频统一采样率+对齐时间轴
         var filters: [String] = []
@@ -409,20 +394,40 @@ enum Merger {
         //   然后整条命令失败（2026-09-30 本地实测，v1.0.181~183 一直是这个写法）。
         var segRefs: [String] = []
         for i in pieces.indices {
+            // ★ v1.0.199：每段开头补 setpts=PTS-STARTPTS —— 每段自己的时间轴从 0 起，
+            //   时基统一（concat filter 的另一条要求）。
             if check.needScale {
                 filters.append("[\(i):v]"
+                    + "setpts=PTS-STARTPTS,"
                     + "scale=\(check.targetW):\(check.targetH):"
                     + "force_original_aspect_ratio=decrease,"
                     + "pad=\(check.targetW):\(check.targetH):(ow-iw)/2:(oh-ih)/2,"
                     + "setsar=1,fps=\(check.targetFps),format=yuv420p[v\(i)]")
             } else {
                 filters.append("[\(i):v]"
+                    + "setpts=PTS-STARTPTS,"
                     + "fps=\(check.targetFps),format=yuv420p[v\(i)]")
             }
             // ★ aresample=async=1000 + first_pts=0：允许音频**拉伸去追视频**，起点晚就补静音
             //   （这正是解决"音画不同步"的那两条；async 的单位是采样数，1000 ≈ 22ms/秒）
-            filters.append("[\(i):a]"
-                + "aresample=48000:async=1000:first_pts=0,asetpts=N/SR/TB[a\(i)]")
+            if check.infos[i].audioChannels > 0 {
+                filters.append("[\(i):a]"
+                    + "aresample=48000:async=1000:first_pts=0,"
+                    + "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=\(aLayout),"
+                    + "asetpts=N/SR/TB[a\(i)]")
+            } else {
+                // ★★ v1.0.199：**这一段没有音轨**（静音录屏 / 无声片段）——
+                //   以前遇到这种整条退回 "concat demuxer + -c copy"（按时间戳拼的老路，
+                //   就是当年把时长拼成 3.86 倍那条）。现在**在滤镜图里现造一条静音轨**，
+                //   长度取这一段自己的时长 → 继续走 concat filter 这条正路。
+                //   ★ 用 anullsrc 现造，而不是额外挂一路 lavfi 输入：挂输入会让后面所有
+                //     输入下标重排，极易写错（DeepSeek 复核时也点了这条）。
+                //   ★ aformat 不能省：anullsrc 的默认采样格式与其它路不一致，concat 照样失败。
+                let dur = String(format: "%.3f", max(0.1, check.infos[i].seconds))
+                filters.append("anullsrc=channel_layout=\(aLayout):sample_rate=48000:duration=\(dur),"
+                    + "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=\(aLayout),"
+                    + "asetpts=N/SR/TB[a\(i)]")
+            }
             segRefs.append("[v\(i)][a\(i)]")     // ★ 交错：这一段的视频紧接着它自己的音频
         }
         filters.append(segRefs.joined()

@@ -466,37 +466,63 @@ struct HLSDownloader {
         var lastErr: Error?
         for attempt in 0...options.retry {
             do {
-                let (data, resp) = try await URLSession.shared.data(for: request(for: url))
+                // ★★ v1.0.199（AI 审查 P1）：**改成让 URLSession 下到临时文件**，
+                //   不再整段读进内存。以前 data(for:) 每个分片整段进内存，默认并发 6 ——
+                //   普通分片（1~3MB）没事，遇到 20MB+ 的大分片就会顶内存被系统杀掉。
+                let (tmpURL, resp) = try await URLSession.shared.download(for: request(for: url))
                 let http = resp as? HTTPURLResponse
                 if let h = http, !(200...299).contains(h.statusCode) {
+                    try? FileManager.default.removeItem(at: tmpURL)
                     throw Fail.badStatus(h.statusCode, url.lastPathComponent)
                 }
-                guard !data.isEmpty else { throw Fail.badStatus(0, "空响应") }
-
-                // ★★ v1.0.140：**加两道内容校验**。
-                //   以前只要 2xx + 非空就落盘 —— 服务器回一个 **200 的错误页/拦截页**
-                //   也会被当成分片写进成品，最后拼出一个坏文件。
-                //   ① 声明了长度就必须对得上（"短响应"当场拦下）
-                if let h = http, h.expectedContentLength > 0,
-                   Int64(data.count) != h.expectedContentLength {
-                    throw Fail.badContent(index,
-                        "声明 \(h.expectedContentLength) 字节、实际只收到 \(data.count) 字节")
+                let gotBytes = ((try? FileManager.default.attributesOfItem(atPath: tmpURL.path))?[.size]
+                                as? NSNumber)?.intValue ?? 0
+                guard gotBytes > 0 else {
+                    try? FileManager.default.removeItem(at: tmpURL)
+                    throw Fail.badStatus(0, "空响应")
                 }
-                //   ② 首字节必须是 TS 的同步字节 0x47。
+
+                // ★★ v1.0.140 的两道内容校验照旧（只是改成读文件、不整读）：
+                //   ① 声明了长度就必须对得上（"短响应"当场拦下）
+                if let h = http, h.expectedContentLength > 0, Int64(gotBytes) != h.expectedContentLength {
+                    try? FileManager.default.removeItem(at: tmpURL)
+                    throw Fail.badContent(index,
+                        "声明 \(h.expectedContentLength) 字节、实际只收到 \(gotBytes) 字节")
+                }
+                //   ② 首字节必须是 TS 的同步字节 0x47（**只读 1 个字节**，不整读）。
                 //   ★★ 这条**只能对"明文 TS 流"用**，否则会把加密流和 fMP4 全判成坏：
                 //      · 加密流（AES-128）的分片是**密文**，首字节当然不是 0x47；
                 //      · fMP4 分片的扩展名是 .m4s，本来就不是 TS。
                 //      解密发生在拼接阶段，所以这里只能按"清单有没有 key + 后缀"来判断。
                 let ext = url.pathExtension.lowercased()
                 let isPlainTS = (playlist.key == nil) && ext != "m4s" && ext != "mp4"
-                if isPlainTS, let first = data.first, first != 0x47 {
-                    throw Fail.badContent(index, String(format: "开头是 0x%02X，不像视频分片", first))
+                if isPlainTS {
+                    let fh = try? FileHandle(forReadingFrom: tmpURL)
+                    let first = fh?.readData(ofLength: 1).first
+                    try? fh?.close()
+                    if let first, first != 0x47 {
+                        try? FileManager.default.removeItem(at: tmpURL)
+                        throw Fail.badContent(index, String(format: "开头是 0x%02X，不像视频分片", first))
+                    }
                 }
 
-                try data.write(to: dest, options: .atomic)
+                // 挪进分片目录：同一卷就是"重命名"，很快。
+                // ★ 但**不当原子保证**（DeepSeek 复核时点过）：挪不动就退回"拷一份再删"。
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try? FileManager.default.removeItem(at: dest)
+                }
+                do {
+                    try FileManager.default.moveItem(at: tmpURL, to: dest)
+                } catch {
+                    try? FileManager.default.copyItem(at: tmpURL, to: dest)
+                    try? FileManager.default.removeItem(at: tmpURL)
+                }
+                guard FileManager.default.fileExists(atPath: dest.path) else {
+                    throw Fail.badStatus(0, "分片落盘失败")
+                }
                 // 落盘成功 → 写完成标记（内容 = 字节数），下次续传就靠它
-                try? String(data.count).write(to: doneMarkerURL(index), atomically: true, encoding: .utf8)
-                return Int64(data.count)
+                try? String(gotBytes).write(to: doneMarkerURL(index), atomically: true, encoding: .utf8)
+                return Int64(gotBytes)
             } catch {
                 lastErr = error
                 if attempt < options.retry {

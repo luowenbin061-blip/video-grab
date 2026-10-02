@@ -505,6 +505,13 @@ final class LocalHTTPServer {
             return
         }
 
+        // ★ v1.0.199：**不是白名单里的内容一律 403** —— 这条挡住的就是
+        //   `records.json` 这类"内部文件被直接按路径下载"（光靠列表里不显示是不够的）。
+        guard Self.isServable(target.lastPathComponent) else {
+            sendSimple(fd, status: 403, reason: "Forbidden")
+            return
+        }
+
         guard let fh = try? FileHandle(forReadingFrom: target) else {
             sendSimple(fd, status: 404, reason: "Not Found")
             return
@@ -700,7 +707,13 @@ final class LocalHTTPServer {
             // 它们不是"内容"。以前只有缩略图被挡掉，于是那一页混进一堆几 KB 的
             // `.vgplay_*.m3u8`（播放中继写的临时清单）和空的 parts_ 目录，
             // 而且 m3u8 还被当成"视频"归类 → 视频分类里全是播不了的清单。
-            if Self.isInternalArtifact(n) { continue }
+            // ★ v1.0.199：改成走**白名单**（`isServable`）—— 目录仍然列出（但不含 parts_ 这类），
+            //   文件只有媒体/字幕才显示。records.json 这种内部文件就此从列表里消失。
+            if d.boolValue {
+                if Self.isInternalArtifact(n) { continue }
+            } else if !Self.isServable(n) {
+                continue
+            }
 
             let enc = n.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? n
             let url = "\(prefix)/\(base)\(enc)"
@@ -766,6 +779,26 @@ final class LocalHTTPServer {
         if name.hasPrefix("parts_") { return true }
         if name.hasPrefix("joined_") { return true }
         return false
+    }
+
+    // ══ ★★ v1.0.199（AI 审查 P0）：**共享只放行"内容"，不放开整个数据目录** ══
+    //   以前 root 就是 App 的数据目录，服务只做了"防目录穿越"（路径必须落在 root 内）——
+    //   root 里面**任何文件都能被拖走**，包括 `records.json`（里面有每个任务的
+    //   sourceURL / Referer / **Cookie**）。同一 Wi-Fi 的人拿到地址就能把这些登录态拿走。
+    //   现在按**扩展名白名单**放行（默认拒绝，更稳——将来新增的内部文件自动被挡住）。
+    //   ★ 回环（手机自己播本地视频）走的是同一套判定，所以 m3u8 / ts 必须留着，
+    //     否则会把自家的播放链路一起挡死。
+    private static let servableExts: Set<String> = [
+        "mp4", "mov", "m4v", "ts", "m4s", "m3u8",           // 视频 + HLS
+        "mp3", "m4a", "aac", "wav", "flac", "opus",          // 音频
+        "jpg", "jpeg", "png", "gif", "webp",                 // 图片（含缩略图）
+        "srt", "vtt", "ass", "ssa",                          // 字幕（现在没用到，先留着）
+    ]
+
+    /// 这个文件名能不能共享出去 —— **目录列表与单文件下载共用同一条判据**
+    private static func isServable(_ name: String) -> Bool {
+        if isInternalArtifact(name) { return false }
+        return servableExts.contains((name as NSString).pathExtension.lowercased())
     }
 
     /// 卡片上的类型标签：优先信记录里建卡时定下的类别，没有就按扩展名猜。
@@ -976,7 +1009,15 @@ extension LocalHTTPServer {
                 includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles])) ?? []
             for k in kids.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-                xml += Self.davResponse(url: k, href: base + k.lastPathComponent)
+                // ★ v1.0.199：WebDAV 列表也过同一条白名单（否则换个协议照样能翻出 records.json）
+                let kn = k.lastPathComponent
+                let kIsDir = (try? k.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                if kIsDir {
+                    if Self.isInternalArtifact(kn) { continue }
+                } else if !Self.isServable(kn) {
+                    continue
+                }
+                xml += Self.davResponse(url: k, href: base + kn)
             }
         }
         xml += "</D:multistatus>"
