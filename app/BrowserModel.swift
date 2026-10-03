@@ -388,6 +388,27 @@ final class BrowserModel: NSObject, ObservableObject {
             with: "var autoOn = " + (autoSniff ? "true" : "false") + ";")
     }
 
+    /// cleaner.js 的**原始**内容（只读一次盘）。跟 sniffer.js 一样随身打进 bundle。
+    private static let rawCleanerSource: String = {
+        guard let url = Bundle.main.url(forResource: "cleaner", withExtension: "js"),
+              let s = try? String(contentsOf: url, encoding: .utf8) else {
+            return "/* cleaner.js 没打进 bundle */"
+        }
+        return s
+    }()
+
+    /// 网页广告清理脚本的注入源。
+    ///
+    /// ★ 跟 sniffer 同一个手法：把脚本里那一行 `var MODE = 'on';` 换成当前的开关值。
+    ///   这样**新开的标签在注入时就带上正确的值**，老标签由
+    ///   `applyAdCleanSetting()` 在运行时用 `__vgCleanSet` 通知。
+    static func cleanerSource(on: Bool) -> String {
+        let s = rawCleanerSource
+        let line = "var MODE = 'on';"
+        guard s.contains(line) else { return s }   // 脚本没这行 → 原样注入
+        return s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
+    }
+
     /// 建一个「裸」的 WebView（不登记成标签）。
     /// 配置跟单窗口时代完全一致 —— 嗅探脚本、消息通道、查找开关、UA 一个都不能少。
     // MARK: - 启动 / 重启恢复
@@ -565,6 +586,20 @@ final class BrowserModel: NSObject, ObservableObject {
         // 每个标签的 WebView 有自己的 configuration/ucc，但 handler 都是 self ——
         // 靠 WKScriptMessage.webView 认领是哪个标签（见 didReceive）。
         ucc.add(self, contentWorld: world, name: "vgSniff")
+
+        // ★ v1.0.209 网页广告清理：**独立脚本 + 独立开关**。
+        //   为什么不并进 sniffer.js：sniffer 的定时器只在「后台自动嗅探」开着时才跑，
+        //   而广告清理必须任何时候都在跑 —— 合成一个的话，关掉自动嗅探就把清理也关了。
+        //   注入时机/世界/frame 范围都跟 sniffer 一致（documentStart、page world、
+        //   覆盖 iframe）——documentStart 是为了让"点击防护"能抢在页面自己的脚本前面装好。
+        let cleanScript = WKUserScript(source: Self.cleanerSource(on: AdClean.isOn),
+                                       injectionTime: .atDocumentStart,
+                                       forMainFrameOnly: false,
+                                       in: world)
+        ucc.addUserScript(cleanScript)
+        // 诊断回传走**单独一条通道**（不能并进 vgSniff —— 那边的处理函数会把
+        // 每条消息都当嗅探结果喂给 ingest，混进来会污染列表）。
+        ucc.add(self, contentWorld: world, name: "vgClean")
 
         // ★ v1.0.119 无图模式：在网络层把图片请求拦掉（真省流量）。
         //   注意只能拿到**已经编译好**的规则 —— 编译是异步的，启动时已经预热过了
@@ -1369,6 +1404,16 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
+    /// 设置里改了「网页广告清理」→ 通知**所有已经建好的页面**立刻生效，不用刷新。
+    /// 关掉时脚本会顺手把隐藏过的元素**原样还原**（见 cleaner.js 的 restoreAll）。
+    func applyAdCleanSetting() {
+        let js = "window.__vgCleanSet ? window.__vgCleanSet('\(AdClean.isOn ? "on" : "off")') : 0"
+        for t in tabs {
+            guard let wv = t.webView else { continue }
+            wv.evaluateJavaScript(js) { _, _ in }
+        }
+    }
+
     /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
     ///
     /// ★ 为什么加 seconds（v1.0.88）：证书那条提示有 18 个字，1.8 秒根本读不完，
@@ -1899,6 +1944,12 @@ final class BrowserModel: NSObject, ObservableObject {
 extension BrowserModel: WKScriptMessageHandler {
     nonisolated func userContentController(_ ucc: WKUserContentController,
                                            didReceive message: WKScriptMessage) {
+        // ★ v1.0.209：广告清理的诊断回传走另一条通道 —— 直接记档、**不进嗅探那套流程**
+        //   （不然它会被当成嗅探结果喂给 ingest，把下载列表搞脏）。
+        if message.name == "vgClean" {
+            AdClean.record(message.body)
+            return
+        }
         guard let body = message.body as? [String: Any] else { return }
         // ★ 多标签：消息自带来源 WebView（message.webView），靠它认领标签 ——
         //   这样后台标签的上报只会写进它自己的快照，不会串到当前界面上。

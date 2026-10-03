@@ -40,6 +40,9 @@ struct SettingsView: View {
     @AppStorage("lpDebug") private var lpDebug = false
     /// 嗅探按钮要不要一直待在屏幕上（默认关：不占地方）
     @AppStorage("sniffButtonResident") private var sniffResident = false
+
+    /// ★ v1.0.209 网页广告清理总开关（默认开；键跟 AdClean.key 是同一个）
+    @AppStorage(AdClean.key) private var adClean = true
     /// 后台自动嗅探（★ v1.0.104 起默认**关**）。关着时：不自动扫页面、不自动刷新结果，
     /// 但抓请求照旧、长按下载照旧。打开嗅探面板时会自动扫一次。
     @AppStorage("autoSniff") private var autoSniff = false
@@ -242,6 +245,15 @@ struct SettingsView: View {
                     Text("嗅探")
                 } footer: {
                     Text("**后台自动嗅探（默认关）** 开着：页面每 3 秒自己扫一遍，结果自动刷新。关着：不扫页面，你打开「嗅探结果」面板时会扫一次，面板右上角「⋯ → 重新扫描」也能手动扫。\n\n关掉**不影响任何下载能力** —— 长按视频照旧能下；页面发过哪些网址也照旧被记下来。关掉的只是「反复扫页面 + 反复上报」这一件事。\n\n上面那个只管页面上要不要留一个圆按钮，跟嗅探跑不跑无关。")
+                }
+
+                Section {
+                    Toggle("网页广告清理", isOn: $adClean)
+                        .onChange(of: adClean) { _ in model.applyAdCleanSetting() }
+                } header: {
+                    Text("网页广告清理")
+                } footer: {
+                    Text("清掉盖在页面上的那层浮层广告（插屏大图、赌场浮层这种），并拦住「点它的 X 反而跳走」。\n\n**只隐藏、不删原样** —— 关掉开关会立刻还原。\n\n**默认开**。万一某个网站被误清了（页面缺一块、放不出来），把这里关掉再刷新一下就好。\n\n做不到的：画成图片/画布里的广告、藏在跨域子页面里的广告。")
                 }
 
                 Section {

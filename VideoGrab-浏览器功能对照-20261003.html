@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab 内置浏览器 · 功能对照与缺口清单</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e4e7ec; --ink:#1c2024; --sub:#5b6472;
+    --blue:#2f6fed; --green:#1a9a63; --amber:#b7791f; --gray:#8b95a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 18px 80px;background:var(--bg);color:var(--ink);
+       font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 6px}
+  h2{font-size:17px;margin:34px 0 6px;padding-left:9px;border-left:4px solid var(--blue)}
+  h3{font-size:14.5px;margin:22px 0 6px;color:var(--sub);font-weight:600}
+  .lead{color:var(--sub);font-size:13.5px;margin:0 0 4px}
+  .stats{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:9px 14px;font-size:13px;color:var(--sub)}
+  .stat b{display:block;font-size:20px;color:var(--ink);line-height:1.3}
+  table{width:100%;border-collapse:collapse;background:var(--card);
+        border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13.5px;
+        margin-top:8px}
+  th{background:#fafbfc;text-align:left;padding:9px 11px;font-weight:600;
+     border-bottom:1px solid var(--line);color:var(--sub);font-size:12.5px;white-space:nowrap}
+  td{padding:8px 11px;border-bottom:1px solid #f0f2f5;vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  .pick{width:34px;text-align:center}
+  .pick input{width:17px;height:17px;cursor:pointer}
+  .name{font-weight:600;white-space:nowrap}
+  .why{color:var(--sub)}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;
+       white-space:nowrap;font-weight:600}
+  .t3{background:#e6f4ec;color:var(--green)}
+  .t2{background:#e8effc;color:var(--blue)}
+  .t1{background:#fdf3e0;color:var(--amber)}
+  .t0{background:#f0f1f3;color:var(--gray)}
+  .have{color:var(--green);font-weight:600}
+  .bar{position:sticky;bottom:0;margin-top:26px;background:var(--card);
+       border:1px solid var(--line);border-radius:12px;padding:14px;
+       box-shadow:0 -6px 20px rgba(0,0,0,.06)}
+  .bar button{background:var(--blue);color:#fff;border:0;border-radius:9px;
+              padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  .bar button:hover{filter:brightness(1.06)}
+  textarea{width:100%;height:110px;margin-top:11px;border:1px solid var(--line);
+           border-radius:9px;padding:10px;font:13px/1.6 ui-monospace,monospace;
+           resize:vertical;display:none;background:#fbfcfd}
+  .hint{color:var(--sub);font-size:12.5px;margin-top:8px}
+  .note{background:#fffbe9;border:1px solid #f2e2b4;border-radius:10px;
+        padding:11px 14px;font-size:13px;color:#66531a;margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>内置浏览器 · 功能对照与缺口清单</h1>
+  <p class="lead">2026-10-03 · 「已有」这部分是<b>从代码里一条条抠出来核实过</b>的；「还缺的」是市面浏览器（Safari / Chrome / Edge / 夸克 / Alook / Via / Brave / DuckDuckGo 等）的功能全集，按能否落地筛过一遍。</p>
+
+  <div class="stats">
+    <div class="stat"><b>6 类 46 项</b>现在已经有的</div>
+    <div class="stat"><b>37 项</b>市面有、我们还没有</div>
+    <div class="stat"><b>3 项</b>我标了「很值得」的</div>
+  </div>
+
+  <p class="hint">用法：下面第二张表可以<b>打勾</b>，勾完点底部按钮生成一份清单，直接发我。</p>
+
+  <!-- ============ 一 ============ -->
+  <h2>一、现在已经有的（家底）</h2>
+
+  <h3>地址栏与导航</h3>
+  <table>
+    <tr><th>功能</th><th>说明</th></tr>
+    <tr><td class="name">地址栏输入 + 前往 + 一键清空</td><td class="why">常规</td></tr>
+    <tr><td class="name">关键词直接搜索</td><td class="why">输中文/一句话自动走搜索，不再是"地址不对"</td></tr>
+    <tr><td class="name">历史 / 收藏联想下拉</td><td class="why">边打边提示；可滚动翻到很久以前；点空地址栏列"最近访问"</td></tr>
+    <tr><td class="name">搜索引擎可换</td><td class="why">百度/必应/搜狗/谷歌/自定义模板</td></tr>
+    <tr><td class="name">后退 / 前进</td><td class="why">按钮 + 屏幕边缘滑动手势</td></tr>
+    <tr><td class="name">刷新 / 停止</td><td class="why">同一个位置，加载中自动变"停止"</td></tr>
+    <tr><td class="name">加载进度条</td><td class="why">贴在地址栏下沿（对齐 Safari）</td></tr>
+    <tr><td class="name">长按链接预览</td><td class="why">系统级链接预览</td></tr>
+    <tr><td class="name">捏合缩放页面</td><td class="why">WebView 自带能力</td></tr>
+  </table>
+
+  <h3>标签页</h3>
+  <table>
+    <tr><td class="name">多标签（上限 30 个）</td><td class="why">Safari 式缩略图网格，点开切换、✕ 关闭</td></tr>
+    <tr><td class="name">标签组</td><td class="why">新建 / 切换 / 改名 / 删除</td></tr>
+    <tr><td class="name">同时保活 3 个页面</td><td class="why">切回来不用重新加载</td></tr>
+    <tr><td class="name">冷启动恢复上次标签</td><td class="why">关掉 App 再打开，标签还在</td></tr>
+    <tr><td class="name">内核崩溃自动恢复</td><td class="why">页面被系统回收时悄悄重载（不再弹提示）</td></tr>
+  </table>
+
+  <h3>收藏 / 历史</h3>
+  <table>
+    <tr><td class="name">收藏网址 + 分组</td><td class="why">自建分组、排序、收起</td></tr>
+    <tr><td class="name">书签导入 / 导出</td><td class="why">HTML 格式，能从别的浏览器搬进来</td></tr>
+    <tr><td class="name">历史记录（500 条）</td><td class="why">带访问次数和时间</td></tr>
+    <tr><td class="name">清空历史 / 浏览数据</td><td class="why">设置里</td></tr>
+    <tr><td class="name">回收站</td><td class="why">删错的书签能找回</td></tr>
+    <tr><td class="name">首页常用站点</td><td class="why">自己加网址和功能格子，新标签一眼可点</td></tr>
+  </table>
+
+  <h3>页面处理</h3>
+  <table>
+    <tr><td class="name">桌面模式</td><td class="why">按电脑版 UA 加载（有些站手机版缺内容）</td></tr>
+    <tr><td class="name">无图模式</td><td class="why">系统级内容拦截，真的不下载图片（省流量）</td></tr>
+    <tr><td class="name">页内查找</td><td class="why">系统原生查找条（工具箱里）</td></tr>
+    <tr><td class="name">整页导出 PDF</td><td class="why">矢量 PDF</td></tr>
+    <tr><td class="name">整页截长图</td><td class="why">导出 PDF 时可同时转一张长图</td></tr>
+    <tr><td class="name">分享本页</td><td class="why">系统分享面板（发微信 / 存文件 / 存相册）</td></tr>
+    <tr><td class="name">复制当前页地址</td><td class="why">复制的永远是真实地址，不是输入框里的半截</td></tr>
+  </table>
+
+  <h3>视频嗅探与下载（本 App 的强项）</h3>
+  <table>
+    <tr><td class="name">视频 / 图片 / 音频 / 文档嗅探</td><td class="why">自动 + 手动；按类型分三档</td></tr>
+    <tr><td class="name">长按视频弹「Download」</td><td class="why">照 Stay 的做法</td></tr>
+    <tr><td class="name">页面下载按钮接管</td><td class="why">点网页里的"下载"直接进我们的下载器</td></tr>
+    <tr><td class="name">多清晰度选择</td><td class="why">同一部片子有几档就给你挑</td></tr>
+    <tr><td class="name">下载列表</td><td class="why">搜索 / 排序 / 分类 / 多选 / 批量 / 左滑删除</td></tr>
+    <tr><td class="name">同时下载数限制</td><td class="why">1 / 3 / 5 / 不限，排队自动接续</td></tr>
+    <tr><td class="name">断点续传</td><td class="why">断了接着下，不用重来</td></tr>
+    <tr><td class="name">边下边播</td><td class="why">走本机 HTTP 服务，不用等下完</td></tr>
+    <tr><td class="name">后台下载保活</td><td class="why">画中画顶着，切出去也不停</td></tr>
+    <tr><td class="name">局域网共享给电脑</td><td class="why">同一 Wi-Fi 下电脑浏览器直接拉，带口令</td></tr>
+    <tr><td class="name">播放小窗 / 后台出声</td><td class="why">切出去继续播、锁屏继续听</td></tr>
+    <tr><td class="name">播放进度记忆</td><td class="why">下次接着看</td></tr>
+    <tr><td class="name">视频合并 / 压画质</td><td class="why">合并零损失优先；压缩不缩画面</td></tr>
+    <tr><td class="name">导出到「文件」/ 存相册</td><td class="why">两条都通</td></tr>
+    <tr><td class="name">文件回收站</td><td class="why">删掉的下载文件能找回</td></tr>
+  </table>
+
+  <h3>安全与其他</h3>
+  <table>
+    <tr><td class="name">证书问题自动放行</td><td class="why">记名单，只提示一次</td></tr>
+    <tr><td class="name">弹窗拦截</td><td class="why">没有用户手势的 window.open 不开（同 Safari）</td></tr>
+    <tr><td class="name">数据备份</td><td class="why">工具箱里</td></tr>
+    <tr><td class="name">信任站点管理</td><td class="why">看/撤销已放行的站</td></tr>
+  </table>
+
+  <!-- ============ 二 ============ -->
+  <h2>二、市面有、我们还没有的 —— 勾你想要的</h2>
+  <p class="lead">「建议」那列是我按<b>「你这台 App 的用法（看视频站 + 下载）」</b>给的排序，不是通用评价 —— 你按自己的实际想法勾就行。</p>
+  <p class="hint">图例：<span class="tag t3">很值得</span> <span class="tag t2">值得</span> <span class="tag t1">可有可无</span> <span class="tag t0">自用基本没用</span></p>
+
+  <h3>A · 上网体验</h3>
+  <table id="tbl">
+    <tr><th class="pick">选</th><th>功能</th><th>干什么用</th><th>建议</th></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="无痕/隐私模式"></td><td class="name">无痕 / 隐私模式</td><td class="why">不留历史、不留 Cookie、不落缓存 —— 查点不想留痕的东西</td><td><span class="tag t3">很值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="广告拦截"></td><td class="name">广告拦截</td><td class="why">拦掉页面广告、弹窗、跟踪脚本 —— 现在只是"不显示图"，广告还在加载</td><td><span class="tag t3">很值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="阅读模式"></td><td class="name">阅读模式</td><td class="why">自动抽正文、去掉侧栏和弹窗，看文章/资讯清爽很多</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="恢复刚关掉的标签"></td><td class="name">恢复刚关掉的标签</td><td class="why">误关了一个，一键找回（改动很小）</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="下拉刷新"></td><td class="name">下拉刷新</td><td class="why">像微信那样往下拉就重载页面</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="网页夜间模式"></td><td class="name">网页夜间模式</td><td class="why">强制把页面变暗（护眼，晚上刷不刺眼）</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="网页翻译"></td><td class="name">网页翻译</td><td class="why">外语页一键翻中文（之前搁置过）</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="字号/缩放调整"></td><td class="name">字号 / 缩放调整</td><td class="why">把网页字调大（比捏合缩放更好，能记住）</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="标签页搜索/排序"></td><td class="name">标签页搜索 / 排序</td><td class="why">开了十几个标签时找得着</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="桌面模式常驻快捷"></td><td class="name">桌面模式快捷入口</td><td class="why">现在在工具箱里，要两步；提到功能卡片上一层</td><td><span class="tag t1">可有可无</span></td></tr>
+  </table>
+
+  <h3>B · 隐私与安全</h3>
+  <table>
+    <tr><td class="pick"><input type="checkbox" data-n="跟踪器拦截+隐私报告"></td><td class="name">跟踪器拦截 + 拦截统计</td><td class="why">知道拦了多少东西（Safari 那套"隐私报告"）</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="HTTPS 优先"></td><td class="name">HTTPS 优先 / 强制加密</td><td class="why">能用加密就用加密</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="Cookie 管理界面"></td><td class="name">Cookie 管理界面</td><td class="why">看清某个站存了什么、能单独清掉</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="密码自动填充"></td><td class="name">密码 / 自动填充</td><td class="why">登录不用每次手打（系统钥匙串）</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="指纹防护"></td><td class="name">指纹防护 / 反追踪</td><td class="why">防网站识别你（偏极客）</td><td><span class="tag t0">自用基本没用</span></td></tr>
+  </table>
+
+  <h3>C · 顺手的小工具</h3>
+  <table>
+    <tr><td class="pick"><input type="checkbox" data-n="二维码扫一扫/生成"></td><td class="name">二维码：扫一扫 / 生成当前页二维码</td><td class="why">手机 ↔ 电脑互传网址最省事的办法</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="剪贴板自动识别网址"></td><td class="name">剪贴板自动识别</td><td class="why">在别处复制了链接，打开就提示"要打开吗"</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="下载限速"></td><td class="name">下载限速</td><td class="why">一边下载一边浏览时，别把带宽吃光</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="批量下载页面所有图片"></td><td class="name">批量下载本页所有图片</td><td class="why">图集/写真一次抓完（现在要一张张点）</td><td><span class="tag t3">很值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="地址栏算式/单位换算"></td><td class="name">地址栏算式 / 单位换算</td><td class="why">输"1+1"或"100美元"直接出结果</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="划词翻译"></td><td class="name">划词翻译 / 长按取词</td><td class="why">选中一个词就翻译</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="网页朗读"></td><td class="name">网页朗读（听网页）</td><td class="why">开车/躺着听内容</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="区域截图"></td><td class="name">可视区域截图</td><td class="why">现在只有整页 PDF/长图，没有"就截眼前这一屏"</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="打印"></td><td class="name">打印</td><td class="why">走系统打印机/AirPrint</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="离线保存网页"></td><td class="name">离线保存网页</td><td class="why">没网也能看（存成本地文件）</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="添加到主屏幕(PWA)"></td><td class="name">添加到主屏幕（Web App）</td><td class="why">把常用站变成桌面图标</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="自定义手势"></td><td class="name">自定义手势</td><td class="why">比如双指左右切标签</td><td><span class="tag t1">可有可无</span></td></tr>
+  </table>
+
+  <h3>D · 开发者 / 高级（自用的话多半用不上，但你说了要全列）</h3>
+  <table>
+    <tr><td class="pick"><input type="checkbox" data-n="查看网页源码"></td><td class="name">查看网页源码</td><td class="why">抓嗅探规则时可能有用</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="请求拦截与改写"></td><td class="name">请求拦截 / 改写</td><td class="why">比"广告拦截"更灵活：自己写规则改请求头、挡请求</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="用户脚本(油猴类)"></td><td class="name">用户脚本（油猴类）</td><td class="why">装别人的脚本改网站行为</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="控制台/网络日志"></td><td class="name">控制台 / 网络日志</td><td class="why">排查"这个站为什么嗅探不到"很有用</td><td><span class="tag t2">值得</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="元素检查"></td><td class="name">元素检查（点击选中元素）</td><td class="why">同上，偏调试</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="按站单独设置"></td><td class="name">按网站单独设置</td><td class="why">某个站记单独 UA/缩放/JS 开关</td><td><span class="tag t1">可有可无</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="HTTP代理设置"></td><td class="name">HTTP 代理设置</td><td class="why">App 内部走代理（跟系统代理分开）</td><td><span class="tag t1">可有可无</span></td></tr>
+  </table>
+
+  <h3>E · 同步生态（列出来只为"有一样算一样"，自用基本没意义）</h3>
+  <table>
+    <tr><td class="pick"><input type="checkbox" data-n="跨设备同步书签/历史"></td><td class="name">跨设备同步书签 / 历史 / 标签</td><td class="why">要多设备 + 服务器账号</td><td><span class="tag t0">自用基本没用</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="阅读列表"></td><td class="name">阅读列表</td><td class="why">存起来以后再读（收藏其实能顶）</td><td><span class="tag t0">自用基本没用</span></td></tr>
+    <tr><td class="pick"><input type="checkbox" data-n="账号登录/密码云同步"></td><td class="name">账号登录 / 密码云同步</td><td class="why">同上</td><td><span class="tag t0">自用基本没用</span></td></tr>
+  </table>
+
+  <div class="note">
+    <b>我的建议（只代表按你现在的用法）</b>：如果只挑三样 —— <b>广告拦截</b>（视频站广告真的多，拦了既清爽又省流量）、
+    <b>批量下载本页所有图片</b>（现在一张张点太费手）、<b>无痕模式</b>（很便宜，就是"不落盘"）。
+    再加一样的话：<b>恢复刚关掉的标签</b>（改动极小、失误成本最低）。
+  </div>
+
+  <div class="bar">
+    <button onclick="gen()">生成我勾选的清单</button>
+    <span class="hint" id="cnt">　已勾 0 项</span>
+    <textarea id="out" readonly></textarea>
+    <div class="hint" id="tip" style="display:none">↑ 上面就是清单，复制发给我就行。</div>
+  </div>
+
+</div>
+
+<script>
+var boxes = document.querySelectorAll('table input[type=checkbox]');
+function picked(){
+  var r=[];
+  boxes.forEach(function(b){ if(b.checked) r.push(b.getAttribute('data-n')); });
+  return r;
+}
+boxes.forEach(function(b){
+  b.addEventListener('change', function(){
+    document.getElementById('cnt').textContent = '　已勾 ' + picked().length + ' 项';
+  });
+});
+function gen(){
+  var r = picked();
+  var ta = document.getElementById('out');
+  var tip = document.getElementById('tip');
+  if(!r.length){ ta.value='（还没勾任何一项）'; }
+  else {
+    ta.value = '【浏览器功能】我想要这些：\n' + r.map(function(x,i){ return (i+1)+'. '+x; }).join('\n');
+  }
+  ta.style.display='block'; tip.style.display='block'; ta.select();
+}
+</script>
+</body>
+</html>
