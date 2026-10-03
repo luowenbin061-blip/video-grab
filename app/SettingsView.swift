@@ -51,6 +51,9 @@ struct SettingsView: View {
     @AppStorage("homePageURL") private var homePage = ""
     /// 回收站（v1.0.97）
     @State private var showTrash = false
+    /// ★ v1.0.205：地址栏的搜索引擎（输的不是网址就拿去搜）
+    @AppStorage(SearchEngine.key) private var searchEngine = SearchEngine.baidu.rawValue
+    @AppStorage(SearchEngine.customKey) private var searchEngineCustom = ""
     /// ★ v1.0.164：全局回收站（书签 + 已删的下载文件）—— 单例，只订阅它的计数变化
     @ObservedObject private var bin = FileBin.shared
 
@@ -147,6 +150,26 @@ struct SettingsView: View {
                          + "（关掉共享时电脑打不开，重新打开就已经是同一个地址）。\n"
                          + "代价：固定之后，同一个 Wi-Fi 下曾经拿到过这个地址的人也能一直进 —— "
                          + "所以默认不开。")
+                }
+
+                // ★ v1.0.205：地址栏能搜了 —— 搜哪儿由这儿定
+                Section {
+                    Picker("搜索引擎", selection: $searchEngine) {
+                        ForEach(SearchEngine.allCases) { e in
+                            Text(e.title).tag(e.rawValue)
+                        }
+                    }
+                    if searchEngine == SearchEngine.custom.rawValue {
+                        TextField("搜索链接模板（%@ 代表关键词）", text: $searchEngineCustom)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .keyboardType(.URL)
+                    }
+                } header: {
+                    Text("搜索")
+                } footer: {
+                    Text("在地址栏里输的不是网址时，用它去搜（输中文、输一整句话都算）。\n"
+                         + "自定义模板必须含 %@，例如 https://www.baidu.com/s?wd=%@")
                 }
 
                 Section("浏览数据") {

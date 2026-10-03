@@ -412,7 +412,7 @@ struct ContentView: View {
                 //   打开任何网页后 showHomePage 立刻变 false → 自动让位，不用手动关。
                 if model.showHomePage {
                     HomePageView(store: homeStore,
-                                 onOpenURL: { model.load($0) },
+                                 onOpenURL: { model.openURL($0) },
                                  onFeature: { handleHomeFeature($0) })
                 }
 
@@ -462,6 +462,10 @@ struct ContentView: View {
             progressLine
             bottomBar
         }
+        // ★★ v1.0.205：地址栏的联想面板 + "点页面收起"的遮罩。
+        //   挂在**最外层**（不是 topBar 自己身上）—— 这样它一定画在最上面，
+        //   不会被 BrowserView（UIViewRepresentable，UIKit 那层）压住。
+        .overlay { addrOverlay }
         .overlay(alignment: .top) { toastView }
         // 诊断条：放在顶部（原来在底部，正好压着视频的画面区）。只在诊断开关打开时出现
         .overlay(alignment: .top) { lpDebugBanner }
@@ -590,7 +594,8 @@ struct ContentView: View {
         .sheet(isPresented: $showBookmarks) {
             BookmarksView(store: store, isPresented: $showBookmarks) { url in
                 input = url
-                model.load(url)
+                // ★ v1.0.205：传进来的本来就是网址，别再过"是网址还是关键词"那层
+                model.openURL(url)
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -698,6 +703,160 @@ struct ContentView: View {
     // 原来「后退 前进 刷新」挤在底部工具栏里，三条工具栏 + 一排图标按钮堆在一起，
     // 功能看着重叠。现在顶上一行只管「去哪儿」，其余全部收到下面。
 
+    // MARK: - 地址栏联想（v1.0.205）
+    //
+    // 为什么加：用户的原话是"输入地址麻烦"—— 以前地址栏只会把输入当网址，
+    // 历史里明明去过的站也不提示，每次得从头手打。
+
+    /// 地址栏下拉里的一行。
+    private struct AddrSuggestion: Identifiable {
+        let id: String
+        let icon: String
+        let title: String
+        let subtitle: String?
+        /// 点它是"去搜这个词"（与 open 二选一）
+        let search: String?
+        /// 点它是"打开这个网址"（与 search 二选一）
+        let open: String?
+    }
+
+    /// 地址栏当前该给哪些建议。
+    /// · 输入非空 → 第一行永远是「搜索 xxx」或「打开 xxx」，后面接历史/收藏里命中的
+    /// · 输入为空 → 「最近访问」（历史，按最后访问时间排）
+    private var addrSuggestions: [AddrSuggestion] {
+        let q = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = q.lowercased()
+        var out: [AddrSuggestion] = []
+
+        // ① 第一行：这段输入本身怎么处理
+        if !q.isEmpty {
+            if BrowserModel.makeURL(q) != nil {
+                out.append(AddrSuggestion(id: "open:" + q, icon: "arrow.right.circle",
+                                          title: q, subtitle: "打开这个网址",
+                                          search: nil, open: q))
+            } else {
+                out.append(AddrSuggestion(id: "search:" + q, icon: "magnifyingglass",
+                                          title: q,
+                                          subtitle: "用\(SearchEngine.current.title)搜索",
+                                          search: q, open: nil))
+            }
+        }
+
+        // ② 历史 + 收藏里命中的
+        //   ★ 收藏没有"访问次数 / 最后访问"这两个字段（那是历史才有的）——
+        //     得补默认值，否则它永远排在历史后面，等于白收。
+        var rows: [(url: String, label: String, weight: Int, when: Date)] = []
+        if q.isEmpty {
+            for h in store.history.prefix(20) {
+                rows.append((h.url, h.label, h.visits, h.lastVisit))
+            }
+        } else {
+            for h in store.history where
+                h.url.lowercased().contains(key) || h.title.lowercased().contains(key) {
+                rows.append((h.url, h.label, h.visits, h.lastVisit))
+            }
+            for b in store.marks where
+                b.url.lowercased().contains(key) || b.title.lowercased().contains(key) {
+                rows.append((b.url, b.label, 100_000, b.addedAt))   // 你主动存的，权重给高
+            }
+        }
+        rows.sort { a, b in
+            let ap = !key.isEmpty
+                && (a.label.lowercased().hasPrefix(key) || a.url.lowercased().hasPrefix(key))
+            let bp = !key.isEmpty
+                && (b.label.lowercased().hasPrefix(key) || b.url.lowercased().hasPrefix(key))
+            if ap != bp { return ap }                 // 前缀命中的排前面
+            if a.weight != b.weight { return a.weight > b.weight }
+            return a.when > b.when                    // 最后：越近的越前
+        }
+
+        var seen = Set<String>()
+        for r in rows {
+            if seen.contains(r.url) { continue }       // ★ 历史和收藏重了只留一条
+            seen.insert(r.url)
+            out.append(AddrSuggestion(id: r.url, icon: "clock.arrow.circlepath",
+                                      title: r.label.isEmpty ? r.url : r.label,
+                                      subtitle: r.url, search: nil, open: r.url))
+            if out.count >= 7 { break }                // 第一行 + 最多 6 条
+        }
+        return out
+    }
+
+    /// 联想列表本体
+    private func addrSuggestionPanel(_ list: [AddrSuggestion]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(list.enumerated()), id: \.element.id) { idx, s in
+                Button {
+                    urlFocused = false                  // 先收键盘，再走（顺序反了会闪）
+                    if let q = s.search {
+                        model.submit(q)
+                    } else if let u = s.open {
+                        input = u
+                        model.openURL(u)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: s.icon)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(s.title)
+                                .font(.system(size: 14))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if let sub = s.subtitle, sub != s.title {
+                                Text(sub)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        // ★ 占满那一列，**别用 Spacer** —— 它会跟文字平分宽度，
+                        //   把标题压窄成"…"（这工程在这一条上栽过）
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if idx < list.count - 1 {
+                    Divider().padding(.leading, 42)
+                }
+            }
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .padding(.horizontal, 8)
+    }
+
+    /// 面板 + "点页面收起"的透明遮罩。
+    /// 遮罩只盖地址栏以下 —— 地址栏本身还得能点（不然想改地址都点不到）。
+    @ViewBuilder private var addrOverlay: some View {
+        if urlFocused {
+            let list = addrSuggestions                 // ★ 只算一次（里面要过滤+排序）
+            ZStack(alignment: .top) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .padding(.top, 42)
+                    .onTapGesture { urlFocused = false }
+                if !list.isEmpty {
+                    addrSuggestionPanel(list).padding(.top, 46)
+                }
+            }
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
+    }
+
+    /// 地址栏提交（回车 / 点「前往」）：是网址就打开，不是就拿去搜
+    private func submitInput() {
+        urlFocused = false
+        model.submit(input)
+    }
+
     // MARK: - 顶部（只有地址栏这一行）
     // 后退/前进挪到底栏去了 —— 参考图里导航就在下面，顶上一行只负责「去哪儿」。
 
@@ -708,13 +867,15 @@ struct ContentView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
 
-                TextField("输入网址，或打开一个视频页", text: $input)
+                TextField("输入网址，或直接搜点什么", text: $input)
                     .focused($urlFocused)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled(true)
-                    .keyboardType(.URL)
+                    // ★ v1.0.205：从 .URL 换到 .webSearch —— 地址栏现在也能当搜索框，
+                    //   .URL 键盘没有空格键，想输一句话很难受。
+                    .keyboardType(.webSearch)
                     .font(.system(size: 14))
-                    .onSubmit { model.load(input) }
+                    .onSubmit { submitInput() }
                     .submitLabel(.go)
 
                 if !input.isEmpty {
@@ -732,7 +893,7 @@ struct ContentView: View {
             .padding(.vertical, 7)
             .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9))
 
-            Button("前往") { model.load(input) }
+            Button("前往") { submitInput() }
                 .font(.system(size: 14, weight: .medium))
                 .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
                 .padding(.horizontal, 2)

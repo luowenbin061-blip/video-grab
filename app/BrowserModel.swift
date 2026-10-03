@@ -206,6 +206,10 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 加载超时 / 进度条收起的定时器
     private var loadTimeoutTask: Task<Void, Never>?
     private var progressHideTask: Task<Void, Never>?
+    /// ★ v1.0.205：**原始**（未节流）加载进度 —— 只用来判断"页面还在不在动"
+    private var lastEstimatedProgress: Double = -1
+    /// ★ v1.0.205：原始进度最后一次**真的**发生变化的时间 —— 加载兜底唯一的判据
+    private var lastProgressTick = Date()
     /// 加载完成后延迟截缩略图的定时器
     private var thumbTask: Task<Void, Never>?
 
@@ -1118,13 +1122,14 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 导航
 
-    func load(_ text: String) {
-        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// 打开一个**网址**（不做"是网址还是关键词"的判断）。
+    ///
+    /// ★★ v1.0.205 从原来的 `load()` 拆出来：首页快捷入口 / 收藏点开 / 历史点开
+    ///   传进来的**本来就是网址**，不该再过搜索那一层。
+    func openURL(_ text: String) {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return }
-        if !s.contains("://") { s = "https://" + s }
-        guard let u = URL(string: s) else {
-            // 以前这里跟「拿不到 WebView」挤在同一个 guard 里静默 return ——
-            // 用户只看到"点了没反应"。地址不合法至少要吭一声。
+        guard let u = Self.makeURL(s) else {
             showToast("这个地址好像不对，检查一下再试")
             return
         }
@@ -1132,18 +1137,101 @@ final class BrowserModel: NSObject, ObservableObject {
         readyWebView().load(URLRequest(url: u))
     }
 
+    /// 地址栏回车 / 点「前往」：**是网址就打开，不是就拿去搜**。
+    ///
+    /// ★★ v1.0.205：以前（`load()`）把任何输入都当网址 —— 输中文必然被拼成
+    ///   `https://中文…` 然后弹一句「这个地址好像不对」。用户的原话是"输入地址麻烦"。
+    func submit(_ text: String) {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        if let u = Self.makeURL(s) {
+            clearLoadError(currentTab)
+            readyWebView().load(URLRequest(url: u))
+            return
+        }
+        guard let link = SearchEngine.current.url(for: s),
+              let u = URL(string: link) else {
+            showToast("这个地址好像不对，检查一下再试")
+            return
+        }
+        showToast("正在用\(SearchEngine.current.title)搜「\(s)」", seconds: 1.2)
+        clearLoadError(currentTab)
+        readyWebView().load(URLRequest(url: u))
+    }
+
+    /// 一段文本 → 要去的地址；**返回 nil = 这不像网址**（交给搜索引擎）。
+    ///
+    /// 判据照 Safari：带协议头的直接用；没空格、没中文、又像"域名 / IP / localhost"
+    /// 的补上 https。其余（含中文、含空格、光秃秃一个词）一律当关键词。
+    static func makeURL(_ raw: String) -> URL? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+
+        // ① 已经带 `://`：认得的协议直接用
+        if let r = s.range(of: "://") {
+            let scheme = s[..<r.lowerBound].lowercased()
+            guard knownSchemes.contains(scheme) else { return nil }
+            return URL(string: s) ?? percentEncodedURL(s)
+        }
+        // ② 没有 `://` 但确实是协议的（about:blank / mailto: / tel:）——
+        //    ★ 不挡的话 `mailto:a@b.com` 会被拼成 https 地址
+        if let colon = s.firstIndex(of: ":"), !s[..<colon].contains("."),
+           knownSchemes.contains(String(s[..<colon]).lowercased()) {
+            return URL(string: s)
+        }
+        // ③ 一眼像网址吗？（★ 后两条是"或"的关系：域名像 **或** 是 IP/localhost）
+        let hasSpace = s.contains(" ") || s.contains("\t") || s.contains("\n")
+        let hasCJK = s.unicodeScalars.contains { $0.value > 0x2E80 }    // 中日韩 → 一定是关键词
+        let hostRaw = s.split(separator: "/").first.map(String.init) ?? s
+        let host = hostRaw.split(separator: ":").first.map(String.init) ?? hostRaw
+        let dotOK = host.contains(".") && !host.hasPrefix(".") && !host.hasSuffix(".")
+        let isIPv4 = host.range(of: #"^\d{1,3}(\.\d{1,3}){3}$"#,
+                                options: .regularExpression) != nil
+        let hostish = host.lowercased() == "localhost" || isIPv4
+        guard !hasSpace, !hasCJK, (dotOK || hostish) else { return nil }   // → 去搜
+        return URL(string: "https://" + s) ?? percentEncodedURL("https://" + s)
+    }
+
+    /// 含中文 / 空格的地址：`URL(string:)` 在 iOS 15 上会直接失败 —— 兜一次百分号编码
+    private static func percentEncodedURL(_ s: String) -> URL? {
+        guard let e = s.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else {
+            return nil
+        }
+        return URL(string: e)
+    }
+
+    /// 认得的协议。别的（比如手滑输入的 `C:\xxx`）**不当网址** ——
+    /// 不然会被拼成 `https://C:\xxx` 再弹一句让人摸不着头脑的提示。
+    private static let knownSchemes: Set<String> = [
+        "http", "https", "about", "mailto", "tel", "sms", "file", "data", "blob", "ftp",
+    ]
+
     // MARK: - KVO 回调（进度 / 地址 / 标题）
 
     /// 进度变了 → 推进进度条。走满后过一小会儿收起（对齐 Safari：走满、闪一下、消失）。
     @MainActor private func progressChanged(_ wv: WKWebView) {
         guard let t = tab(for: wv), t === currentTab else { return }
         let p = wv.estimatedProgress
-        progress = p
+        // ★★ v1.0.205：两件事分开，别用一个变量干两份活 ——
+        //   · lastEstimatedProgress：**原始**进度，只用来判断"页面还在不在动"（加载兜底靠它）。
+        //     必须跟下面的 progress 分开：混用的话，节流造成的差值会让"在动"永远成立，
+        //     兜底检测就永远不触发（这正是发出去核方案时被指出的坑）。
+        //   · progress：给界面那根 2pt 进度条看的，节流后再写。
+        if abs(p - lastEstimatedProgress) > 0.0005 {
+            lastEstimatedProgress = p
+            lastProgressTick = Date()
+        }
+        // 节流：2pt 宽的进度条看不出 0.01 的差别，但每写一次 @Published 都要整页重算
+        // （加载期间 WebKit 每秒能推几十次 —— 用户说的"偶尔卡一下"多半就是这儿）。
+        // ★ 到 100% 必须强制写进去：只差 0.005 就会让进度条卡在 99% 不动。
+        if abs(p - progress) >= 0.01 || p >= 1 {
+            progress = p
+        }
         if p >= 1 {
             progressActive = true
             hideProgressSoon()
         } else if p > 0 {
-            progressActive = true
+            if !progressActive { progressActive = true }      // 已经亮了就别反复写
             progressHideTask?.cancel(); progressHideTask = nil
         }
     }
@@ -1193,19 +1281,30 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 加载超时兜底（loading 开始后 25 秒还没完就认它卡了）。
     /// 原来没有这一层：页面卡住时 isLoading 永远是 true，进度条一直转，
     /// 用户的感觉就是"它死了，只能刷新"。
+    /// 加载兜底：**不看"到点了没"、看"进度是不是真的不动了"**。
+    ///
+    /// ★★ v1.0.205 重写（用户报的"奇奇怪怪的提示：25 秒没加载完…"就是这条）。
+    ///   原来是死等 25 秒，到点就①弹一句"可能卡住了"②**把 isLoading 和进度条全清掉**。
+    ///   可视频站首页本来就要加载 25 秒以上（图片、广告、各种外链），于是**经常误报**；
+    ///   更糟的是误报时进度条被清掉 —— 页面明明还在正常下载，看起来却像卡死了。
+    ///   现在：每 3 秒看一眼**原始进度**动没动；只要在动就一直等（绝不打扰）；
+    ///   连续 40 秒一动不动才提示一句 —— 而且**只提示，绝不碰任何界面状态**。
     @MainActor private func startLoadTimeout(_ t: BrowserTab) {
         loadTimeoutTask?.cancel()
+        lastProgressTick = Date()
+        lastEstimatedProgress = -1
         let target = self
         loadTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 25_000_000_000)
-            guard !Task.isCancelled else { return }
-            guard t.isLoading else { return }
-            t.isLoading = false
-            if t === target.currentTab {
-                target.isLoading = false
-                target.progressActive = false
-                target.progress = 0
-                target.showToast("这一页超过 25 秒还没加载完，可能卡住了 —— 可以点刷新重试")
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                // 切走了就别管了（tick 只跟当前标签走，留着会误判成"卡住"）
+                guard t === target.currentTab else { return }
+                guard t.isLoading else { return }                 // 加载完了 → 收工
+                if Date().timeIntervalSince(target.lastProgressTick) >= 40 {
+                    target.showToast("这一页好像不动了 —— 可以点刷新重试", seconds: 3)
+                    return
+                }
             }
         }
     }
@@ -1999,25 +2098,50 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             }
             let recoverable = !t.address.isEmpty && t.address != "about:blank"
 
-            // 崩太多次了 → 不再自动重载（只提示一次，别反复刷屏）
+            // 崩太多次了 → 不再自动重载（摆错误页，由用户决定要不要再来）
             if t.crashCount >= TabLimits.maxCrashReloads {
                 if t.crashCount == TabLimits.maxCrashReloads {
                     t.crashCount += 1
+                    t.isLoading = false
                     t.loadError = PageError.crashGaveUp(url: t.address,
                                                         attempts: TabLimits.maxCrashReloads)
                     if t === self.currentTab {
+                        self.isLoading = false
+                        self.progressActive = false
+                        self.progress = 0
                         self.loadError = t.loadError
-                        self.showToast("这页反复崩，先不自动恢复了 —— 点「重试」再试一次")
+                        self.showToast("这页总是崩，先不自动恢复了 —— 点「重试」再试一次")
                     }
                 }
                 return
             }
 
             t.crashCount += 1
-            if t === self.currentTab {
-                self.showToast("页面被系统回收了，正在自动恢复…")
+
+            // ★ 没有地址可恢复（空白标签）：**不能一声不吭** —— 那用户看到的就是"点了没反应"
+            guard recoverable else {
+                t.isLoading = false
+                if t === self.currentTab {
+                    self.isLoading = false
+                    self.showToast("页面出了点问题，已回到起始页")
+                    self.openStartPage()
+                }
+                return
             }
-            if recoverable { wv.reload() }
+
+            // ★★ v1.0.205：**静默恢复**。
+            //   以前每次自动重载都会弹一句提示（大意是"页面被回收、正在恢复"）——
+            //   用户看到的是"页面自己白了一下又好了，还附一句看不懂的话"。
+            //   现在：只把"在加载"标出来（底栏自动显示「停止」、进度条自己走），
+            //   页面重载回来就完事，**不弹任何提示**；只有上面"崩到放弃"才出声。
+            //   顺手清掉上一次的错误页（不然重载期间它还盖在页面上）。
+            t.loadError = nil
+            t.isLoading = true
+            if t === self.currentTab {
+                self.isLoading = true
+                self.loadError = nil
+            }
+            wv.reload()
         }
     }
 
