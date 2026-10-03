@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab 代码体检报告（2026-10-03）</title>
+<style>
+  :root{--bg:#12151a;--card:#1b2027;--line:#2b323c;--tx:#e8ecf1;--sub:#9aa5b1;
+        --red:#ff6b6b;--org:#ffb454;--grn:#7bd88f;--blu:#6fb3ff;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif;padding:28px 18px 60px}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px}
+  h2{font-size:19px;margin:36px 0 10px;padding-left:10px;border-left:4px solid var(--blu)}
+  h3{font-size:16px;margin:22px 0 8px}
+  .sub{color:var(--sub);font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#20262e;color:var(--sub);font-weight:600;white-space:nowrap}
+  code{background:#232a33;padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:Consolas,monospace;color:#cfe3ff;word-break:break-all}
+  .p1{color:var(--red);font-weight:700}.p2{color:var(--org);font-weight:700}.p3{color:var(--blu);font-weight:700}
+  .done{color:var(--grn);font-weight:700}
+  .bad{border-left:4px solid var(--red)}.good{border-left:4px solid var(--grn)}.warn{border-left:4px solid var(--org)}
+  ul{margin:6px 0;padding-left:22px}li{margin:4px 0}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>VideoGrab 代码体检报告</h1>
+<div class="sub">2026-10-03 ｜ 用 <b>swiftui-pro</b> + <b>swift-language</b> 两份清单，分 4 片扫完
+<b>58 个 Swift 文件 / 23,351 行</b>；每条都由小满回到源码逐条核实过</div>
+
+<div class="card">
+<b>一句话：</b>扫出 <b>20 条</b>值得看的（其余按项目现实过滤掉了，见文末）。其中
+<span class="done">3 条我当场修了</span>（含 <b>一条是我 40 分钟前刚引入的回归</b>），
+<span class="p1">2 条 P1</span>、<span class="p2">9 条 P2</span>、<span class="p3">6 条 P3</span> 等你决定。
+没有发现会丢视频文件的问题 —— 最重的是「转换期间点暂停/继续会让两个 ffmpeg 同时写同一个文件」。
+</div>
+
+<h2>一、已当场修掉的三条（出包 v1.0.200）</h2>
+
+<div class="card bad">
+<p><b>① 共享白名单漏了 <code>.part</code> —— 这是我 v1.0.199 自己引入的回归</b>
+<span class="done">已修</span></p>
+<p>v1.0.199 我给共享加了扩展名白名单，但**漏了 <code>part</code>**（升级前下好的任务，分片还叫 <code>seg_000001.part</code>，
+边下边播正是靠它）以及 <code>webm/mkv/avi/flv/3gp/heic/bmp/tiff/svg</code>。
+后果：<b>边下边播对那些老任务直接 403</b>、这些格式的下载物在共享页/WebDAV 里直接消失。
+现在白名单<b>以 <code>kindKey</code> 那张分类表为准</b> + <code>part/m4s/m3u8</code> 三样播放必需项；
+并加了一条<b>跨表结构断言</b>（"白名单必须覆盖 kindKey 全部扩展名"）—— 这条断言本来就能提前拦住我。</p>
+</div>
+
+<div class="card bad">
+<p><b>② 压缩失败会删掉源文件</b> <span class="done">已修</span> — 核实：<code>CompressQueue.swift</code> 里
+<code>retire(item)</code> 原本写在 do/catch <b>之后、无条件执行</b>，而 <code>retire</code> 会删 <code>ownsSource</code> 的源。</p>
+<p>后果：压失败/取消 → 源没了 → <b>没法重试</b>；更糟的是从「文件」App 选来的源是<b>搬进来</b>的
+（<code>CompressSheet.takePicked</code> 这条入口是可达的），删了等于删掉<b>唯一副本</b>——
+而 <code>Compressor</code> 文件头自己写着"绝不自动删原片"。现在 retire 只在<b>压成功</b>那条路走。</p>
+</div>
+
+<div class="card warn">
+<p><b>③ 外部选来的源"先搬后拷" → 可能搬走用户原件</b> <span class="done">已修</span></p>
+<p>原逻辑：不在 App 目录的文件先 <code>moveItem</code>，失败才拷贝。从「文件」App 选来的可能是<b>用户原件</b>，
+搬走等于把他原来位置的文件删了。现在：<b>只对系统临时目录里的副本用搬</b>，其余一律只拷贝。</p>
+</div>
+
+<h2>二、P1（会出错，建议尽快定）</h2>
+<table>
+<tr><th style="width:150px">位置</th><th>问题（已核实）</th><th style="width:230px">为什么会出问题</th></tr>
+<tr><td><code>DownloadJob.swift:334</code><br><code>FFmpegConverter.swift:96</code></td>
+<td><b>转 MP4 期间点「暂停」再马上点「继续」，会有两个 ffmpeg 同时写同一个成品文件</b></td>
+<td>转换跑在 <code>Task.detached</code> 里，而 detached <b>不响应</b>父任务的 cancel；<code>pause()</code> 却立刻把
+<code>task = nil</code>，于是守卫形同虚设。更巧的是 <code>toMP4</code> 开头会先把目标 mp4 删掉 →
+<b>第一个正在写的文件被删</b> → 产出损坏但可能报"成功"的成品。删除任务同理（只等 800ms 就删分片目录）<br>
+<b>改法：</b>给"正在转换"加一个不可重入的守卫标志，ffmpeg 真返回前不放行第二次启动</td></tr>
+</table>
+
+<h2>三、P2（真问题，看你取舍）</h2>
+<table>
+<tr><th style="width:150px">位置</th><th>问题</th><th style="width:210px">后果 / 改法</th></tr>
+<tr><td><code>BrowserModel.swift:947</code><br><code>ContentView.swift:1116+</code></td>
+<td><b>切标签时图片面板不跟着换</b>（<code>syncFromTab</code> 没同步 <code>images/imageGroups</code>，
+而面板读的是 model 级的 <code>imageGroups</code>）</td>
+<td>在 A 页看图片 → 切到 B 标签 → 显示的<b>还是 A 页的图</b>，100% 可复现。
+改法：把 images/imageGroups 纳入按标签状态</td></tr>
+<tr><td><code>Merger.swift:249</code><br><code>MergeQueue.swift:54</code></td>
+<td><b>零损失的合并路径（<code>-c copy</code>）全项目没人调用</b>；<code>MergeSheet</code> 还把 <code>force</code> 丢掉 →
+即使各段规格完全一样也强制重编码</td>
+<td>用户最在意的<b>画质被无谓重编一次（有损）</b>，本可秒级的合并变成分钟级。
+改法：<code>MergeQueue.start</code> 里按 <code>check.allSame</code> 分流</td></tr>
+<tr><td><code>CompressQueue.swift:411</code></td>
+<td><code>retire</code> 的本体（已在①②里修好，但语义要跟"留下/丢弃"对齐）</td>
+<td>已修，留档</td></tr>
+<tr><td><code>Bookmarks.swift:396-414</code></td>
+<td><b>收藏的存档全用 <code>try?</code> 静默吞掉</b>（和 JobStore 当初那个 P0 同一个形状）</td>
+<td>写失败＝刚收藏的东西重启就没了，且不报原因。改法：照 JobStore 加"备份 + 逐条抢救 + 留痕"</td></tr>
+<tr><td><code>FileBin.swift:127</code></td>
+<td><b>回收站记录 <code>(try? decode) ?? []</code></b> → 一条坏数据整份变空，之后任何一次保存会覆盖掉</td>
+<td>回收站是"怕彻底找不到"的兜底，被静默清空最讽刺。改法同 JobStore</td></tr>
+<tr><td><code>LocalHTTPServer.swift:42-56<br>216-317</code></td>
+<td><b>本机服务的共享状态没有同步</b>（running/port/root/token 被主线程与并发队列裸读写）；
+关掉再开共享时，旧 accept 循环可能<b>不会退出</b>（对着已关闭的 fd 每 50ms 空转）</td>
+<td>关/开共享几次可能攒下僵尸循环 + fd 泄漏。<br><span class="sub">★ 这条我只做了静态推演，<b>没实测</b>，标"待观察"</span></td></tr>
+<tr><td><code>TSRemuxer.swift:405-415</code></td>
+<td><code>withTimeout</code> 把 <code>var resumed</code> 捕获进并发闭包</td>
+<td>现在能编过，<b>Swift 6 严格并发下会编译失败</b>（项目里别处已用 <code>Box</code> 招式绕过）。
+改法：照 <code>MediaProxy.Box</code> 改</td></tr>
+<tr><td><code>ContentView.swift:1819-1892</code></td>
+<td><code>shownJobs</code>（过滤+排序）在同一个 body 里被取 <b>5 次</b>，每次都重算一遍</td>
+<td>下载中 <code>usedSpace</code> 每隔一阵刷新 → 整页重算 5 遍；任务越多越涩。改法：body 开头取一次存局部变量</td></tr>
+<tr><td><code>ContentView.swift:1817</code></td>
+<td>下载列表用的是<b>普通 VStack</b>（不是 Lazy）→ 一进页把所有行全建出来 + 缩略图并发解码</td>
+<td>对比回收站用的是真 List（懒加载）。<b>这条是 192 我为修行高变化时点击错位故意换的</b>，
+而那个根因（行级长按手势）已经被 contextMenu 取代 → 可以试回 LazyVStack。
+★ 但"换来换去"的教训在这：建议<b>你实测一次</b>再换</td></tr>
+<tr><td><code>SettingsView.swift:308-333</code><br><code>TabGrid.swift:49</code></td>
+<td>在 body 里用 <code>Binding(get:set:)</code> 造绑定，且 setter 里做启停副作用</td>
+<td>开关状态可能和真实状态不一致（如 PiP 被系统关掉时）。改法：状态上移成 @State + onChange</td></tr>
+<tr><td><code>RecycleBinView.swift:311</code></td>
+<td>每一行 body 里现造 <code>DownloadJob(record:)</code>，而它的 init 里有<b>两次查盘</b>（JobStore.exists）</td>
+<td>回收站按设计不设上限 → 行多了每次滚动就按"行数×2"查盘。改法：在循环里算一次存进记录</td></tr>
+</table>
+
+<h2>四、P3（知道就行）</h2>
+<table>
+<tr><th style="width:190px">位置</th><th>问题</th></tr>
+<tr><td><code>DownloadJob.swift:836</code></td><td>直链下载那条分支 <code>return</code> 前没有 <code>stageEnd("探测")</code> → 心跳 Task 每次泄漏一个，且"探测耗时"这条诊断永远不写</td></tr>
+<tr><td><code>Downloader.swift:288</code></td><td>拼接阶段仍 <code>Data(contentsOf: part)</code> 整段读（下载侧 v1.0.199 已改，这条漏了）</td></tr>
+<tr><td><code>MediaProxy.swift:312</code></td><td>用信号量同步阻塞最长 ~70s（作者注释里承认是权衡）；改 async 可免</td></tr>
+<tr><td><code>PiPProgress.swift:64</code></td><td>每次窗口丢失都新建 180×101 宿主视图，旧的从不移除 → 图层慢慢累积</td></tr>
+<tr><td><code>PlayerSheet.swift:78</code></td><td>16ms 周期把控制条透明度写进 @State，驱动整屏 body 重算（渐变期间 ~60fps）<span class="sub">（agent 自标"取决于 SwiftUI 是否对同值去抖"，未实测）</span></td></tr>
+<tr><td><code>Hook.m:42</code></td><td><code>resetFFprobe()</code> 是空实现（自带 FIXME）—— 连续第二次 ffprobe 可能带残留状态，<b>影响未确认</b></td></tr>
+<tr><td>全项目</td><td>风格类：<code>Task.sleep(nanoseconds:)</code>、仍在用 GCD 的几处、<code>String(format:)</code>、一处旧 <code>cornerRadius</code>、<code>some View</code> 计算属性代替独立 View、死代码 <code>Toolbox.sniffDetail</code>、<code>ContentView</code> 一个文件 15 个类型 —— <b>都不影响运行</b>，属"有空再收"</td></tr>
+</table>
+
+<h2>五、说明：我按项目现实过滤掉了哪些"建议"</h2>
+<div class="card">
+<p>swiftui-pro 是给<b>现代 iOS（iOS 26 / Swift 6.2）</b>写的清单，直接套到我们这个"部署目标 iOS 15、
+必须用 UIKit、单人自用不上架"的项目上会产生大量噪音。我明确<b>没有采纳</b>这些：</p>
+<ul>
+<li>「改用 <code>@Observable</code> / <code>NavigationStack</code> / 双参 <code>onChange</code> / <code>Task.sleep(for:)</code> / <code>replacing(_:with:)</code>」—— 全是 iOS 16/17+ API，我们的部署目标是 15。</li>
+<li>「去掉 UIKit 改用纯 SwiftUI」—— WKWebView / 画中画 / 后台音频 / PhotoKit 都是 UIKit 的活。</li>
+<li>「无障碍 / 上架合规」类 —— 单人自用，只留了真值得的那几条。</li>
+</ul>
+<p class="sub">GCD、<code>String(format:)</code> 这类属于"风格整洁"而非"会出错"，我放在 P3 而不是混进前面。</p>
+</div>
+
+<h2>六、我的建议顺序</h2>
+<div class="card good">
+<p>1. <b>P1 那条（转换期间暂停/继续 → 双 ffmpeg 写同一文件）</b> —— 唯一可能"产出看着成功其实坏了"的路径，
+和你定的"稳定性 &gt; 一切"正面冲突。一个守卫标志 + 不让删除在 ffmpeg 返回前动手，改动不大。</p>
+<p>2. <b>接回零损失的合并路径</b>（P2）—— 直接对得上你最在意的"画质"，改法只是一处分流判断。</p>
+<p>3. <b>Bookmarks / FileBin 的存档健壮化</b>（P2）—— 和当初 JobStore 那个 P0 同一个形状，照抄即可。</p>
+<p class="sub">其余 P2/P3 你挑；不想动也行，都在这里有据可查，随时能翻出来。</p>
+</div>
+
+</div></body>
+</html>

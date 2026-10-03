@@ -327,6 +327,14 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     /// 用户点「暂停」。已下的分片都留在磁盘上，「继续」时从断点接着下。
+    /// ★★ v1.0.201（代码体检 P1）：**"进程内 ffmpeg 正在跑"的哨兵**。
+    ///   为什么必须有它：转换跑在 `Task.detached` 里，而 **detached 不响应父任务的 cancel** ——
+    ///   偏偏 `pause()` 会立刻把 `task` 置 nil，于是 `resumeDownload()` 的守卫（task == nil）
+    ///   形同虚设：**暂停 → 马上继续 → 两个 ffmpeg 同时写同一个成品**，
+    ///   而 `toMP4` 开头还会把"目标文件"删掉 —— 正在写的那个被删，产出"看着成功其实坏了"的文件。
+    ///   现在：进 ffmpeg 前置位、出来复位；新的 run 进 ffmpeg 前先**等它真退出**。
+    private(set) var ffmpegBusy = false
+
     func pause() {
         guard task != nil else { return }
         paused = true                 // 先置标志：run() 的取消分支看到它就不会标成完成
@@ -350,6 +358,13 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     func resumeDownload() {
         guard task == nil, !queued, !isActive else { return }
+        // ★ v1.0.201：转码中的 ffmpeg 停不下来 —— 这一下先不接，说清楚原因，
+        //   否则就是"点了没反应"（而且硬接会变成两个 ffmpeg 抢同一个成品）。
+        if ffmpegBusy {
+            phase = "正在转码（转完就停）"
+            onUpdate?()
+            return
+        }
         notes.append("· 继续下载（已下的 \(done) 个分片保留）")
         paused = false
         failed = nil
@@ -560,7 +575,8 @@ final class DownloadJob: ObservableObject, Identifiable {
     func deleteFiles(keepThumb: Bool = false) {
         task?.cancel()
         task = nil
-        var list: [String?] = [outputName, playlistName, baseName + ".ts"]
+        var list: [String?] = [outputName, playlistName, baseName + ".ts",
+                               baseName + ".mp4"]        // ← 转码中途被删的孤儿成品（v1.0.201）
         if !keepThumb { list.append(thumbName) }
         // ★★ v1.0.195（彬彬 13:31 亲测 + AI 审查）：**分片草稿箱必须一起删** ——
         //   下载的分片全在 `parts_<uuid>/` 里，而"没下完"的任务 outputName 还是 nil，
@@ -573,10 +589,18 @@ final class DownloadJob: ObservableObject, Identifiable {
         //   `error: reference to captured var 'names' in concurrently-executing code`
         //   （run #164 就挂在这；run #138 也踩过同一条，是同一个坑。）
         let names = list
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .utility) { [weak self] in
             // 给被取消的 run 留半秒收尾（它可能还差最后一个 .atomic 写入），
             // 不然刚删完它又补写一片，草稿箱就剩个尾巴。
             try? await Task.sleep(nanoseconds: 800_000_000)
+            // ★ v1.0.201：转码中的 ffmpeg 停不下来 —— **等它真退出再删**，
+            //   否则它会一边被删一边继续往成品里写，留下一个没人登记的孤儿文件。
+            //   （最多等 60 秒，等不到也照删 —— 不能让删除卡死。）
+            for _ in 0..<120 {
+                let busy = await MainActor.run { self?.ffmpegBusy ?? false }
+                if !busy { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
             JobStore.remove(names)
         }
     }
@@ -1101,6 +1125,20 @@ final class DownloadJob: ObservableObject, Identifiable {
         stageBegin("转成 MP4")
         loggedTranscodeStep = -1
         phase = "正在转成 MP4…"
+        // ★★ v1.0.201（代码体检 P1）：**进 ffmpeg 之前先等上一次的它真退出**。
+        //   ffmpeg 跑在 Task.detached 里，cancel 传不进去 —— 只能等。
+        //   （不等的话：暂停→马上继续 就是两个 ffmpeg 抢同一个成品文件。）
+        while ffmpegBusy {
+            if Task.isCancelled {
+                paused = true                       // 按"暂停"收场，别硬上一个新的
+                phase = "已暂停（转码刚停，接着来还是断点续传）"
+                onUpdate?()
+                return nil
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        ffmpegBusy = true
+        defer { ffmpegBusy = false }
         do {
             let detail = try await FFmpegConverter.toMP4(
                 input: pl, inputBytes: partsBytes, mp4: mp4URL,

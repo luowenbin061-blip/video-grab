@@ -256,6 +256,47 @@ enum Merger {
                              totalBytes: check.totalBytes, onProgress: onProgress)
     }
 
+    /// ★★ v1.0.201（代码体检 P2）：**智能合并** —— 规格真一致时先走"只搬运不重编码"。
+    ///
+    /// 背景：`merge()`（零损失、秒级）一直**没有任何调用方**，队列永远只调
+    /// `mergeByReencoding()` → 就算各段规格完全一样也强制重编码一次（**有损**），
+    /// 而这恰恰违背本文件头写的"能不重编码就不重编码"、也违背用户最在意的画质。
+    ///
+    /// 但直接接回去有风险：当年"时长暴涨 3.86 倍"就是 concat demuxer 那条路踩出来的
+    /// （HLS 产物的 duration 不准，按时间戳拼就会放大）。所以这里加一道**成品时长校验**：
+    /// 搬运完量一下成品时长，跟各段之和偏差 &gt;5% 就**删掉重来走重编码** ——
+    /// 走对了是零损失 + 秒级，走错了自动退回老路，不会交付一个时长不对的成品。
+    static func mergeSmart(_ sources: [Source], output: URL,
+                           onProgress: @escaping (Double, String) -> Void) async throws {
+        guard sources.count >= 2 else { throw Fail.tooFew }
+        let check = try await inspect(sources)
+        if check.allSame, check.audioSame, check.totalSec > 1 {
+            do {
+                onProgress(0.02, "规格一致 —— 直接搬运（零损失）…")
+                try await merge(sources, output: output, force: true, onProgress: onProgress)
+                let got = await durationSeconds(of: output)
+                let want = check.totalSec
+                if want > 1, got > 0, abs(got - want) / want <= 0.05 {
+                    onProgress(1.0, "合并完成（直接搬运，零损失）")
+                    return
+                }
+                onProgress(0.05, "搬运后的时长对不上（\(Int(got))s / \(Int(want))s），改走重编码…")
+                try? FileManager.default.removeItem(at: output)
+            } catch {
+                // 搬运这条路出错（编码/封装不兼容之类）→ 静默退回重编码，别把用户卡在这
+                try? FileManager.default.removeItem(at: output)
+            }
+        }
+        try await mergeByReencoding(sources, output: output, onProgress: onProgress)
+    }
+
+    /// 量一个成品文件的时长（AVFoundation；进程内 ffprobe 拿不到 stdout）
+    private static func durationSeconds(of url: URL) async -> Double {
+        let asset = AVURLAsset(url: url)
+        let d = try? await asset.load(.duration)
+        return d?.seconds ?? 0
+    }
+
     /// 只搬运的拼接（两条路最后都走它）。
     private static func concatCopy(_ urls: [URL], output: URL, totalBytes: Int64,
                                    onProgress: @escaping (Double, String) -> Void) async throws {

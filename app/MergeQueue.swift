@@ -51,7 +51,10 @@ final class MergeQueue: ObservableObject {
 
         Task { [weak self] in
             do {
-                try await Merger.mergeByReencoding(sources, output: output) { p, msg in
+                // ★ v1.0.201：改走 `mergeSmart` —— 规格真一致时先"只搬运不重编码"
+                //   （零损失、秒级），并**校验成品时长**，对不上自动退回重编码。
+                //   以前这里写死 `mergeByReencoding` → 参数一样也白重编一次（有损）。
+                try await Merger.mergeSmart(sources, output: output) { p, msg in
                     // ffmpeg 的回调不一定在主线程 → 跳回去再改状态
                     Task { @MainActor in
                         guard let self else { return }
