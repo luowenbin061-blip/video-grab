@@ -285,25 +285,52 @@ struct HLSDownloader {
             //   现在先记下来，循环完**明确报错**：宁可失败，也不能给你一个
             //   "能播但缺一段"的文件、还让你以为成功了。
             //   已下载的分片全部保留 → 点「重试」只会补缺的那几个。
-            guard let data = try? Data(contentsOf: part) else {
-                missing.append(i)
-                continue
-            }
-            // ★★ v1.0.195（AI 审查 P0）：这一段以前有两个坑 ——
-            //   ① `out.write` 是**不抛错**的版本：磁盘满时静默少写，坏文件照样标"成功"；
-            //   ② decode 抛错时整段直接 throw 出去：句柄没关、残缺的 .ts 留在盘上。
-            //   现在：写入换成会抛错的 `write(contentsOf:)`；本段包 do/catch，
-            //   出错先关句柄、删残件，再把错误抛回去（宁可失败，也不给"看似成功"的坏文件）。
-            do {
-                let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
-                                                       keyCache: &keyCache)
-                try out.write(contentsOf: payload)
-                written += Int64(payload.count)
-                writtenCount += 1
-            } catch {
-                try? out.close()
-                try? fm.removeItem(at: options.outputURL)
-                throw error
+            // ★★ v1.0.204（代码体检 P3）：**明文分片改成流式拼**（分块读 → 分块写），
+            //   不再 `Data(contentsOf:)` 把整个分片读进内存 —— 遇到 20MB+ 的大分片时，
+            //   拼接这一步会瞬时占双份内存（下载侧 v1.0.199 已经改成流式了，这里漏了）。
+            //   ★ 加密分片（AES-128）保持整段读：CBC 解密必须按整段算，那条路少见、不折腾。
+            let needDecrypt = (playlist.key?.method.uppercased() == "AES-128")
+            if needDecrypt {
+                guard let data = try? Data(contentsOf: part) else {
+                    missing.append(i)
+                    continue
+                }
+                // ★★ v1.0.195（AI 审查 P0）：这一段以前有两个坑 ——
+                //   ① `out.write` 是**不抛错**的版本：磁盘满时静默少写，坏文件照样标"成功"；
+                //   ② decode 抛错时整段直接 throw 出去：句柄没关、残缺的 .ts 留在盘上。
+                //   现在：写入换成会抛错的 `write(contentsOf:)`；本段包 do/catch，
+                //   出错先关句柄、删残件，再把错误抛回去（宁可失败，也不给"看似成功"的坏文件）。
+                do {
+                    let payload = try await decodeIfNeeded(data: data, playlist: playlist, index: i,
+                                                           keyCache: &keyCache)
+                    try out.write(contentsOf: payload)
+                    written += Int64(payload.count)
+                    writtenCount += 1
+                } catch {
+                    try? out.close()
+                    try? fm.removeItem(at: options.outputURL)
+                    throw error
+                }
+            } else {
+                guard let inFH = try? FileHandle(forReadingFrom: part) else {
+                    missing.append(i)
+                    continue
+                }
+                do {
+                    while true {
+                        let chunk = try inFH.read(upToCount: 1 << 18) ?? Data()   // 256 KB 一块
+                        if chunk.isEmpty { break }
+                        try out.write(contentsOf: chunk)
+                        written += Int64(chunk.count)
+                    }
+                    try? inFH.close()
+                    writtenCount += 1
+                } catch {
+                    try? inFH.close()
+                    try? out.close()
+                    try? fm.removeItem(at: options.outputURL)
+                    throw error
+                }
             }
             // 分片**故意不删** —— 见上面那段说明（v1.0.89）。
             // v1.0.101：改由 DownloadJob 在「拼接校验通过」之后立刻清（不再等转码成功），

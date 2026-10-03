@@ -40,7 +40,12 @@ static void resetFFmpeg(void) {
 }
 
 static void resetFFprobe(void) {
-    // FIXME: ...
+    // ★ v1.0.204（代码体检 P3）：这里原来只写着 `FIXME: ...`，看着像"忘了补"。
+    //   实测确认：**全工程没有任何地方调用 HookFFprobe**（探参数一律走 AVFoundation，
+    //   因为进程内 ffmpeg 拿不到 stdout）—— 所以留空是安全的，不是遗留 bug。
+    //   ★ 哪天要启用 HookFFprobe：**先补上 ffprobe 侧需要复位的全局量**，
+    //     否则第二次调用可能带着上一次的残留状态（ffmpeg 侧的 nb_input_files 等
+    //     就是必须复位的那种，见上面 resetFFmpeg）。
 }
 
 void FFmpeg_exit(int code) {

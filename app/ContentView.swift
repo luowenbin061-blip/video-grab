@@ -2641,7 +2641,7 @@ struct JobRow: View {
                 }
                 .padding(8)
                 .background(Color(.tertiarySystemBackground))
-                .cornerRadius(8)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
         .padding(.vertical, 3)

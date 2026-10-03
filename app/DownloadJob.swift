@@ -859,6 +859,11 @@ final class DownloadJob: ObservableObject, Identifiable {
             }
 
             if probe.kind == .file {
+                // ★ v1.0.204（代码体检 P3）：**这一路必须先收掉"探测"阶段** ——
+                //   以前这里是直接 return：`stageBegin("探测")` 起的**心跳 Task 没人停**
+                //   （它每秒采样内存，还强引用着这个任务 → 每下一条直链就漏一个），
+                //   而且"探测 用时"那条诊断永远不写，排障时少一档数据。
+                stageEnd("探测")
                 try await runDirectFile(src: src, probe: probe, tempDir: tempDir,
                                         ua: opt.userAgent, referer: opt.referer, cookie: opt.cookie)
                 return

@@ -206,10 +206,9 @@ struct ToolboxView: View {
         }
     }
 
-    /// 嗅探那格的副标题：有结果就报条数，没有就说一句实话
-    private var sniffDetail: String {
-        model.items.isEmpty ? "这个页面暂时没嗅到" : "\(model.items.count) 条地址"
-    }
+    // ★ v1.0.204（代码体检 P3）：这里原本有个 `sniffDetail` 计算属性，
+    //   定义了**从来没人用**（真正显示的是 `badge: model.items.count`）——
+    //   留着会误导后来的人以为嗅探格用了它。已删。
 
     /// 一个功能格：大图标 + 短标题（**故意不放长说明** —— 一行字最省地方）
     private func cell(_ icon: String, _ title: String, _ color: Color,
