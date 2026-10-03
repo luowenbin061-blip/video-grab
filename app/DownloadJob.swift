@@ -589,7 +589,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         //   `error: reference to captured var 'names' in concurrently-executing code`
         //   （run #164 就挂在这；run #138 也踩过同一条，是同一个坑。）
         let names = list
-        Task.detached(priority: .utility) { [weak self] in
+        // ★ 必须先绑成 let 再进并发闭包：`[weak self]` 里的 self 在编译器眼里是个"可被置空的 var"，
+        //   直接引用就是 `reference to captured var 'self' in concurrently-executing code`
+        //   （run #201 就挂在这；本工程同类坑已踩第 5 次 —— var/weak 捕获进并发闭包一律先绑 let）
+        let job = self
+        Task.detached(priority: .utility) {
             // 给被取消的 run 留半秒收尾（它可能还差最后一个 .atomic 写入），
             // 不然刚删完它又补写一片，草稿箱就剩个尾巴。
             try? await Task.sleep(nanoseconds: 800_000_000)
@@ -597,7 +601,7 @@ final class DownloadJob: ObservableObject, Identifiable {
             //   否则它会一边被删一边继续往成品里写，留下一个没人登记的孤儿文件。
             //   （最多等 60 秒，等不到也照删 —— 不能让删除卡死。）
             for _ in 0..<120 {
-                let busy = await MainActor.run { self?.ffmpegBusy ?? false }
+                let busy = await MainActor.run { job.ffmpegBusy }
                 if !busy { break }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
