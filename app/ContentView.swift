@@ -1979,109 +1979,144 @@ struct DownloadList: View {
                         .padding(.top, 6)
                         .padding(.bottom, 10)
 
-                        // ★★ v1.0.188：**列表从 `List` 换成 `ScrollView + LazyVStack`**。
-                        //   为什么非换（用户连着两轮报「滑不动、只有右边能滑」）：
-                        //   `List` 对行的手势/命中判定有自己一套 —— 一行里塞了按钮 + 长按手势之后，
-                        //   手指按在卡片**左半边**往下拉根本不滚。换过两次手势写法都没治住，
-                        //   那就**把 List 本身换掉**：滚动归 ScrollView，卡片我自己画，
-                        //   几何 100% 可控（留白、字号不再受 List 那套默认内边距影响）。
-                        //   代价：丢掉左滑删除 —— ⋯ 菜单里的「删除」和多选里的删除都还在。
-                        ScrollView {
-                            // ★★ v1.0.192：`LazyVStack` → **普通 `VStack`**。
-                            //   为什么（"过程记录还是有的行点不开"）：懒加载的栈**只给看得见的那几行
-                            //   建视图**，行高变化（展开日志 / 下载进度刷新）时，**行与行之间的
-                            //   命中区域会和画面对不上**——表现就是"有的行点得开、有的点不开"。
-                            //   普通 VStack 每次都把所有行老老实实排一遍，几何是确定的。
-                            //   代价：行多了会一次性建出来（缩略图仍走降采样+缓存，20~50 条没问题）。
-                            VStack(alignment: .leading, spacing: 8) {
-                                storageCard
-                                if shown.isEmpty {
-                                    Text(query.isEmpty
-                                         ? "「\(filter.label)」这个分类下还没有东西"
-                                         : "这一类里没搜到")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.vertical, 14)
-                                        .frame(maxWidth: .infinity)
-                                } else {
-                                    Text("\(filter.label) · \(shown.count) 个")
-                                        .font(.system(size: 12.5))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.leading, 4)
-                                        .padding(.top, 2)
-                                    ForEach(shown) { job in
-                                        JobRow(job: job, pip: center.pip,
-                                               onDelete: { center.remove(job) },
-                                               onResume: { center.resume(job) },
-                                               logExpanded: expandedLog.contains(job.id),
-                                               onSetLog: { open in setLog(job.id, open: open) })
-                                            // ★ v1.0.185：照参考图 —— 每条自己是一张**圆角卡**，
-                                            //   卡与卡之间留缝（所以去掉列表分隔线）。
-                                            // ★ v1.0.187：照用户要求把卡片**左右留白收窄**
-                                            //   （里 9 + 外 10 = 每侧 19pt，原来是 24pt）。
-                                            .padding(.vertical, 9)
-                                            .padding(.horizontal, 10)
-                                            .background(
-                                                Color(.secondarySystemGroupedBackground),
-                                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                            // ★ v1.0.127 多选态：盖一层透明拦截层 ——
-                                            //   这样点整行就是"选中/取消"，**不会误触到行内的按钮**
-                                            //   （播放、存相册那些按钮在多选时本来也不该生效）。
-                                            .overlay {
-                                                if selecting {
-                                                    Color.clear
-                                                        .contentShape(Rectangle())
-                                                        .onTapGesture { togglePick(job) }
-                                                        .overlay(alignment: .leading) {
-                                                            Image(systemName: picked.contains(job.id)
-                                                                  ? "checkmark.circle.fill" : "circle")
-                                                                .font(.system(size: 20))
-                                                                .foregroundStyle(picked.contains(job.id)
-                                                                                 ? Color.accentColor : Color.secondary)
-                                                                .padding(.leading, 8)
-                                                        }
-                                                }
+                        // ★★★ v1.0.208：**换回 `List`** —— 为了把「左滑删除」拿回来。
+                        //
+                        //   为什么换回来是安全的：v1.0.188 从 List 换成 `ScrollView + VStack`
+                        //   是为了排查"滑不动"（当时注释就写着"代价：丢掉左滑删除"）；
+                        //   但后来定性了 —— 真凶是**行级 LongPressGesture**（v1.0.193 已换成系统的
+                        //   `.contextMenu`），跟 List 无关。工程里收藏页 / 回收站也一直是 List。
+                        //
+                        //   为什么非 List 不可：`.swipeActions`（系统左滑）**只对 List 的行生效**，
+                        //   ScrollView 里会被静默忽略；自己画左滑就得挂行级 DragGesture ——
+                        //   那正是这一页"抢触摸"的老病根，不能碰。
+                        //
+                        //   外观怎么保持一致：List 只当**外壳** ——
+                        //   `.listStyle(.plain)` + 每行的
+                        //   `.listRowInsets/.listRowSeparator(.hidden)/.listRowBackground`
+                        //   把 List 自带的缩进、分隔线、底色全抹掉，行还是我们自己画的卡片；
+                        //   底色仍用 systemGroupedBackground（浅灰底 + 白卡片，观感不变）。
+                        //
+                        //   ★ 尺寸对应（原来 = `VStack(spacing: 8)` + `.padding(.horizontal, 6)`）：
+                        //     行间距 8 ← listRowInsets 上下各 4；左右 6 ← listRowInsets 左右 6
+                        //     （卡片自己还有 10 的内边距，合起来仍是 16，跟原来一样）。
+                        List {
+                            storageCard
+                                .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 4, trailing: 6))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color(.systemGroupedBackground))
+
+                            if shown.isEmpty {
+                                Text(query.isEmpty
+                                     ? "「\(filter.label)」这个分类下还没有东西"
+                                     : "这一类里没搜到")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 14)
+                                    .frame(maxWidth: .infinity)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 4, trailing: 6))
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(Color(.systemGroupedBackground))
+                            } else {
+                                Text("\(filter.label) · \(shown.count) 个")
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.leading, 4)
+                                    .padding(.top, 2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(Color(.systemGroupedBackground))
+
+                                ForEach(shown) { job in
+                                    JobRow(job: job, pip: center.pip,
+                                           onDelete: { center.remove(job) },
+                                           onResume: { center.resume(job) },
+                                           logExpanded: expandedLog.contains(job.id),
+                                           onSetLog: { open in setLog(job.id, open: open) })
+                                        .padding(.vertical, 9)
+                                        .padding(.horizontal, 10)
+                                        .background(
+                                            Color(.secondarySystemGroupedBackground),
+                                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                        // ★ v1.0.127 多选态：盖一层透明拦截层 ——
+                                        //   这样点整行就是"选中/取消"，**不会误触到行内的按钮**
+                                        //   （播放、存相册那些按钮在多选时本来也不该生效）。
+                                        .overlay {
+                                            if selecting {
+                                                Color.clear
+                                                    .contentShape(Rectangle())
+                                                    .onTapGesture { togglePick(job) }
+                                                    .overlay(alignment: .leading) {
+                                                        Image(systemName: picked.contains(job.id)
+                                                              ? "checkmark.circle.fill" : "circle")
+                                                            .font(.system(size: 20))
+                                                            .foregroundStyle(picked.contains(job.id)
+                                                                             ? Color.accentColor : Color.secondary)
+                                                            .padding(.leading, 8)
+                                                    }
                                             }
-                                            // ★★★ v1.0.193：**长按换成系统的 `contextMenu`**。
-                                            //
-                                            //   为什么（用户 23:57 做了一次决定性实测）：
-                                            //   192 把"长按手势"加回来之后 ——
-                                            //   **「能长按了，结果就是又滑不动了，点击过程记录也又不好使了」**。
-                                            //   反过来也成立：189~191（长按摘掉）滚动和点击都正常。
-                                            //   → **行级手势（LongPressGesture）就是那个"抢触摸"的东西**：
-                                            //     它把整行的触摸按住等 0.45 秒，滚动和子按钮的点击都被它挡住。
-                                            //
-                                            //   `contextMenu` 是系统**专门为"列表里长按"做的**：
-                                            //   按住不动才弹菜单，手指一移动就让滚动走 —— 两者不抢。
-                                            //   所以"长按进多选"这个习惯保住了，滚动也不用再牺牲。
-                                            .contextMenu {
-                                                Button {
-                                                    guard !selecting else { return }
-                                                    selecting = true
-                                                    picked = [job.id]
+                                        }
+                                        // ★★★ v1.0.193：**长按换成系统的 `contextMenu`**。
+                                        //
+                                        //   为什么（用户 23:57 做了一次决定性实测）：
+                                        //   192 把"长按手势"加回来之后 ——
+                                        //   **「能长按了，结果就是又滑不动了，点击过程记录也又不好使了」**。
+                                        //   反过来也成立：189~191（长按摘掉）滚动和点击都正常。
+                                        //   → **行级手势（LongPressGesture）就是那个"抢触摸"的东西**：
+                                        //     它把整行的触摸按住等 0.45 秒，滚动和子按钮的点击都被它挡住。
+                                        //
+                                        //   `contextMenu` 是系统**专门为"列表里长按"做的**：
+                                        //   按住不动才弹菜单，手指一移动就让滚动走 —— 两者不抢。
+                                        //   所以"长按进多选"这个习惯保住了，滚动也不用再牺牲。
+                                        .contextMenu {
+                                            Button {
+                                                guard !selecting else { return }
+                                                selecting = true
+                                                picked = [job.id]
+                                            } label: {
+                                                Label("选择", systemImage: "checkmark.circle")
+                                            }
+                                        }
+                                        // ★★ v1.0.208：**兜底** —— List 行里如果有**默认样式的**按钮，
+                                        //   它会"整行吃掉"（点哪里都触发那一个，这是 List 行的固有行为）。
+                                        //   给整行挂一个 `.borderless`，让**没写样式的**按钮继承它；
+                                        //   已经显式写了样式的（.bordered/.borderedProminent/.plain）
+                                        //   只认自己最近的那个样式 —— **外观和手感都不变**。
+                                        .buttonStyle(.borderless)
+                                        .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6))
+                                        .listRowSeparator(.hidden)
+                                        .listRowBackground(Color(.systemGroupedBackground))
+                                        // ★★ v1.0.208：**左滑删除**（多选时不给 —— 那时行上盖了
+                                        //   拦截层，左滑会跟"点一下选中"打架）。
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                            if !selecting {
+                                                Button(role: .destructive) {
+                                                    center.remove(job)
                                                 } label: {
-                                                    Label("选择", systemImage: "checkmark.circle")
+                                                    Label("删除", systemImage: "trash")
                                                 }
                                             }
-                                    }
+                                        }
                                 }
-                                HStack {
-                                    Text(query.isEmpty
-                                         ? "共 \(center.jobs.count) 个任务"
-                                         : "筛出 \(shown.count) 个 · 共 \(center.jobs.count) 个")
-                                    Spacer()
-                                    Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
-                                }
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.top, 4)
                             }
-                            // ★ v1.0.188：卡片左右只留 6pt（用户要求"铺满或最大程度收窄"）
-                            .padding(.horizontal, 6)
-                            .padding(.top, 6)
-                            .padding(.bottom, 40)
+
+                            HStack {
+                                Text(query.isEmpty
+                                     ? "共 \(center.jobs.count) 个任务"
+                                     : "筛出 \(shown.count) 个 · 共 \(center.jobs.count) 个")
+                                Spacer()
+                                Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
+                            }
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.top, 4)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 40, trailing: 6))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color(.systemGroupedBackground))
                         }
+                        .listStyle(.plain)
+                        // List 容器自己的底色（内容不足一屏时露出来的那块）也调成同一个灰
                         .background(Color(.systemGroupedBackground))
                         // ★ v1.0.154：进下载列表时统计一次；有任务在跑就自动跟着刷
                         .task {
