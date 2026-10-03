@@ -254,11 +254,21 @@ final class CompressQueue: ObservableObject {
         if !inOurDir {
             let unique = "源_" + Self.stamp() + "_" + name
             let dest = JobStore.file(named: unique)
+            // ★★ v1.0.200（AI 体检抓到的真问题）：**只对"系统临时目录里的副本"用搬的**。
+            //   临时目录随时会被系统清掉，搬进来最省事；而从「文件」App 选来的可能是
+            //   **用户的原件**（安全作用域 URL）—— 搬走等于把他原来位置的文件删了。
+            //   `CompressSheet.takePicked` 这条入口让这里变成"可达路径"，不能只当成理论风险。
+            let tmpPath = FileManager.default.temporaryDirectory.standardizedFileURL.path
+            let inTemp = r.url.standardizedFileURL.path.hasPrefix(tmpPath)
             do {
                 if FileManager.default.fileExists(atPath: dest.path) {
                     try FileManager.default.removeItem(at: dest)
                 }
-                try FileManager.default.moveItem(at: r.url, to: dest)
+                if inTemp {
+                    try FileManager.default.moveItem(at: r.url, to: dest)
+                } else {
+                    try FileManager.default.copyItem(at: r.url, to: dest)   // 用户的原件，只拷不搬
+                }
                 name = unique
                 owns = true
             } catch {
@@ -378,13 +388,19 @@ final class CompressQueue: ObservableObject {
                 //   "未经同意默认存进下载页"是他明确不满的地方。
                 //   现在停在"待你决定"，由 `keep()` / `discard()` 明确处理
                 //   （keep 才走 `adoptCompressed`：只认领不搬不改名）。
+                retire(item)
             } catch {
                 // ★ 失败**只影响这一条**：原因留下，继续压下一个
                 item.failure = error.localizedDescription
                 item.state = .failed
                 item.phase = Status.failed.label
+                // ★★ v1.0.200（AI 体检抓到的真问题）：**失败时绝不能清源** ——
+                //   ① 清了就没法重试；
+                //   ② 更糟：从「文件」选来的源是"搬进来"的，清了等于把**唯一副本**删了
+                //      （Compressor 文件头写着"绝不自动删原片"，这就是违反）。
+                //   所以 retire 只在**压成功**那条路走。
+                item.note = item.note ?? "原片保留了，可以再点一次重试。"
             }
-            retire(item)
             save()
         }
         finishKeepAlive()

@@ -789,10 +789,16 @@ final class LocalHTTPServer {
     //   ★ 回环（手机自己播本地视频）走的是同一套判定，所以 m3u8 / ts 必须留着，
     //     否则会把自家的播放链路一起挡死。
     private static let servableExts: Set<String> = [
-        "mp4", "mov", "m4v", "ts", "m4s", "m3u8",           // 视频 + HLS
-        "mp3", "m4a", "aac", "wav", "flac", "opus",          // 音频
-        "jpg", "jpeg", "png", "gif", "webp",                 // 图片（含缩略图）
-        "srt", "vtt", "ass", "ssa",                          // 字幕（现在没用到，先留着）
+        // ★★ v1.0.200：这张表**必须以 `kindKey`（下面那张扩展名分类表）为准**，
+        //   再加三样"播放必需、但不是内容"的：`part`（老任务遗留的分片，边下边播要靠它）、
+        //   `m4s`（fMP4 分片）、`m3u8`（本地播放清单）。
+        //   ★ 初版（v1.0.199）漏了 `part` 和 webm/mkv/avi/flv/3gp/heic/bmp/tiff/svg ——
+        //     后果是**边下边播对升级前下好的任务直接 403**、这些格式的下载物在共享页里消失。
+        //     AgentChat 四片体检时抓出来的（我自己的回归）。
+        "mp4", "m4v", "mov", "ts", "part", "m4s", "m3u8", "webm", "mkv", "flv", "avi", "3gp",
+        "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus",
+        "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tiff", "svg",
+        "srt", "vtt", "ass", "ssa",
     ]
 
     /// 这个文件名能不能共享出去 —— **目录列表与单文件下载共用同一条判据**
