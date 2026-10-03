@@ -44,6 +44,35 @@
   var AD_ATTR = 'data-vg-ad';      // 已认定为广告（点击防护只认它，不再"现场猜"）
   var PICK_TMP = 'data-vg-picksel';// 点选时的临时描边
 
+  // ★★ v1.0.213：内容判据用的词表。
+  //   借鉴开源规则库的思路（「不是看它长什么样，是看它指向哪」），但**词表只当加分项、不当判据**。
+  //   ★ 纪律（DeepSeek 复核后定的）：**不收短词、不收纯数字** ——
+  //     像 ag / 188 / 668 / 918 这种，当域名片段判会撞一大片正常站，误伤极大。
+  //     匹配一律**按域名 label 精确比对**（绝不 indexOf 子串），否则 alphabet / bethesda 会被误伤。
+  var SUSPECT_LABELS = [
+    // 博彩/赌场（词都够长，安全）
+    'casino', 'gambling', 'betting', 'poker', 'jackpot', 'lottery', 'roulette', 'baccarat',
+    // 常见平台牌子（label 精确匹配）
+    'pgsoft', 'jdb', 'bbin', 'playtech', 'microgaming', 'netent', 'pragmatic',
+    // 广告联盟 / 广告服务（长词）
+    'doubleclick', 'googlesyndication', 'popads', 'popcash', 'adsterra', 'propellerads',
+    'revcontent', 'taboola', 'outbrain', 'pubmatic', 'adnxs', 'adservice', 'adserver',
+    'adnetwork', 'bannerconnect',
+    // ★ 高风险短词：只认「整体就是它」或「它 + 数字/下划线/横线」——
+    //   这样 bet365 / bet-88 / slot888 能命中，而 bethesda / alphabet / slotted 不会。
+    'bet', 'slot'
+  ];
+
+  // 可信 iframe 源：这些即使出现在浮层里也不当广告（视频/支付/验证码/地图/评论/统计）
+  var TRUSTED_HOSTS = [
+    'youtube.com', 'youtube-nocookie.com', 'ytimg.com', 'vimeo.com', 'dailymotion.com',
+    'stripe.com', 'paypal.com', 'alipay.com', 'alipayobjects.com',
+    'recaptcha.net', 'hcaptcha.com', 'cloudflare.com',
+    'google.com', 'gstatic.com', 'googleapis.com',
+    'openstreetmap.org', 'amap.com', 'map.baidu.com',
+    'disqus.com', 'facebook.com', 'twitter.com', 'x.com'
+  ];
+
   var THRESHOLD = 8;               // 自动
   var STRONG_THRESHOLD = 4;        // 强力（同一套打分，只是更低）
   var MAX_HIDE = 60;
@@ -69,6 +98,68 @@
   function skipped() { return SKIP_HOSTS.indexOf(hostNow()) >= 0; }
   function floating(cs) { return cs.position === 'fixed' || cs.position === 'sticky'; }
   function sh() { return document.documentElement ? document.documentElement.scrollHeight : 0; }
+
+  // ── v1.0.213：域名工具（内容判据的地基）────────────────────────────────────
+  //   一律用 new URL 取 hostname（自动处理相对路径、协议、端口、URL 编码），
+  //   绝不自己写正则去抠字符串 —— 那是误伤的主要来源。
+  function hostOf(u) {
+    try {
+      if (!u) return '';
+      var h = new URL(u, location.href).hostname.toLowerCase();
+      return h.replace(/\.$/, '');            // 去掉结尾的点（evil.com. 这种）
+    } catch (e) { return ''; }
+  }
+  // 本站 / 本站子域 / 本站父域 → 都算「自家」，不算外链
+  function isSelfHost(h) {
+    var me = (location.hostname || '').toLowerCase();
+    if (!h || !me) return true;
+    if (h === me) return true;
+    if (h.slice(-(me.length + 1)) === '.' + me) return true;   // h 是 me 的子域
+    if (me.slice(-(h.length + 1)) === '.' + h) return true;    // h 是 me 的父域
+    return false;
+  }
+  function isTrustedHost(h) {
+    for (var i = 0; i < TRUSTED_HOSTS.length; i++) {
+      var t = TRUSTED_HOSTS[i];
+      if (h === t || h.slice(-(t.length + 1)) === '.' + t) return true;
+    }
+    return false;
+  }
+  // 单个 label 是否命中可疑词：**精确等于**，或「词 + 数字/下划线/横线」开头那一段。
+  // ★ 绝不做无边界的子串包含 —— 那是 alphabet / bethesda 被误伤的根源。
+  function labelHit(label) {
+    if (!label) return false;
+    for (var i = 0; i < SUSPECT_LABELS.length; i++) {
+      var w = SUSPECT_LABELS[i];
+      if (label === w) return true;
+      if (label.length > w.length && label.slice(0, w.length) === w &&
+          /^[0-9_-]/.test(label.charAt(w.length))) return true;
+    }
+    return false;
+  }
+  function isSuspectHost(h) {
+    if (!h || isSelfHost(h) || isTrustedHost(h)) return false;
+    var parts = h.split('.');
+    for (var i = 0; i < parts.length; i++) {
+      if (labelHit(parts[i])) return true;
+    }
+    return false;
+  }
+  // 「不算跳转」的 href：同页锚点 / javascript: / 空 —— 正常站的关闭按钮就长这样
+  function isSafeHref(u) {
+    if (!u) return true;
+    var s = String(u).trim().toLowerCase();
+    if (!s || s === '#' || s.charAt(0) === '#') return true;
+    if (s.indexOf('javascript:') === 0) return true;
+    if (s.indexOf('mailto:') === 0 || s.indexOf('tel:') === 0) return true;
+    return false;
+  }
+  // 这个元素是不是「指向站外」的链接
+  function outLinkHost(el) {
+    var h = hostOf(el.getAttribute ? el.getAttribute('href') : '');
+    if (!h || isSelfHost(h) || isSafeHref(el.getAttribute ? el.getAttribute('href') : '')) return '';
+    return h;
+  }
 
   function desc(el) {
     var t = (el.tagName || '').toLowerCase();
@@ -114,7 +205,52 @@
     }
     return 0;
   }
-  function score(el, cs, r) {
+  // ★★ v1.0.213 核心：**内容信号**（借鉴乘风「用链接目标认广告」的思路）。
+  //   它只**加分**，绝不单独决定"是不是广告" —— 这是 DeepSeek 复核时纠正的关键点：
+  //   让任一条内容特征「命中即清」，等于把"漏"换成更严重的"误杀"。
+  //   所以：内容信号 + 形状分**一起够阈值**才动手。
+  function contentSignal(el) {
+    var s = 0, i, h;
+    try {
+      // (a) 层里含指向「站外可疑域」的链接（+3）
+      var as = el.querySelectorAll ? el.querySelectorAll('a[href]') : null;
+      if (as) {
+        var n = Math.min(as.length, 24);
+        for (i = 0; i < n; i++) {
+          h = outLinkHost(as[i]);
+          if (h && isSuspectHost(h)) { s += 3; break; }
+        }
+      }
+      // (b) 整层本身就是一个指向站外的 <a>（点哪都跳走 —— 典型插屏）（+2）
+      if ((el.tagName || '').toLowerCase() === 'a' && outLinkHost(el)) s += 2;
+      // (c) 层里含指向「可疑域」的 iframe（可信源如视频/支付/验证码已排除）（+2）
+      var ifs = el.querySelectorAll ? el.querySelectorAll('iframe[src]') : null;
+      if (ifs) {
+        var m = Math.min(ifs.length, 6);
+        for (i = 0; i < m; i++) {
+          h = hostOf(ifs[i].getAttribute('src'));
+          if (h && isSuspectHost(h)) { s += 2; break; }
+        }
+      }
+      // (d) **假关闭按钮**：看着像关闭，点下去却跳到站外（+3）
+      //     —— 这条直击「点它的 X 反而跳走」那个痛点，完全不依赖词表。
+      var cc = el.querySelectorAll
+        ? el.querySelectorAll('[class*="close"],[class*="dismiss"],[id*="close"],[aria-label*="关闭"]')
+        : null;
+      if (cc) {
+        var k = Math.min(cc.length, 8);
+        for (i = 0; i < k; i++) {
+          var c = cc[i];
+          if (!looksLikeClose(c)) continue;
+          h = outLinkHost(c);
+          if (h) { s += 3; break; }
+        }
+      }
+    } catch (e) {}
+    return s;
+  }
+
+  function score(el, cs, r, sig) {
     if (!floating(cs)) return 0;
     var vArea = vw() * vh();
     if (vArea <= 0) return 0;
@@ -129,7 +265,7 @@
       }
     }
     if (el.querySelector && el.querySelector('a[href]')) s += 1;
-    return s + shadePenalty(el);
+    return s + shadePenalty(el) + (sig || 0);
   }
   function bigEnough(r) { return r.width >= vw() * 0.6 && r.height >= vh() * 0.3; }
 
@@ -157,6 +293,8 @@
   // 标记 + 隐藏。manual 用来说明"是不是用户亲手选的"
   function markAndHide(el, why, fromUser) {
     if (!safeToTouch(el) || el.hasAttribute(ATTR)) return false;
+    var eh = 0;
+    try { eh = el.getBoundingClientRect().height || 0; } catch (e0) {}   // ★ 隐藏前先量它多高
     try { el.setAttribute(AD_ATTR, '1'); applyHide(el); } catch (e) { return false; }
     hiddenCount++;
     if (recent.length > 20) recent.shift();
@@ -164,19 +302,22 @@
 
     // ★ 自检回滚**只对"机器自己判的"**做 —— 用户亲手选的绝不回滚（那是他的意图），
     //   而且回滚**只还原这一个元素**：这一版**彻底删掉了**"拉黑整个网站 + 把当页全放回来"。
-    if (!fromUser) scheduleRollback(el, why);
+    if (!fromUser) scheduleRollback(el, why, eh);
     return true;
   }
 
-  function scheduleRollback(el, why) {
+  function scheduleRollback(el, why, eh) {
     var beforeSH = sh();
     setTimeout(function () {
       try {
         if (!el.hasAttribute(ATTR)) return;
-        // ★ 判据只留**最硬的一条**：页面高度骤降。
-        //   删掉了 elementFromPoint / 元素数占比那两条 —— 全屏广告被藏掉时
-        //   "视口中心是 body"极其常见，正是上一版误判的源头。
-        if (beforeSH > ROLLBACK_MIN_SH && sh() < beforeSH * (1 - ROLLBACK_DROP)) {
+        // ★ v1.0.213：判据加**第二道** —— 降幅要跟「我刚藏的这个元素」相称。
+        //   只按"页面高度骤降"判，SPA 切页 / 懒加载 / 无限滚动都会误判（DeepSeek 指出，已采纳）。
+        //   而且这道判据天然成立：fixed 浮层不占文档流，藏它本来就不会让高度掉 ——
+        //   会掉高度的，几乎只有"藏在正常文档流里的大容器"（那多半是正文）。
+        var drop = beforeSH - sh();
+        if (beforeSH > ROLLBACK_MIN_SH && drop > beforeSH * ROLLBACK_DROP &&
+            (eh <= 0 || drop >= eh * 0.5)) {
           unhideOne(el);
           el.__vgBad = true;
           rolledBack++;
@@ -408,12 +549,18 @@
       if (parseFloat(cs.opacity) < 0.05) continue;
       var r;
       try { r = el.getBoundingClientRect(); } catch (e) { continue; }
-      // 自动：要求"够大"；强力：只要占屏 ≥2%（小的悬浮按钮也算）
-      if (strong) { if (area(r) < vArea * 0.02) continue; }
-      else if (!bigEnough(r)) continue;
-      if (score(el, cs, r) < thr) continue;
+      // ★ v1.0.213：内容信号**只算一次**（既避免重复开销，也是"面积门槛的替代入场券"）。
+      var sig = contentSignal(el);
+      if (area(r) < vArea * 0.02) continue;                 // 任何情况都要求 ≥2% 屏
+      // 自动：要么"够大"（老门槛 60%宽×30%高），要么"有内容信号"（贴边小广告由此进场）；
+      // 强力：只要 ≥2%
+      if (!strong && !bigEnough(r) && sig <= 0) continue;
+      if (score(el, cs, r, sig) < thr) continue;
       if (markAndHide(el, strong ? 'strong' : 'score', false)) n++;
     }
+    // ★ v1.0.213：自动那趟再认一遍「假关闭按钮」——
+    //   那个 X 常常和浮层不在同一层级（是兄弟节点），打分扫不到，得单独顺一遍。
+    if (!strong) n += autoByFakeClose();
     if (n) report(strong ? 'strong' : 'hid');
     return n;
   }
@@ -442,6 +589,26 @@
     }
     return null;
   }
+  // ★ v1.0.213：自动模式也认「假关闭按钮」（原来只有强力才认）。
+  //   判据收紧为「看着像关闭 **且点了会跳到站外**」——
+  //   正常站的关闭按钮是 <a href="#"> / javascript:void(0)，被 isSafeHref 排除在外，不会误伤。
+  function autoByFakeClose() {
+    var n = 0, list = [];
+    try {
+      list = document.querySelectorAll('[class*="close"],[class*="dismiss"],[id*="close"],[aria-label*="关闭"]');
+    } catch (e) { return 0; }
+    for (var i = 0; i < list.length && n < MAX_HIDE; i++) {
+      var c = list[i];
+      if (!looksLikeClose(c)) continue;
+      if (!outLinkHost(c)) continue;             // 只认"点了会跳站外"的假关闭
+      var host = nearestOverlay(c);
+      if (!host || host.hasAttribute(ATTR) || host.__vgBad) continue;
+      if (!safeToTouch(host)) continue;
+      if (markAndHide(host, 'fakeclose', false)) n++;
+    }
+    return n;
+  }
+
   function strongByCloseControl() {
     var n = 0;
     var list = [];
@@ -604,8 +771,11 @@
       if (!cs || !floating(cs)) continue;
       if (cs.display === 'none' || cs.visibility === 'hidden') continue;
       if (parseFloat(cs.opacity) < 0.05) continue;
-      if (!bigEnough(r)) continue;
-      if (score(el, cs, r) < THRESHOLD) continue;
+      // ★ v1.0.213：与 sweep 用同一套门槛（内容信号可替代"够大"）
+      var sig = contentSignal(el);
+      if (area(r) < vArea * 0.02) continue;
+      if (!bigEnough(r) && sig <= 0) continue;
+      if (score(el, cs, r, sig) < THRESHOLD) continue;
       if (markAndHide(el, 'mutation', false)) report('hid');
     }
     if (queue.length) flushSoon();
