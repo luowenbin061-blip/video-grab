@@ -26,6 +26,32 @@ enum AdClean {
         return d.bool(forKey: key)
     }
 
+    // MARK: - 例外名单（这些网站不清理）
+
+    private static let skipKey = "adCleanSkipHosts"
+
+    /// 不清理的网站（host）。
+    ///
+    /// ★ 两种来源：① 用户点「本站不清理」手动加；② **清理器自己发现误清了正文时自动加**
+    ///   （保守优先 —— 宁可这个站广告不干净，也不能让它打不开）。
+    ///   设置页里能看到名单、也能逐个删掉再试。
+    static var skipHosts: [String] {
+        UserDefaults.standard.stringArray(forKey: skipKey) ?? []
+    }
+
+    static func addSkip(_ host: String) {
+        guard !host.isEmpty else { return }
+        var l = skipHosts
+        guard !l.contains(host) else { return }
+        l.append(host)
+        UserDefaults.standard.set(l, forKey: skipKey)
+    }
+
+    static func removeSkip(_ host: String) {
+        guard !host.isEmpty else { return }
+        UserDefaults.standard.set(skipHosts.filter { $0 != host }, forKey: skipKey)
+    }
+
     // MARK: - 诊断日志
 
     /// 只留最近 64KB —— 这是诊断用的，不能任它长大。

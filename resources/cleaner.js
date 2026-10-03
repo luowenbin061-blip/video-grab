@@ -1,28 +1,37 @@
 // VideoGrab 网页广告清理脚本
 // ---------------------------------------------------------------------------
-// 由 WKUserScript 在 document-start 注入到【每一个 frame】（forMainFrameOnly=false），
-// page world。与 sniffer.js **并列但各管各的**：
+// 由 WKUserScript 在 document-start 注入，page world。与 sniffer.js **并列但各管各的**：
 //   · sniffer.js 管「找视频地址」，它的定时器只在「后台自动嗅探」开着时才跑；
 //   · 本脚本管「把盖住内容的浮层广告清掉」，**默认常开**。
-//     两者**不能合并** —— 否则关掉自动嗅探会把广告清理也一起关掉。
+//     两者**不能合并** —— 否则关掉自动嗅探会把广告清理也一起关了。
 //
-// 治的是什么（已按用户 6 张真机截图核实）：
+// 治的是什么（按用户 6 张真机截图核实）：
 //   小聚合站/资源站在页面上**自己画的一层浮层**（全屏插屏图、赌博浮层、居中模态）。
 //   它们**没有独立的网络请求** → 域名黑名单/规则库在原理上拦不到，只能运行时清。
 //
-// 设计取舍（经 DeepSeek 复核后修正，两个关键点）：
-//   1. **只隐藏、不移除**：remove() 会被站点自己的 MutationObserver 发现并重新插回来；
-//      这里改成 display/visibility/pointer-events 三件套 + !important 同时设，
-//      站点要检测的成本更高。（但**关掉开关时会还原**，见 restoreAll）
-//   2. 判据**不用单一条件**（"fixed + 面积大"会大量误杀播放器/选集抽屉），
-//      改成**多信号累计打分**，且先过一道**硬性排除**（含 video/audio/canvas、含 form、
-//      含大量链接/按钮的"正经面板"）。
+// ★★ v1.0.210 这轮修的（真机实测「有误杀 → 整页灰掉」之后的改动）：
+//   1. **只在主 frame 干活**。原来注入覆盖 iframe（跟 sniffer 一致），但广告浮层几乎都
+//      在主 frame；而子 frame 也上报会**重复弹提示 / 把 host 记错**。（这是 209 的实 bug）
+//   2. **自动回滚**（最有价值的一条）：隐藏后 260ms 复核 —— 如果**视口中心点变成了空白**
+//      或者**页面高度骤降**，说明刚才藏的是正文/主容器 → **立刻原样还原**，并把该元素
+//      记进本页"坏元素"集合（不再碰它）、同时上报让原生把**这个站**加进例外。
+//      「隐藏」这个动作本身就可能出错，所以必须能自己发现并纠正。
+//   3. **本页豁免（SUSPEND）**：还原之后本页不再动手 —— 否则 3 秒定时器又把它藏回去。
+//   4. **等页面稳了再动手**：`readyState === 'complete'`，或者就绪满 5 秒（**必须有这条兜底**：
+//      长轮询/常驻 iframe 的站可能永远到不了 complete）。
+//   5. 新增排除：含 `main` / `article` / `[role=main]` 的判为**正文**，不动。
+//   6. 加载/遮罩类关键词（loading/mask/skeleton/preloader…）改**扣分**（不做绝对排除）。
+//
+// 设计取舍（沿用 209，经 DeepSeek 复核）：
+//   · **只隐藏、不移除**：remove() 会被站点自己的 MutationObserver 发现并重新插回来；
+//     这里用 display/visibility/pointer-events 三件套 + !important。
+//   · 判据**不用单一条件**（"fixed + 面积大"会大量误杀），用**多信号累计打分**。
 //
 // 本脚本**做不到**的事（如实说明，别指望它）：
 //   · 画在 <canvas> 里的广告 → 无解（拿不到像素里的语义）
 //   · closed 模式的 Shadow DOM → 页面世界里够不到
-//   · 跨域 iframe 里的浮层 → 只能清它自己那一层，清不到父页面
-//   · 「反反拦截」（站点检测到被隐藏就黑屏）→ 只能靠用户关掉总开关
+//   · 子 frame 里的浮层 → 现在只在主 frame 干活，管不到（换来的是"不会误报/误记"）
+//   · 「反反拦截」（站点检测到被隐藏就黑屏）→ 靠自动回滚 + 关总开关
 // ---------------------------------------------------------------------------
 (function () {
   'use strict';
@@ -30,20 +39,31 @@
   if (window.__vgCleanerInstalled) return;
   window.__vgCleanerInstalled = true;
 
-  // ★ 注入时由原生替换这一行（同 sniffer.js 的 autoOn 手法）：'on' / 'off'
+  // ★★ 只在主 frame 干活（见文件头第 1 条）。比较 window.top/window.self 跨域也安全
+  //   —— 只是比较引用，不读对方任何属性。
+  if (window.top !== window.self) return;
+
+  // ★ 注入时由原生替换这两行（同 sniffer.js 的 autoOn 手法）
   var MODE = 'on';
+  var SKIP_HOSTS = [];
 
   var ATTR = 'data-vg-blk';       // 打过这个标记 = 已被我们处理过
   var MAX_HIDE = 40;              // 单页最多隐藏几个（防某条判据失灵时雪崩）
   var hiddenCount = 0;
+  var rolledBack = 0;
   var recent = [];                // 最近隐藏记录（纯数据，只给诊断回传）
 
   var started = false, timer = null, moTimer = null, observer = null, lastSweep = 0;
+  var readyAt = 0;                // DOM 就绪的时刻（超时兜底用）
+  var SUSPEND = false;            // 本页豁免：点了「撤销」/发生过回滚 → 本页不再动手
 
   function vw() { return window.innerWidth || document.documentElement.clientWidth || 0; }
   function vh() { return window.innerHeight || document.documentElement.clientHeight || 0; }
   function area(r) { return Math.max(0, r.width) * Math.max(0, r.height); }
   function clsOf(el) { var c = el.className; return (typeof c === 'string') ? c : ''; }
+  function hostNow() { return location.host || ''; }
+
+  function skipped() { return SKIP_HOSTS.indexOf(hostNow()) >= 0; }
 
   // 给诊断用的短描述（**不含 DOM 引用**，必须能 JSON 序列化）
   function desc(el) {
@@ -54,7 +74,6 @@
   }
 
   // ── 硬性排除：命中任一 → 绝不碰 ────────────────────────────────────────────
-  // （"已处理过"的判断不在这里，见 excluded()）
   function safeToTouch(el) {
     var tag = (el.tagName || '').toLowerCase();
     if (tag === 'html' || tag === 'body' || tag === 'head') return false;
@@ -72,7 +91,9 @@
       if (el.querySelectorAll('a').length >= 6) return false;
       if (el.querySelectorAll('button').length >= 5) return false;
     }
-    // ★ 4) 正在播放的那个 video 的祖先链 → 不动（再保一层）
+    // ★ 4) v1.0.210：含正文语义标签的 → 这是页面正文，不是浮层广告
+    if (el.querySelector && el.querySelector('main,article,[role="main"]')) return false;
+    // ★ 5) 正在播放的那个 video 的祖先链 → 不动（再保一层）
     var v = document.querySelector('video');
     if (v && (el === v || el.contains(v))) return false;
     return true;
@@ -81,14 +102,26 @@
   function excluded(el) {
     if (el.nodeType !== 1) return true;
     if (el.hasAttribute && el.hasAttribute(ATTR)) return true;   // 已处理过
+    if (el.__vgBad) return true;                                 // 本页被判为"坏元素"
     return !safeToTouch(el);
   }
 
   // 是不是"浮"在内容上的定位
   function floating(cs) { return cs.position === 'fixed' || cs.position === 'sticky'; }
 
-  // 尺寸是否够大（粗筛，调用前可先做更便宜的判断）
+  // 尺寸是否够大（粗筛）
   function bigEnough(r) { return r.width >= vw() * 0.6 && r.height >= vh() * 0.3; }
+
+  // 加载/遮罩类关键词 → **扣分**（不做绝对排除：这类词也可能出现在广告上）
+  var SHADE_WORDS = ['loading', 'mask', 'skeleton', 'preloader', 'spinner',
+                     'waiting', 'placeholder', 'shade', 'cover-bg'];
+  function shadePenalty(el) {
+    var s = ((el.id || '') + ' ' + clsOf(el)).toLowerCase();
+    for (var i = 0; i < SHADE_WORDS.length; i++) {
+      if (s.indexOf(SHADE_WORDS[i]) >= 0) return -3;
+    }
+    return 0;
+  }
 
   // ── 打分：只有累计够高才认作广告浮层 ──────────────────────────────────────
   function score(el, cs, r) {
@@ -107,39 +140,71 @@
       }
     }
     if (el.querySelector && el.querySelector('a[href]')) s += 1;
+    s += shadePenalty(el);
     return s;
   }
 
-  var THRESHOLD = 8;     // 满分 11；8 分 = 至少"盖大半屏 + （高 z-index 或 大图）"
+  var THRESHOLD = 8;     // 满分 11（减去遮罩扣分）；8 分 = 至少"盖大半屏 + （高 z-index 或 大图）"
 
-  function hide(el, why) {
+  function applyHide(el) {
+    el.style.setProperty('display', 'none', 'important');
+    el.style.setProperty('visibility', 'hidden', 'important');
+    el.style.setProperty('pointer-events', 'none', 'important');
+    el.setAttribute(ATTR, '1');
+    el.setAttribute('aria-hidden', 'true');
+  }
+
+  function unhideOne(el) {
     try {
-      el.style.setProperty('display', 'none', 'important');
-      el.style.setProperty('visibility', 'hidden', 'important');
-      el.style.setProperty('pointer-events', 'none', 'important');
-      el.setAttribute(ATTR, '1');
-      el.setAttribute('aria-hidden', 'true');
-    } catch (e) { return false; }
+      el.style.removeProperty('display');
+      el.style.removeProperty('visibility');
+      el.style.removeProperty('pointer-events');
+      el.removeAttribute(ATTR);
+      el.removeAttribute('aria-hidden');
+    } catch (e) {}
+  }
+
+  function sh() { return document.documentElement ? document.documentElement.scrollHeight : 0; }
+  function centerEl() {
+    try { return document.elementFromPoint(vw() / 2, vh() / 2); } catch (e) { return null; }
+  }
+
+  // ── 隐藏 + **自动回滚复核**（v1.0.210 的核心安全网）───────────────────────
+  function hide(el, why) {
+    if (el.hasAttribute(ATTR) || el.__vgBad) return false;
+    var beforeSH = sh();
+    var c0 = centerEl();
+    var centered = !!(c0 && (c0 === el || el.contains(c0)));   // 它盖着视口中心吗
+    try { applyHide(el); } catch (e) { return false; }
+
     hiddenCount++;
     if (recent.length > 20) recent.shift();
     recent.push({ sel: desc(el), why: why, t: Date.now() });
+
+    setTimeout(function () {
+      try {
+        if (!el.hasAttribute(ATTR)) return;                  // 已被还原/被页面移走
+        var c1 = centerEl();
+        var blank = (c1 === null || c1 === document.body || c1 === document.documentElement);
+        var shrunk = (beforeSH > 400 && sh() < beforeSH * 0.6);
+        // 藏之前它盖着中心点，藏完中心点成了空白 → 它就是页面本身（或主容器）
+        if ((centered && blank) || shrunk) {
+          unhideOne(el);
+          el.__vgBad = true;                                 // 本页不再碰它
+          rolledBack++;
+          hiddenCount = Math.max(0, hiddenCount - 1);
+          report('rollback');
+        }
+      } catch (e) {}
+    }, 260);
     return true;
   }
 
-  // 关掉开关 / 需要还原时：把隐藏过的**原样恢复**
-  // （比 remove() 好在：站点从没察觉元素消失过，恢复也不留痕）
+  // 还原本页所有被隐藏的层（点「撤销」/ 关开关 都走它）
   function restoreAll() {
     var els;
     try { els = document.querySelectorAll('[' + ATTR + ']'); } catch (e) { return; }
-    for (var i = 0; i < els.length; i++) {
-      try {
-        els[i].style.removeProperty('display');
-        els[i].style.removeProperty('visibility');
-        els[i].style.removeProperty('pointer-events');
-        els[i].removeAttribute(ATTR);
-        els[i].removeAttribute('aria-hidden');
-      } catch (e) {}
-    }
+    for (var i = 0; i < els.length; i++) { unhideOne(els[i]); }
     hiddenCount = 0;
     recent = [];
   }
@@ -164,13 +229,19 @@
     return out;
   }
 
+  // ★ 动手的门槛：页面加载完，或者"就绪满 5 秒"（兜底 —— 有些站永远到不了 complete）
+  function gateOpen() {
+    if (document.readyState === 'complete') return true;
+    return readyAt > 0 && (Date.now() - readyAt) > 5000;
+  }
+
   function sweep() {
-    if (MODE === 'off') return 0;
+    if (MODE === 'off' || SUSPEND || skipped()) return 0;
     if (document.visibilityState && document.visibilityState !== 'visible') return 0;
     if (!vw() || !vh()) return 0;
+    if (!gateOpen()) return 0;
     // ★ 最小间隔：整轮扫要调几百次 getBoundingClientRect（会触发布局），
-    //   页面上 DOM 抖得厉害时（MutationObserver 反复触发）必须限流，
-    //   否则低端机上会明显发涩。800ms 足够快，又不至于互相叠加。
+    //   DOM 抖得厉害时（MutationObserver 反复触发）必须限流。
     var now = Date.now();
     if (now - lastSweep < 800) return 0;
     lastSweep = now;
@@ -189,27 +260,27 @@
       if (score(el, cs, r) < THRESHOLD) continue;
       if (hide(el, 'score')) n++;
     }
-    if (n) report();
+    if (n) report('hid');
     return n;
   }
 
   // ── 点击防护（**独立于上面的清理**，不依赖"已标记"）────────────────────────
-  // 治的是：「广告上的 X 点一下就跳走」。做法：click 进入 capture 阶段时，
-  // **现场判断**这一点是否落在一个广告浮层里 —— 是就把这次点击整个掐掉
-  // （掐掉后站点的 click 处理不会跑 → 它那条跳转也就不会执行）。
+  // 治的是：「广告上的 X 点一下就跳走」。click 的 capture 阶段现场判断落点是否在
+  // 广告浮层里 → 是就把这次点击整个掐掉（站点的 click 处理不跑，跳转就不会执行）。
   // ★ 只掐"落在浮层里的点击"，**不碰普通链接**（那种是正常导航）。
   function onDocClick(e) {
-    if (MODE === 'off') return;
+    if (MODE === 'off' || SUSPEND || skipped()) return;
     var t = e.target;
     if (!t || !t.closest) return;
     if (t.closest('[' + ATTR + ']')) { swallow(e); return; }   // 已隐藏的（理论上点不到）
     var el = t, hops = 0;
     while (el && el !== document.body && hops < 6) {
+      if (el.__vgBad) return;                                  // 判定过是正文 → 放行
       var r, cs;
       try { r = el.getBoundingClientRect(); cs = getComputedStyle(el); } catch (err) { break; }
       if (floating(cs) && bigEnough(r) && safeToTouch(el)) {
         swallow(e);
-        if (hide(el, 'click')) report();     // 顺手清掉，下次不用再拦
+        if (hide(el, 'click')) report('hid');     // 顺手清掉，下次不用再拦
         return;
       }
       el = el.parentElement; hops++;
@@ -224,22 +295,24 @@
     } catch (err) {}
   }
 
-  // ── 回传原生（诊断用；原生写到受限日志文件里）──────────────────────────────
-  function report() {
+  // ── 回传原生（逃生门 + 诊断）──────────────────────────────────────────────
+  function report(type) {
     try {
       var h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.vgClean;
       if (!h) return;
       h.postMessage({
-        host: location.host || '',
+        type: type,
+        host: hostNow(),
         url: String(location.href || '').slice(0, 300),
         n: hiddenCount,
+        rolled: rolledBack,
         items: recent.slice(-5)
       });
     } catch (e) {}
   }
 
   function start() {
-    if (started) return;
+    if (started || skipped() || MODE === 'off') return;
     started = true;
     try { document.addEventListener('click', onDocClick, true); } catch (e) {}
     try {
@@ -251,8 +324,12 @@
     } catch (e) {}
     timer = setInterval(sweep, 3000);
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function () { sweep(); });
+      document.addEventListener('DOMContentLoaded', function () {
+        if (!readyAt) readyAt = Date.now();
+        sweep();
+      });
     } else {
+      if (!readyAt) readyAt = Date.now();
       setTimeout(sweep, 0);
     }
   }
@@ -268,13 +345,31 @@
   // ── 暴露给原生 ────────────────────────────────────────────────────────────
   window.__vgCleanSet = function (mode) {
     MODE = (mode === 'off') ? 'off' : 'on';
-    if (MODE === 'off') { stop(); restoreAll(); } else { start(); sweep(); }
+    if (MODE === 'off') { stop(); restoreAll(); } else { SUSPEND = false; start(); sweep(); }
     return MODE;
   };
   window.__vgCleanNow = function () { return sweep(); };
-  window.__vgCleanStats = function () {
-    return { mode: MODE, hidden: hiddenCount, recent: recent.slice(-10) };
+
+  /// ★ 本页豁免：还原本页 + 本页不再动手（否则 3 秒后又藏回去）
+  window.__vgCleanRestore = function () {
+    SUSPEND = true;
+    restoreAll();
+    return 'restored';
   };
 
-  if (MODE !== 'off') start();
+  /// ★ 例外名单（原生改了名单后调它，不用刷新）
+  window.__vgCleanSetSkip = function (list) {
+    SKIP_HOSTS = (list && list.length) ? list : [];
+    if (skipped()) { stop(); restoreAll(); }
+    else if (!started && MODE !== 'off') { start(); sweep(); }
+    return SKIP_HOSTS.length;
+  };
+
+  window.__vgCleanStats = function () {
+    return { mode: MODE, suspended: SUSPEND, hidden: hiddenCount,
+             rolled: rolledBack, skip: SKIP_HOSTS.length, recent: recent.slice(-10) };
+  };
+
+  if (document.readyState !== 'loading') readyAt = Date.now();
+  if (MODE !== 'off' && !skipped()) start();
 })();

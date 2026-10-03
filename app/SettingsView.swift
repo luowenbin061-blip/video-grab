@@ -250,11 +250,16 @@ struct SettingsView: View {
                 Section {
                     Toggle("网页广告清理", isOn: $adClean)
                         .onChange(of: adClean) { _ in model.applyAdCleanSetting() }
+                    Button("本页恢复被隐藏的层") { model.restoreAdCleanOnThisPage() }
                 } header: {
                     Text("网页广告清理")
                 } footer: {
-                    Text("清掉盖在页面上的那层浮层广告（插屏大图、赌场浮层这种），并拦住「点它的 X 反而跳走」。\n\n**只隐藏、不删原样** —— 关掉开关会立刻还原。\n\n**默认开**。万一某个网站被误清了（页面缺一块、放不出来），把这里关掉再刷新一下就好。\n\n做不到的：画成图片/画布里的广告、藏在跨域子页面里的广告。")
+                    Text("清掉盖在页面上的那层浮层广告（插屏大图、赌场浮层这种），并拦住「点它的 X 反而跳走」。\n\n**只隐藏、不删原样** —— 关掉开关会立刻还原。\n\n万一某页被误清了（缺一块 / 整片灰），页面顶部会出一条提示、点「撤销」就行；没看到那条就用上面这个按钮。\n\n做不到的：画成图片/画布里的广告、子页面里的广告。")
                 }
+
+                // 例外名单单独一个小 View（见文件末尾 AdCleanSkipList）—— 它自己管刷新，
+                // 不用在这里找 Form 的收尾括号去挂 onAppear。
+                AdCleanSkipList(model: model)
 
                 Section {
                     Toggle("长按视频弹下载菜单", isOn: $lpDownload)
@@ -413,5 +418,43 @@ struct SettingsView: View {
     private static var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         return v
+    }
+}
+
+/// 「不清理的网站」名单（设置页里那一节）。
+///
+/// ★ 为什么单独拎出来：`AdClean.skipHosts` 读的是 UserDefaults，**不是 SwiftUI 状态** ——
+///   删掉一条之后列表不会自己重画。所以要拿 `@State` 抄一份、在 `onAppear` 里刷新。
+///   单独一个 View 就能把 `onAppear` 挂在自己身上，不用去改主设置页 Form 的结构。
+private struct AdCleanSkipList: View {
+
+    @ObservedObject var model: BrowserModel
+    @State private var hosts: [String] = AdClean.skipHosts
+
+    var body: some View {
+        if hosts.isEmpty {
+            EmptyView()
+        } else {
+            Section {
+                ForEach(hosts, id: \.self) { h in
+                    HStack {
+                        Text(h).font(.system(size: 13))
+                        Spacer()
+                        Button("恢复清理") {
+                            AdClean.removeSkip(h)
+                            model.applyAdCleanSkipList()
+                            hosts = AdClean.skipHosts
+                            model.showToast("已恢复清理：\(h)")
+                        }
+                        .font(.system(size: 13))
+                    }
+                }
+            } header: {
+                Text("不清理的网站（\(hosts.count) 个）")
+            } footer: {
+                Text("这些网站被跳过了广告清理 —— 大多是**清理器自己发现会误伤、自动加进来的**。\n\n点「恢复清理」可以再试一次（下次打开那些页面时生效）。")
+            }
+            .onAppear { hosts = AdClean.skipHosts }
+        }
     }
 }

@@ -199,6 +199,18 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 进度 / 暂停 / 分类 / 存文件夹 全部复用。
     var onFileDownload: ((FileDownloadRequest) -> Void)?
     @Published var toast: String?
+    /// ★ v1.0.210 广告清理的「逃生门」提示（页面顶部那条，带一个动作按钮）。
+    ///
+    /// ★ 为什么不 8 秒就消失：清理器误清了正文时页面会**整片灰掉** ——
+    ///   那正是最需要这条的时候，一闪而过就等于没有出口。所以给 15 秒，
+    ///   而且设置页里还留了一份**常驻**兜底（「本页恢复被隐藏的层」）。
+    @Published var adCleanNotice: AdCleanNotice?
+
+    struct AdCleanNotice: Equatable {
+        var host: String
+        var text: String
+        var actionTitle: String
+    }
     @Published var mseSeen = false
     @Published var hint: String?
     /// 列表最后一次刷新时间（面板上显示，让用户知道数据新不新）
@@ -399,14 +411,23 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 网页广告清理脚本的注入源。
     ///
-    /// ★ 跟 sniffer 同一个手法：把脚本里那一行 `var MODE = 'on';` 换成当前的开关值。
-    ///   这样**新开的标签在注入时就带上正确的值**，老标签由
-    ///   `applyAdCleanSetting()` 在运行时用 `__vgCleanSet` 通知。
+    /// ★ 跟 sniffer 同一个手法：把脚本里那两行换成当前的值（开关 / 例外名单）。
+    ///   这样**新开的标签在注入时就带上正确的值**；老标签由
+    ///   `applyAdCleanSetting()` / `applyAdCleanSkipList()` 在运行时通知。
     static func cleanerSource(on: Bool) -> String {
-        let s = rawCleanerSource
-        let line = "var MODE = 'on';"
-        guard s.contains(line) else { return s }   // 脚本没这行 → 原样注入
-        return s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
+        var s = rawCleanerSource
+        let mLine = "var MODE = 'on';"
+        if s.contains(mLine) {
+            s = s.replacingOccurrences(of: mLine, with: "var MODE = '\(on ? "on" : "off")';")
+        }
+        // 例外名单以 JSON 数组注进去（[String] 一定序列化得出来，失败就留空 = 不例外）
+        let kLine = "var SKIP_HOSTS = [];"
+        if s.contains(kLine),
+           let d = try? JSONSerialization.data(withJSONObject: AdClean.skipHosts),
+           let j = String(data: d, encoding: .utf8) {
+            s = s.replacingOccurrences(of: kLine, with: "var SKIP_HOSTS = \(j);")
+        }
+        return s
     }
 
     /// 建一个「裸」的 WebView（不登记成标签）。
@@ -1414,6 +1435,79 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
+    /// 例外名单变了 → 通知所有已建页面（不用刷新）。
+    /// 进名单的页面会**立刻停手 + 还原**（见 cleaner.js 的 `__vgCleanSetSkip`）。
+    func applyAdCleanSkipList() {
+        let json = (try? JSONSerialization.data(withJSONObject: AdClean.skipHosts))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let js = "window.__vgCleanSetSkip ? window.__vgCleanSetSkip(\(json)) : 0"
+        for t in tabs {
+            guard let wv = t.webView else { continue }
+            wv.evaluateJavaScript(js) { _, _ in }
+        }
+    }
+
+    /// ★ 设置页常驻兜底：还原本页被隐藏的层（不需要等那条提示）。
+    func restoreAdCleanOnThisPage() {
+        webView?.evaluateJavaScript("window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
+        showToast("已还原这页被隐藏的层")
+    }
+
+    // MARK: - 广告清理的逃生门
+
+    /// 网页层上报：要么"我隐藏了 N 个浮层"，要么"我误清了、已经自己还原了"。
+    private func handleAdCleanReport(_ body: Any) {
+        guard let d = body as? [String: Any] else { return }
+        let type = (d["type"] as? String) ?? "hid"
+        let host = (d["host"] as? String) ?? ""
+        let n = (d["n"] as? Int) ?? 0
+
+        if type == "rollback" {
+            // 脚本自己发现"藏完页面就空了"并已还原。这种站的结构会误伤 ——
+            // **自动进例外名单**（保守优先），同时告诉他一声、给一个反悔按钮。
+            guard !host.isEmpty else { return }
+            AdClean.addSkip(host)
+            applyAdCleanSkipList()
+            showAdCleanNotice(AdCleanNotice(
+                host: host,
+                text: "这页有内容被误清、已自动还原；这个网站先不清理了",
+                actionTitle: "重新启用"))
+            return
+        }
+        guard n > 0, !host.isEmpty else { return }
+        showAdCleanNotice(AdCleanNotice(host: host,
+                                        text: "已隐藏 \(n) 个浮层",
+                                        actionTitle: "撤销"))
+    }
+
+    private func showAdCleanNotice(_ n: AdCleanNotice) {
+        adCleanNotice = n
+        let host = n.host
+        Task {
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            if self.adCleanNotice?.host == host { self.adCleanNotice = nil }
+        }
+    }
+
+    func dismissAdCleanNotice() { adCleanNotice = nil }
+
+    /// 逃生门上那个按钮：根据当前是哪一种提示决定做什么。
+    func adCleanMainAction() {
+        guard let n = adCleanNotice else { return }
+        if n.actionTitle == "撤销" {
+            // 还原本页 + 本页豁免（脚本内部会把 SUSPEND 打开，防止 3 秒后又藏回去）
+            webView?.evaluateJavaScript(
+                "window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
+            showToast("已还原这页被隐藏的层")
+        } else {
+            // 「重新启用」：把这个站从例外名单里删掉，下次刷新就恢复清理
+            AdClean.removeSkip(n.host)
+            applyAdCleanSkipList()
+            showToast("已重新启用 \(n.host) 的广告清理（刷新后生效）")
+        }
+        adCleanNotice = nil
+    }
+
     /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
     ///
     /// ★ 为什么加 seconds（v1.0.88）：证书那条提示有 18 个字，1.8 秒根本读不完，
@@ -1947,7 +2041,15 @@ extension BrowserModel: WKScriptMessageHandler {
         // ★ v1.0.209：广告清理的诊断回传走另一条通道 —— 直接记档、**不进嗅探那套流程**
         //   （不然它会被当成嗅探结果喂给 ingest，把下载列表搞脏）。
         if message.name == "vgClean" {
-            AdClean.record(message.body)
+            let src = message.webView
+            let body = message.body
+            AdClean.record(body)          // 诊断日志照记（不管哪个 frame 来的）
+            Task { @MainActor in
+                // ★ 逃生门只针对**当前正在看的那一页** —— 后台标签别弹提示来打扰。
+                //   （脚本那边已经限制"只有主 frame 会上报"，这里再按标签认领一次。）
+                guard let wv = src, let t = self.tab(for: wv), t === self.currentTab else { return }
+                self.handleAdCleanReport(body)
+            }
             return
         }
         guard let body = message.body as? [String: Any] else { return }
