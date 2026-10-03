@@ -26,15 +26,17 @@ enum AdClean {
         return d.bool(forKey: key)
     }
 
-    // MARK: - 例外名单（这些网站不清理）
+    // MARK: - 例外名单（这个网站不做自动清理）
 
     private static let skipKey = "adCleanSkipHosts"
 
     /// 不清理的网站（host）。
     ///
-    /// ★ 两种来源：① 用户点「本站不清理」手动加；② **清理器自己发现误清了正文时自动加**
-    ///   （保守优先 —— 宁可这个站广告不干净，也不能让它打不开）。
-    ///   设置页里能看到名单、也能逐个删掉再试。
+    /// ★★ v1.0.212 起，这份名单**只由用户手动加/减**。
+    ///   以前（210/211）是"清理器自己发现误清就自动把整站加进来"—— 那是这一系列问题的根：
+    ///   自检偶尔误判一次，就把**整个网站永久拉黑**，而且拉黑那一瞬间还会把当页已藏的
+    ///   全部放回来 → 越用越差。**自动化只该做可撤销的动作（隐藏/还原），
+    ///   不该做有记忆的惩罚（拉黑）。**
     static var skipHosts: [String] {
         UserDefaults.standard.stringArray(forKey: skipKey) ?? []
     }
@@ -50,6 +52,64 @@ enum AdClean {
     static func removeSkip(_ host: String) {
         guard !host.isEmpty else { return }
         UserDefaults.standard.set(skipHosts.filter { $0 != host }, forKey: skipKey)
+    }
+
+    /// ★ v1.0.212：一键清空 —— 用来救"被旧版本自动塞满"的名单。
+    static func clearAllSkip() {
+        UserDefaults.standard.set([String](), forKey: skipKey)
+    }
+
+    // MARK: - 保存的清理规则（点选清理保存下来的）
+
+    private static let savedKey = "adCleanSavedRulesV1"
+    private static let maxRulesPerHost = 40
+    private static let maxHosts = 200
+
+    /// host → [规则]。规则是网页层发过来的**原始 JSON 对象**，这里原样存，
+    /// 不做结构解释（解释归网页层），这样以后加字段不用改这里。
+    static var savedRules: [String: [[String: Any]]] {
+        guard let d = UserDefaults.standard.data(forKey: savedKey),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: [[String: Any]]]
+        else { return [:] }
+        return o
+    }
+
+    static func addRule(host: String, rule: [String: Any]) {
+        guard !host.isEmpty else { return }
+        var all = savedRules
+        var list = all[host] ?? []
+        guard list.count < maxRulesPerHost else { return }
+        if all[host] == nil && all.count >= maxHosts { return }
+        list.append(rule)
+        all[host] = list
+        writeRules(all)
+    }
+
+    static func removeRules(for host: String) {
+        guard !host.isEmpty else { return }
+        var all = savedRules
+        all.removeValue(forKey: host)
+        writeRules(all)
+    }
+
+    static func clearAllRules() {
+        UserDefaults.standard.removeObject(forKey: savedKey)
+    }
+
+    static var ruleHosts: [String] { savedRules.keys.sorted() }
+    static var ruleHostCount: Int { savedRules.count }
+    static var ruleCount: Int { savedRules.values.reduce(0) { $0 + $1.count } }
+
+    /// 交给网页层用（注入时替换 `var SAVED = {};`，或运行时 `__vgSetSaved`）。
+    static var savedRulesJSON: String {
+        guard let d = try? JSONSerialization.data(withJSONObject: savedRules),
+              let s = String(data: d, encoding: .utf8) else { return "{}" }
+        return s
+    }
+
+    private static func writeRules(_ all: [String: [[String: Any]]]) {
+        guard let d = try? JSONSerialization.data(withJSONObject: all) else { return }
+        UserDefaults.standard.set(d, forKey: savedKey)
     }
 
     // MARK: - 诊断日志

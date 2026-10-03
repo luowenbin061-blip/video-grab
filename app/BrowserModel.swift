@@ -434,6 +434,12 @@ final class BrowserModel: NSObject, ObservableObject {
            let j = String(data: d, encoding: .utf8) {
             s = s.replacingOccurrences(of: kLine, with: "var SKIP_HOSTS = \(j);")
         }
+        // ★ v1.0.212：把你「点选保存过」的规则也一起注进去 —— 这样刷新后在**渲染之前**
+        //   那段 CSS 就生效了（而不是先画出来再藏）。这是"刷新后不再出现"的关键。
+        let sLine = "var SAVED = {};"
+        if s.contains(sLine) {
+            s = s.replacingOccurrences(of: sLine, with: "var SAVED = \(AdClean.savedRulesJSON);")
+        }
         return s
     }
 
@@ -1454,6 +1460,35 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
+    /// 保存的规则变了 → 推给所有已建页面（不用刷新）。
+    func applyAdCleanSavedRules() {
+        let js = "window.__vgSetSaved ? window.__vgSetSaved(\(AdClean.savedRulesJSON)) : 0"
+        for t in tabs {
+            guard let wv = t.webView else { continue }
+            wv.evaluateJavaScript(js) { _, _ in }
+        }
+    }
+
+    /// ★ 设置页：一键清空"不清理的网站"名单 ——
+    ///   用来救**被旧版本（210/211）自动塞满**的那份名单。
+    func clearAdCleanSkipList() {
+        AdClean.clearAllSkip()
+        applyAdCleanSkipList()
+        showToast("已清空「不清理的网站」名单")
+    }
+
+    func clearAdCleanRules(for host: String) {
+        AdClean.removeRules(for: host)
+        applyAdCleanSavedRules()
+        showToast("已清除 \(host) 的保存规则（刷新后生效）")
+    }
+
+    func clearAllAdCleanRules() {
+        AdClean.clearAllRules()
+        applyAdCleanSavedRules()
+        showToast("已清空全部保存的清理规则")
+    }
+
     /// ★ 设置页常驻兜底：还原本页被隐藏的层（不需要等那条提示）。
     func restoreAdCleanOnThisPage() {
         webView?.evaluateJavaScript("window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
@@ -1470,30 +1505,46 @@ final class BrowserModel: NSObject, ObservableObject {
         let n = (d["n"] as? Int) ?? 0
 
         switch type {
+        case "save":
+            // ★ 点选保存：规则落盘（下次刷新时**在渲染前**就被那段 CSS 隐藏），
+            //   并回推给所有已建页面。
+            guard let rule = d["rule"] as? [String: Any] else { return }
+            AdClean.addRule(host: host, rule: rule)
+            applyAdCleanSavedRules()
+
         case "rollback":
-            // 自动清完之后"页面空了" → 脚本已自己还原。这种站的结构会误伤 ——
-            // **自动进"不清理"名单**（保守优先），并给一个反悔按钮。
-            guard !host.isEmpty else { return }
-            AdClean.addSkip(host)
-            applyAdCleanSkipList()
+            // ★★ v1.0.212：**不再把整个网站拉黑** —— 那正是"越用越差"的根源
+            //   （自检偶尔误判一次就把整站永久判死，还把当页已藏的放回来）。
+            //   现在脚本只**单独还原那一个元素**，原生这边只告诉用户一声。
             showAdCleanNotice(AdCleanNotice(
                 host: host,
-                text: "这页有内容被误清、已自动还原；这个网站先不清理了",
-                actionTitle: "重新启用", kind: "rollback"))
+                text: "刚才有一层像是正文，已单独还原它",
+                actionTitle: "知道了", kind: "rollback"))
 
         case "softrollback":
-            // ★ 手动（强力 / 点选）清完发现清错 → 脚本已还原。
-            //   这里**故意不把该站加进名单** —— 是用户主动要清的，一次手滑不该永久跳过它。
             showAdCleanNotice(AdCleanNotice(
                 host: host,
-                text: "刚清的那层像是正文，已自动还原",
+                text: "刚清的那层像是正文，已还原",
                 actionTitle: "知道了", kind: "softrollback"))
 
-        case "pickstart", "pick":
+        case "pickstart":
             showAdCleanNotice(AdCleanNotice(
                 host: host,
-                text: type == "pickstart" ? "点选清理：点你要清掉的那层（红色描边的）"
-                                          : "已清掉 \(n) 层 · 接着点，或按「完成」",
+                text: "点选清理：点你要删的那一层（含播放器/登录框的层不能选）",
+                actionTitle: "完成", kind: "pick", sticky: true))
+
+        case "pick":
+            let depth = (d["depth"] as? Int) ?? 0
+            let total = (d["total"] as? Int) ?? 1
+            showAdCleanNotice(AdCleanNotice(
+                host: host,
+                text: "已删掉第 \(depth + 1) 层（共 \(total) 层）并已保存 · 再点同处换下一层，或按「完成」",
+                actionTitle: "完成", kind: "pick", sticky: true))
+
+        case "pickmiss":
+            showAdCleanNotice(AdCleanNotice(
+                host: host,
+                text: "这一点上没有可以删的层（含播放器/登录框的层不给删）",
                 actionTitle: "完成", kind: "pick", sticky: true))
 
         case "strong":
@@ -1532,12 +1583,7 @@ final class BrowserModel: NSObject, ObservableObject {
         case "pick":
             adCleanSetPick(false)                 // 它会一起把提示条收掉
             showToast("点选清理已结束")
-        case "rollback":
-            AdClean.removeSkip(n.host)
-            applyAdCleanSkipList()
-            adCleanNotice = nil
-            showToast("已重新启用 \(n.host) 的广告清理（刷新后生效）")
-        case "softrollback":
+        case "rollback", "softrollback":
             adCleanNotice = nil                   // 「知道了」，无需其它动作
         default:                                   // "hid" / "strong"
             webView?.evaluateJavaScript(
