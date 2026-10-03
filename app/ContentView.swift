@@ -747,7 +747,9 @@ struct ContentView: View {
         //     得补默认值，否则它永远排在历史后面，等于白收。
         var rows: [(url: String, label: String, weight: Int, when: Date)] = []
         if q.isEmpty {
-            for h in store.history.prefix(20) {
+            // ★ v1.0.207：这里原来是 prefix(20) —— 点开地址栏时只在最近 20 条里挑，
+            //   再往前翻的历史**压根没进候选**。现在全部参与（面板可滚动，能一直往下翻）。
+            for h in store.history {
                 rows.append((h.url, h.label, h.visits, h.lastVisit))
             }
         } else {
@@ -777,14 +779,24 @@ struct ContentView: View {
             out.append(AddrSuggestion(id: r.url, icon: "clock.arrow.circlepath",
                                       title: r.label.isEmpty ? r.url : r.label,
                                       subtitle: r.url, search: nil, open: r.url))
-            if out.count >= 7 { break }                // 第一行 + 最多 6 条
+            if out.count >= 60 { break }               // ★ v1.0.207：7 → 60
         }
         return out
     }
 
     /// 联想列表本体
+    /// ★★ v1.0.207：以前这里是**纯 VStack** —— 超过屏幕的行直接被顶出去、**滑不动**，
+    ///   用户实测原话："只有几条历史记忆，不能下滑选更久之前的"。
+    ///   现在：可滚动列表 + 按条数算高度（最多 340pt）。
+    ///   ★ 为什么按条数算、不用 maxHeight 直接限制 ScrollView：ScrollView 在无外部高度
+    ///     约束时是**贪婪**的，会撑满整屏 —— 只有两三条时也会铺满一屏。按行数算最可控。
+    ///   ★ 行高按 50pt 估（14pt 标题 + 11.5pt 副标题 + 上下各 9pt 内边距）；
+    ///     估差几 pt 只在条数少时留一点余白，看不出来。
     private func addrSuggestionPanel(_ list: [AddrSuggestion]) -> some View {
-        VStack(spacing: 0) {
+        let rowH: CGFloat = 50
+        let contentH = CGFloat(list.count) * rowH + 6
+        return ScrollView {
+            LazyVStack(spacing: 0) {
             ForEach(Array(list.enumerated()), id: \.element.id) { idx, s in
                 Button {
                     urlFocused = false                  // 先收键盘，再走（顺序反了会闪）
@@ -825,7 +837,9 @@ struct ContentView: View {
                     Divider().padding(.leading, 42)
                 }
             }
+            }
         }
+        .frame(height: min(contentH, 340))
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
