@@ -847,7 +847,10 @@ final class BrowserModel: NSObject, ObservableObject {
         // ★ v1.0.120：**新建标签不再自动开主页**（上一版加错了，用户明确纠正）——
         //   主页只在「程序启动进页面」时加载一次（见 openStartPage）；
         //   新建标签一律是空白标签 → 界面显示「首页快捷入口」。
-        if let url, !url.isEmpty { load(url) }
+        // ★ v1.0.205：这里以前是裸调 load(url) —— 拆方法时漏了它（编译器直接报
+        //   "static member 'load' cannot be used on instance"，因为 NSObject 有个
+        //   类方法叫 +load）。传进来的是完整地址，走 openURL。
+        if let url, !url.isEmpty { openURL(url) }
         return tab
     }
 
