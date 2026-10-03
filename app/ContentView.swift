@@ -1770,6 +1770,10 @@ struct DownloadList: View {
         //   滑不动这条已经连改三次，全都在这些系统构件里打转；这次一个都不留。
         //   现在的结构：**自己的顶栏 + 头（搜索 + 分类）+ ScrollView（自己画的卡片）+ 多选条**，
         //   全是"自己画的普通视图"，没有任何会跟滚动/命中判定抢东西的容器。
+        // ★ v1.0.203（代码体检 P2）：`shownJobs` 是“过滤 + 排序”的计算属性，
+        //   以前这一个 body 里取了 5 次 —— 每取一次就把整列任务重过滤 + 重排序一遍。
+        //   下载中 usedSpace 每隔一阵刷新 → 整页重算 → 任务越多越涩。
+        let shown = shownJobs
         VStack(spacing: 0) {
             topBar
             Divider()
@@ -1793,7 +1797,7 @@ struct DownloadList: View {
                             //   否则会出现「已选 15 个」而屏幕上只勾了 12 个，
                             //   全选/取消全选的语义也跟着乱。
                             .onChange(of: filter) { _ in
-                                picked.formIntersection(Set(shownJobs.map(\.id)))
+                                picked.formIntersection(Set(shown.map(\.id)))
                             }
                         }
                         .padding(.horizontal, 12)
@@ -1816,7 +1820,7 @@ struct DownloadList: View {
                             //   代价：行多了会一次性建出来（缩略图仍走降采样+缓存，20~50 条没问题）。
                             VStack(alignment: .leading, spacing: 8) {
                                 storageCard
-                                if shownJobs.isEmpty {
+                                if shown.isEmpty {
                                     Text(query.isEmpty
                                          ? "「\(filter.label)」这个分类下还没有东西"
                                          : "这一类里没搜到")
@@ -1825,12 +1829,12 @@ struct DownloadList: View {
                                         .padding(.vertical, 14)
                                         .frame(maxWidth: .infinity)
                                 } else {
-                                    Text("\(filter.label) · \(shownJobs.count) 个")
+                                    Text("\(filter.label) · \(shown.count) 个")
                                         .font(.system(size: 12.5))
                                         .foregroundStyle(.secondary)
                                         .padding(.leading, 4)
                                         .padding(.top, 2)
-                                    ForEach(shownJobs) { job in
+                                    ForEach(shown) { job in
                                         JobRow(job: job, pip: center.pip,
                                                onDelete: { center.remove(job) },
                                                onResume: { center.resume(job) },
@@ -1889,7 +1893,7 @@ struct DownloadList: View {
                                 HStack {
                                     Text(query.isEmpty
                                          ? "共 \(center.jobs.count) 个任务"
-                                         : "筛出 \(shownJobs.count) 个 · 共 \(center.jobs.count) 个")
+                                         : "筛出 \(shown.count) 个 · 共 \(center.jobs.count) 个")
                                     Spacer()
                                     Text("占用 \(DownloadJob.sizeText(center.usedSpace))")
                                 }

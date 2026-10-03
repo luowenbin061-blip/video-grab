@@ -402,25 +402,33 @@ extension TSRemuxer {
 
         /// 给「可能永远不返回的异步操作」套一个超时。
         /// 超时后不再等待（底层操作继续飘着，但我们不能陪它卡死）。
-        private static func withTimeout(seconds: UInt64, what: String,
+        /// ★ v1.0.203（代码体检 P2）：**别把 `var` 捕获进并发闭包** ——
+    ///   这个工程踩过 4 次（#138/#164/#171/#178），这里又踩了一次的"同类"：
+    ///   目前 Swift 5 模式能编过，但 Swift 6 严格并发下必挂。照 `MediaProxy.Box` 的招式：
+    ///   用一个 @unchecked Sendable 的小盒子承接跨闭包的可变状态。
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fired = false
+        /// 返回 true = 你是第一个（该由你去 resume）
+        func tryFire() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if fired { return false }
+            fired = true
+            return true
+        }
+    }
+
+    private static func withTimeout(seconds: UInt64, what: String,
                                         _ op: @escaping () async -> Void) async {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                let lock = NSLock()
-                var resumed = false
-                let resumeOnce = {
-                    lock.lock()
-                    let first = !resumed
-                    resumed = true
-                    lock.unlock()
-                    if first { cont.resume() }
-                }
+                let flag = Flag()
                 Task {
                     await op()
-                    resumeOnce()
+                    if flag.tryFire() { cont.resume() }
                 }
                 Task {
                     try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-                    resumeOnce()
+                    if flag.tryFire() { cont.resume() }
                 }
             }
             // 超时路径上没法把「没等到」告诉调用方 —— 只能靠 status 检查兜底

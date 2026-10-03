@@ -397,12 +397,35 @@ final class BookmarkStore: ObservableObject {
         guard let d = try? Data(contentsOf: Self.fileURL) else { return }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        guard let p = try? dec.decode(Payload.self, from: d) else { return }
-        marks = p.marks
-        history = p.history
-        customGroups = p.customGroups ?? []      // 老记录没这个键 → 空数组
-        groupOrder = p.groupOrder ?? []
-        trash = p.trash ?? []
+        // ★★ v1.0.203（代码体检 P2）：整份解不出来时以前直接 return（等于"没有收藏"），
+        //   而收藏页接下来任何一次保存都会把这份覆盖掉 —— 静默全丢。
+        //   现在：坏档先备份留证 → **按字段抢救**（比如只有回收站那几条坏了，
+        //   收藏和历史照样能救回来）。
+        if let p = try? dec.decode(Payload.self, from: d) {
+            marks = p.marks
+            history = p.history
+            customGroups = p.customGroups ?? []      // 老记录没这个键 → 空数组
+            groupOrder = p.groupOrder ?? []
+            trash = p.trash ?? []
+            return
+        }
+        let bak = Self.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("bookmarks_损坏备份_\(Int(Date().timeIntervalSince1970)).json")
+        try? FileManager.default.removeItem(at: bak)
+        try? FileManager.default.copyItem(at: Self.fileURL, to: bak)
+        if let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
+            func arr<T: Decodable>(_ key: String, _ t: T.Type) -> [T] {
+                guard let raw = obj[key],
+                      let sub = try? JSONSerialization.data(withJSONObject: raw),
+                      let v = try? dec.decode([T].self, from: sub) else { return [] }
+                return v
+            }
+            marks = arr("marks", Bookmark.self)
+            history = arr("history", HistoryEntry.self)
+            customGroups = arr("customGroups", String.self)
+            groupOrder = arr("groupOrder", String.self)
+            trash = arr("trash", TrashItem.self)
+        }
     }
 
     private func save() {
@@ -412,6 +435,14 @@ final class BookmarkStore: ObservableObject {
         let p = Payload(marks: marks, history: history,
                         customGroups: customGroups, groupOrder: groupOrder, trash: trash)
         guard let d = try? enc.encode(p) else { return }
+        // ★ v1.0.203：写新档前把当前这份留成"上一份"（写失败也有得捞）
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: Self.fileURL.path),
+           (attrs[.size] as? Int64 ?? 0) > 2 {
+            let bak = Self.fileURL.deletingLastPathComponent()
+                .appendingPathComponent("bookmarks_上一份.json")
+            try? FileManager.default.removeItem(at: bak)
+            try? FileManager.default.copyItem(at: Self.fileURL, to: bak)
+        }
         try? d.write(to: Self.fileURL, options: .atomic)
     }
 }

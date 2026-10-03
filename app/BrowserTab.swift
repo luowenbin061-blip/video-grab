@@ -42,6 +42,10 @@ final class BrowserTab {
     var address = ""
     var items: [SniffItem] = []
     var groups: [SniffGroup] = []
+    /// ★ v1.0.203（代码体检 P2）：**图片也按标签存**（跟 items/groups 一个规矩）。
+    ///   以前只存在 model 上 → 切标签时不会跟着换，图片面板显示的还是上一个标签的图（串台）。
+    var images: [SniffItem] = []
+    var imageGroups: [SniffGroup] = []
     var mseSeen = false
     var hint: String?
     var lastUpdated: Date?

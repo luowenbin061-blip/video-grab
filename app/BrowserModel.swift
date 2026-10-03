@@ -949,6 +949,8 @@ final class BrowserModel: NSObject, ObservableObject {
         address = t.address
         items = t.items
         groups = t.groups
+        images = t.images              // ★ v1.0.203：图片也要跟着标签换（以前漏了 → 串台）
+        imageGroups = t.imageGroups
         mseSeen = t.mseSeen
         hint = t.hint
         lastUpdated = t.lastUpdated
@@ -1587,16 +1589,20 @@ final class BrowserModel: NSObject, ObservableObject {
         t.hint = Self.hint(for: capped)
         if t.address.isEmpty { t.address = href }
 
+        // ★ v1.0.203：图片**先落到这个标签自己身上**（跟 items 完全同一个规矩）——
+        //   以前只写 model，切标签时不换 → 面板显示上一个标签的图（串台）。
+        //   合并的底子也要取自"这个标签自己的旧图"，不能取自 model（那可能是别的标签的）。
+        var oldImgs: [String: SniffItem] = [:]
+        for it in t.images { oldImgs[it.url] = it }
+        t.images = Self.parseImageItems(imgs, href: href, merge: oldImgs)
+        t.imageGroups = Self.makeGroups(t.images)
+
         guard isCurrent else { return }      // 后台标签：到此为止，不碰界面状态
 
         items = capped
         groups = t.groups
-        // ★ v1.0.109：图片单独一条通道（JS 那边是独立字典 + 独立 60 条上限）。
-        //   这里也只在"当前标签"时才写界面状态 —— 跟 items 同一个规矩。
-        var oldImgs: [String: SniffItem] = [:]
-        for it in images { oldImgs[it.url] = it }
-        images = Self.parseImageItems(imgs, href: href, merge: oldImgs)
-        imageGroups = Self.makeGroups(images)
+        images = t.images
+        imageGroups = t.imageGroups
         lastUpdated = now
         mseSeen = mse
         hint = t.hint

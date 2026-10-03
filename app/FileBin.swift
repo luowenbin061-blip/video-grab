@@ -114,6 +114,14 @@ final class FileBin: ObservableObject {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         guard let d = try? enc.encode(items) else { return }
+        // ★ v1.0.203：写新档前把**当前这份**留成"上一份" —— 写失败时更要有一份能捞的
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: Self.fileURL.path),
+           (attrs[.size] as? Int64 ?? 0) > 2 {
+            let bak = Self.fileURL.deletingLastPathComponent()
+                .appendingPathComponent("files_trash_上一份.json")
+            try? FileManager.default.removeItem(at: bak)
+            try? FileManager.default.copyItem(at: Self.fileURL, to: bak)
+        }
         // 原子写：中途失败别把整份回收站毁掉
         try? d.write(to: Self.fileURL, options: .atomic)
     }
@@ -124,6 +132,26 @@ final class FileBin: ObservableObject {
         dec.dateDecodingStrategy = .iso8601
         // ★ 读不出来就当空 —— 但**绝不能因为一条坏数据把整份丢掉**：
         //   单条解不出来时整个数组也解不出来，所以保险起见给[]（新文件，暂无老格式要兼容）。
-        items = (try? dec.decode([BinRecord].self, from: d)) ?? []
+        // ★★ v1.0.203（代码体检 P2）：以前是 `(try? decode) ?? []` ——
+        //   **一条坏数据就把整份回收站清空**，紧接着任意一次保存会用空数组把它覆盖掉：
+        //   这个 store 存在的意义（"怕彻底找不到"）就被抹了。
+        //   现在照 JobStore 的老办法：坏档先备份留证 → 逐条抢救（坏一条丢一条）。
+        if let list = try? dec.decode([BinRecord].self, from: d) {
+            items = list
+            return
+        }
+        let bak = Self.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("files_trash_损坏备份_\(Int(Date().timeIntervalSince1970)).json")
+        try? FileManager.default.removeItem(at: bak)
+        try? FileManager.default.copyItem(at: Self.fileURL, to: bak)
+
+        var rescued: [BinRecord] = []
+        if let arr = (try? JSONSerialization.jsonObject(with: d)) as? [[String: Any]] {
+            for one in arr {
+                guard let oneData = try? JSONSerialization.data(withJSONObject: one) else { continue }
+                if let rec = try? dec.decode(BinRecord.self, from: oneData) { rescued.append(rec) }
+            }
+        }
+        items = rescued
     }
 }

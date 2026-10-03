@@ -41,6 +41,8 @@ final class LocalHTTPServer {
 
     private var listenFD: Int32 = -1
     private var running = false
+    /// ★ v1.0.203：监听代次号（重绑端口/重开共享时 +1，旧 accept 循环据此退出）
+    private var listenGen = 0
 
     private var root: URL?
     private(set) var port: UInt16 = 0
@@ -282,7 +284,12 @@ final class LocalHTTPServer {
         port = assigned
         running = true
         lastError = nil
-        queue.async { [weak self] in self?.acceptLoop(fd) }
+        // ★ v1.0.203：每次重新监听**代次 +1** —— 旧的 accept 循环看到代次变了就退出。
+        //   以前只靠 `running` 这个布尔：关掉再打开（running 又变 true）时，
+        //   旧循环会对着**已经关闭的 fd** 每 50ms 空转一次、永不退出（僵尸循环 + fd 泄漏）。
+        listenGen &+= 1
+        let myGen = listenGen
+        queue.async { [weak self] in self?.acceptLoop(fd, gen: myGen) }
         return assigned
     }
 
@@ -295,8 +302,8 @@ final class LocalHTTPServer {
 
     // MARK: - accept
 
-    private func acceptLoop(_ fd: Int32) {
-        while running {
+    private func acceptLoop(_ fd: Int32, gen myGen: Int) {
+        while running, myGen == listenGen {
             var cli = sockaddr_in()
             var len = socklen_t(MemoryLayout<sockaddr_in>.size)
             let cfd: Int32 = withUnsafeMutablePointer(to: &cli) { p in
@@ -306,7 +313,7 @@ final class LocalHTTPServer {
             }
             if cfd < 0 {
                 if errno == EINTR { continue }
-                if !running { break }
+                if !running || myGen != listenGen { break }   // ★ 代次变了＝这个循环已经过期
                 Thread.sleep(forTimeInterval: 0.05)   // 别空转烧 CPU
                 continue
             }
