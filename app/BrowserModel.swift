@@ -210,6 +210,13 @@ final class BrowserModel: NSObject, ObservableObject {
         var host: String
         var text: String
         var actionTitle: String
+        /// ★ v1.0.211：这条提示属于哪种情形 —— 决定"按那个按钮做什么"，以及要不要自动消失。
+        ///   "hid"（自动清了东西）/ "strong"（强力再清了一遍）/ "pick"（点选进行中）/
+        ///   "rollback"（自动误清、已还原）/ "softrollback"（手动误清、已还原）
+        var kind: String = "hid"
+        /// 手动操作（强力 / 点选）产生的提示**不自动消失** —— 那是用户正在进行的动作，
+        /// 不能让他正选着选着提示自己没了。
+        var sticky: Bool = false
     }
     @Published var mseSeen = false
     @Published var hint: String?
@@ -1462,26 +1469,49 @@ final class BrowserModel: NSObject, ObservableObject {
         let host = (d["host"] as? String) ?? ""
         let n = (d["n"] as? Int) ?? 0
 
-        if type == "rollback" {
-            // 脚本自己发现"藏完页面就空了"并已还原。这种站的结构会误伤 ——
-            // **自动进例外名单**（保守优先），同时告诉他一声、给一个反悔按钮。
+        switch type {
+        case "rollback":
+            // 自动清完之后"页面空了" → 脚本已自己还原。这种站的结构会误伤 ——
+            // **自动进"不清理"名单**（保守优先），并给一个反悔按钮。
             guard !host.isEmpty else { return }
             AdClean.addSkip(host)
             applyAdCleanSkipList()
             showAdCleanNotice(AdCleanNotice(
                 host: host,
                 text: "这页有内容被误清、已自动还原；这个网站先不清理了",
-                actionTitle: "重新启用"))
-            return
+                actionTitle: "重新启用", kind: "rollback"))
+
+        case "softrollback":
+            // ★ 手动（强力 / 点选）清完发现清错 → 脚本已还原。
+            //   这里**故意不把该站加进名单** —— 是用户主动要清的，一次手滑不该永久跳过它。
+            showAdCleanNotice(AdCleanNotice(
+                host: host,
+                text: "刚清的那层像是正文，已自动还原",
+                actionTitle: "知道了", kind: "softrollback"))
+
+        case "pickstart", "pick":
+            showAdCleanNotice(AdCleanNotice(
+                host: host,
+                text: type == "pickstart" ? "点选清理：点你要清掉的那层（红色描边的）"
+                                          : "已清掉 \(n) 层 · 接着点，或按「完成」",
+                actionTitle: "完成", kind: "pick", sticky: true))
+
+        case "strong":
+            showAdCleanNotice(AdCleanNotice(
+                host: host,
+                text: "又清掉 \(n) 层", actionTitle: "撤销", kind: "strong", sticky: true))
+
+        default:            // "hid"
+            guard n > 0, !host.isEmpty else { return }
+            showAdCleanNotice(AdCleanNotice(host: host,
+                                            text: "已隐藏 \(n) 个浮层",
+                                            actionTitle: "撤销", kind: "hid"))
         }
-        guard n > 0, !host.isEmpty else { return }
-        showAdCleanNotice(AdCleanNotice(host: host,
-                                        text: "已隐藏 \(n) 个浮层",
-                                        actionTitle: "撤销"))
     }
 
     private func showAdCleanNotice(_ n: AdCleanNotice) {
         adCleanNotice = n
+        guard !n.sticky else { return }          // 手动操作 → 不自动消失
         let host = n.host
         Task {
             try? await Task.sleep(nanoseconds: 15_000_000_000)
@@ -1489,23 +1519,64 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
-    func dismissAdCleanNotice() { adCleanNotice = nil }
+    func dismissAdCleanNotice() {
+        // 点「知道了」时如果正在点选，顺带退出点选模式（否则网页层还停在选择态）
+        if adCleanNotice?.kind == "pick" { adCleanSetPick(false); return }
+        adCleanNotice = nil
+    }
 
-    /// 逃生门上那个按钮：根据当前是哪一种提示决定做什么。
+    /// 逃生门上那个按钮：按提示的类型决定做什么。
     func adCleanMainAction() {
         guard let n = adCleanNotice else { return }
-        if n.actionTitle == "撤销" {
-            // 还原本页 + 本页豁免（脚本内部会把 SUSPEND 打开，防止 3 秒后又藏回去）
-            webView?.evaluateJavaScript(
-                "window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
-            showToast("已还原这页被隐藏的层")
-        } else {
-            // 「重新启用」：把这个站从例外名单里删掉，下次刷新就恢复清理
+        switch n.kind {
+        case "pick":
+            adCleanSetPick(false)                 // 它会一起把提示条收掉
+            showToast("点选清理已结束")
+        case "rollback":
             AdClean.removeSkip(n.host)
             applyAdCleanSkipList()
+            adCleanNotice = nil
             showToast("已重新启用 \(n.host) 的广告清理（刷新后生效）")
+        case "softrollback":
+            adCleanNotice = nil                   // 「知道了」，无需其它动作
+        default:                                   // "hid" / "strong"
+            webView?.evaluateJavaScript(
+                "window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
+            adCleanNotice = nil
+            showToast("已还原这页被隐藏的层")
         }
-        adCleanNotice = nil
+    }
+
+    // MARK: - 手动清理（A 强力 / B 点选）
+
+    /// ★ A：用户按了「再清一遍」。
+    ///
+    /// 用的是**同一套判据、只是门槛放宽**（8 分 → 6 分，且额外要求盖住 ≥50% 视口）——
+    /// 同一套规则的两个档位，所以它跟自动模式**天然不冲突**。
+    /// **只本次生效**（不持久）：持久会跟"不清理名单"打架 —— 站在名单里自动本来就不跑，
+    /// 那个"强力站"标记就永远用不上，是个死状态。
+    func adCleanStrongPass() {
+        webView?.evaluateJavaScript(
+            "window.__vgCleanStrong ? window.__vgCleanStrong() : 0") { res, _ in
+            Task { @MainActor in
+                // 清到了就由脚本上报弹提示条；一个都没清到才需要自己说一句
+                if ((res as? Int) ?? 0) == 0 { self.showToast("没找到更多能清的浮层") }
+            }
+        }
+    }
+
+    /// 点选模式进行中（工具箱那格显示绿点用）。真正的状态在网页层。
+    @Published var adCleanPicking = false
+
+    /// ★ B：进出点选模式。进去之后网页层会高亮候选，点哪个清哪个。
+    func adCleanSetPick(_ on: Bool) {
+        adCleanPicking = on
+        webView?.evaluateJavaScript(
+            "window.__vgPickMode ? window.__vgPickMode(\(on ? "true" : "false")) : 0") { _, _ in }
+        if !on {
+            adCleanNotice = nil
+            showToast("点选清理已结束")
+        }
     }
 
     /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
@@ -2314,6 +2385,12 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
             self.loadTimeoutTask?.cancel()
             if t === self.currentTab {
+                // ★ v1.0.211：换页/刷新之后，网页层的"点选模式"已经不存在了 ——
+                //   把提示条和那个绿点一起收掉，免得界面上的状态跟页面对不上。
+                if self.adCleanPicking {
+                    self.adCleanPicking = false
+                    if self.adCleanNotice?.kind == "pick" { self.adCleanNotice = nil }
+                }
                 self.isLoading = false
                 self.pageTitle = t.title
                 self.address = t.address

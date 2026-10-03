@@ -1,37 +1,34 @@
 // VideoGrab 网页广告清理脚本
 // ---------------------------------------------------------------------------
-// 由 WKUserScript 在 document-start 注入，page world。与 sniffer.js **并列但各管各的**：
-//   · sniffer.js 管「找视频地址」，它的定时器只在「后台自动嗅探」开着时才跑；
-//   · 本脚本管「把盖住内容的浮层广告清掉」，**默认常开**。
-//     两者**不能合并** —— 否则关掉自动嗅探会把广告清理也一起关了。
+// WKUserScript 在 document-start 注入，page world，**只在主 frame 干活**。
 //
-// 治的是什么（按用户 6 张真机截图核实）：
-//   小聚合站/资源站在页面上**自己画的一层浮层**（全屏插屏图、赌博浮层、居中模态）。
-//   它们**没有独立的网络请求** → 域名黑名单/规则库在原理上拦不到，只能运行时清。
+// ★★★ v1.0.211 的统一模型（用户明确要求：几种模式的规则之间不能相互冲突）
 //
-// ★★ v1.0.210 这轮修的（真机实测「有误杀 → 整页灰掉」之后的改动）：
-//   1. **只在主 frame 干活**。原来注入覆盖 iframe（跟 sniffer 一致），但广告浮层几乎都
-//      在主 frame；而子 frame 也上报会**重复弹提示 / 把 host 记错**。（这是 209 的实 bug）
-//   2. **自动回滚**（最有价值的一条）：隐藏后 260ms 复核 —— 如果**视口中心点变成了空白**
-//      或者**页面高度骤降**，说明刚才藏的是正文/主容器 → **立刻原样还原**，并把该元素
-//      记进本页"坏元素"集合（不再碰它）、同时上报让原生把**这个站**加进例外。
-//      「隐藏」这个动作本身就可能出错，所以必须能自己发现并纠正。
-//   3. **本页豁免（SUSPEND）**：还原之后本页不再动手 —— 否则 3 秒定时器又把它藏回去。
-//   4. **等页面稳了再动手**：`readyState === 'complete'`，或者就绪满 5 秒（**必须有这条兜底**：
-//      长轮询/常驻 iframe 的站可能永远到不了 complete）。
-//   5. 新增排除：含 `main` / `article` / `[role=main]` 的判为**正文**，不动。
-//   6. 加载/遮罩类关键词（loading/mask/skeleton/preloader…）改**扣分**（不做绝对排除）。
+//   三个"清"的触发源 —— **各自独立，绝不共享"该清的触发理由"**：
+//     · 自动：自己打分 ≥ 8，定时器/MutationObserver 触发
+//     · A 强力：用户按按钮，**同一套打分把门槛降到 6** + 额外要求"盖住 ≥50% 视口"
+//     · B 点选：用户点击命中哪个就清哪个
 //
-// 设计取舍（沿用 209，经 DeepSeek 复核）：
-//   · **只隐藏、不移除**：remove() 会被站点自己的 MutationObserver 发现并重新插回来；
-//     这里用 display/visibility/pointer-events 三件套 + !important。
-//   · 判据**不用单一条件**（"fixed + 面积大"会大量误杀），用**多信号累计打分**。
+//   三者**只共享**这三样（共享才不会打架）：
+//     · 硬排除 `safeToTouch()` · 隐藏/还原 `applyHide()/unhideOne()` · 候选收集 `candidates()`
 //
-// 本脚本**做不到**的事（如实说明，别指望它）：
-//   · 画在 <canvas> 里的广告 → 无解（拿不到像素里的语义）
-//   · closed 模式的 Shadow DOM → 页面世界里够不到
-//   · 子 frame 里的浮层 → 现在只在主 frame 干活，管不到（换来的是"不会误报/误记"）
-//   · 「反反拦截」（站点检测到被隐藏就黑屏）→ 靠自动回滚 + 关总开关
+//   优先级（从高到低，命中即停）：
+//     ① 硬排除（含 video/audio/canvas、form、main/article、播放器祖先链）
+//        → 自动/强力：不清；**点选：不参与高亮**（点不到）→ 天然不冲突
+//     ② 本会话"坏元素" `el.__vgBad`（回滚过）
+//        → 自动/强力：跳过；**点选：也不高亮**（重载页面可清空这个标记，能再试）
+//     ③ 站点「不清理名单」→ 只约束**自动**；用户主动按 A/B 时**一次性放行**（不改名单）
+//     ④ 本页 SUSPEND（点过「撤销」）→ 只约束**自动**；手动仍可用
+//     ⑤ 门槛：自动 8 分 / 强力 6 分+大面积 / 点选 点击命中
+//     ⑥ 清完复核：自动 → 异常就还原 + **自动把该站加进"不清理名单"**；
+//                 手动（A/B）→ 异常只还原（**不加名单、不 SUSPEND**），弹条告知
+//
+//   ★ 为什么"手动的记录"不进自动/强力的判定链：那样手动状态会污染自动 ——
+//     用户点错 → 灰屏 → 撤销 → 标记还在 → 自动又清 → **反复灰屏**，安全网失效。
+//     所以手动只影响"点选模式下点得到什么"，不影响自动清什么。
+//
+//   做不到（如实说明）：画在 canvas 里的广告、closed Shadow DOM、子 frame 里的浮层
+//   （只主 frame 干活）、站点"反反拦截"。
 // ---------------------------------------------------------------------------
 (function () {
   'use strict';
@@ -39,33 +36,38 @@
   if (window.__vgCleanerInstalled) return;
   window.__vgCleanerInstalled = true;
 
-  // ★★ 只在主 frame 干活（见文件头第 1 条）。比较 window.top/window.self 跨域也安全
-  //   —— 只是比较引用，不读对方任何属性。
+  // ★ 只在主 frame 干活（比较引用，跨域安全）。子 frame 也上报会造成重复提示/串 host。
   if (window.top !== window.self) return;
 
   // ★ 注入时由原生替换这两行（同 sniffer.js 的 autoOn 手法）
   var MODE = 'on';
   var SKIP_HOSTS = [];
 
-  var ATTR = 'data-vg-blk';       // 打过这个标记 = 已被我们处理过
-  var MAX_HIDE = 40;              // 单页最多隐藏几个（防某条判据失灵时雪崩）
+  var ATTR = 'data-vg-blk';       // 已隐藏标记
+  var PICK_ATTR = 'data-vg-pick'; // 点选高亮标记
+  var MAX_HIDE = 40;
+  var THRESHOLD = 8;              // 自动门槛
+  var STRONG_THRESHOLD = 6;       // 强力门槛（同一套打分，只是更低）
+  var MAX_PICK = 80;              // 点选最多高亮几个
+
   var hiddenCount = 0;
   var rolledBack = 0;
-  var recent = [];                // 最近隐藏记录（纯数据，只给诊断回传）
+  var recent = [];
 
   var started = false, timer = null, moTimer = null, observer = null, lastSweep = 0;
-  var readyAt = 0;                // DOM 就绪的时刻（超时兜底用）
-  var SUSPEND = false;            // 本页豁免：点了「撤销」/发生过回滚 → 本页不再动手
+  var readyAt = 0;
+  var SUSPEND = false;            // 本页豁免（自动不再动手）
+  var PICK = false;               // 点选模式
+  var pickList = [];
+  var pickStart = null, lastPickAt = 0;
 
   function vw() { return window.innerWidth || document.documentElement.clientWidth || 0; }
   function vh() { return window.innerHeight || document.documentElement.clientHeight || 0; }
   function area(r) { return Math.max(0, r.width) * Math.max(0, r.height); }
   function clsOf(el) { var c = el.className; return (typeof c === 'string') ? c : ''; }
   function hostNow() { return location.host || ''; }
-
   function skipped() { return SKIP_HOSTS.indexOf(hostNow()) >= 0; }
 
-  // 给诊断用的短描述（**不含 DOM 引用**，必须能 JSON 序列化）
   function desc(el) {
     var t = (el.tagName || '').toLowerCase();
     var id = el.id ? ('#' + el.id) : '';
@@ -73,46 +75,45 @@
     return t + id + (c ? ('.' + c) : '');
   }
 
-  // ── 硬性排除：命中任一 → 绝不碰 ────────────────────────────────────────────
+  // ── ① 硬排除：命中任一 → 绝不碰（三个触发源共用同一份）─────────────────────
   function safeToTouch(el) {
     var tag = (el.tagName || '').toLowerCase();
     if (tag === 'html' || tag === 'body' || tag === 'head') return false;
     var id = el.id || '';
-    if (id.indexOf('vg-') === 0) return false;               // 我们自己的浮层
+    if (id.indexOf('vg-') === 0) return false;
     if (clsOf(el).indexOf('vg-') >= 0) return false;
-
-    // ★ 1) 保播放器：含媒体/画布的一律不动（误杀代价最高的一类）
-    if (el.querySelector && el.querySelector('video,audio,canvas')) return false;
-    // ★ 2) 保登录/表单：含 form 或超过 2 个输入控件（登录框、搜索面板）
-    if (el.querySelector && el.querySelector('form')) return false;
+    if (el.querySelector && el.querySelector('video,audio,canvas')) return false;   // 保播放器
+    if (el.querySelector && el.querySelector('form')) return false;                 // 保登录
     if (el.querySelectorAll && el.querySelectorAll('input,select,textarea').length > 2) return false;
-    // ★ 3) 保"正经面板"：链接/按钮很多的（选集抽屉、菜单、导航）不是广告浮层
-    if (el.querySelectorAll) {
+    if (el.querySelectorAll) {                                                     // 保正经面板
       if (el.querySelectorAll('a').length >= 6) return false;
       if (el.querySelectorAll('button').length >= 5) return false;
     }
-    // ★ 4) v1.0.210：含正文语义标签的 → 这是页面正文，不是浮层广告
-    if (el.querySelector && el.querySelector('main,article,[role="main"]')) return false;
-    // ★ 5) 正在播放的那个 video 的祖先链 → 不动（再保一层）
+    if (el.querySelector && el.querySelector('main,article,[role="main"]')) return false;  // 保正文
     var v = document.querySelector('video');
     if (v && (el === v || el.contains(v))) return false;
     return true;
   }
 
+  // 自动 / 强力 用的"已排除"判断（②③ 之外的部分）
   function excluded(el) {
     if (el.nodeType !== 1) return true;
-    if (el.hasAttribute && el.hasAttribute(ATTR)) return true;   // 已处理过
-    if (el.__vgBad) return true;                                 // 本页被判为"坏元素"
+    if (el.hasAttribute(ATTR)) return true;      // 已隐藏
+    if (el.__vgBad) return true;                 // 本会话坏元素 → 跳过
     return !safeToTouch(el);
   }
 
-  // 是不是"浮"在内容上的定位
-  function floating(cs) { return cs.position === 'fixed' || cs.position === 'sticky'; }
+  // 点选模式能不能点它（**同样的硬排除 + 坏元素不可点**）
+  function pickable(el) {
+    if (el.nodeType !== 1) return false;
+    if (el.hasAttribute(ATTR)) return false;     // 已经藏起来了
+    if (el.__vgBad) return false;                // 曾导致异常 → 不高亮（重载页面可再试）
+    return safeToTouch(el);
+  }
 
-  // 尺寸是否够大（粗筛）
+  function floating(cs) { return cs.position === 'fixed' || cs.position === 'sticky'; }
   function bigEnough(r) { return r.width >= vw() * 0.6 && r.height >= vh() * 0.3; }
 
-  // 加载/遮罩类关键词 → **扣分**（不做绝对排除：这类词也可能出现在广告上）
   var SHADE_WORDS = ['loading', 'mask', 'skeleton', 'preloader', 'spinner',
                      'waiting', 'placeholder', 'shade', 'cover-bg'];
   function shadePenalty(el) {
@@ -123,16 +124,15 @@
     return 0;
   }
 
-  // ── 打分：只有累计够高才认作广告浮层 ──────────────────────────────────────
+  // ── 打分（自动与强力**共用这一套**，只是门槛不同）──────────────────────────
   function score(el, cs, r) {
     var W = vw(), H = vh(), vArea = W * H;
     if (vArea <= 0) return 0;
     if (!floating(cs)) return 0;
     var s = 3;
-    if (area(r) >= vArea * 0.55) s += 3;                      // 盖住大半屏
+    if (area(r) >= vArea * 0.55) s += 3;
     var zi = parseInt(cs.zIndex, 10);
-    if (!isNaN(zi) && zi >= 1000) s += 2;                     // 广告层通常 z-index 极高
-    // 含一张"大图"（插屏广告基本都是图）
+    if (!isNaN(zi) && zi >= 1000) s += 2;
     if (el.querySelectorAll) {
       var imgs = el.querySelectorAll('img');
       for (var i = 0; i < imgs.length && i < 12; i++) {
@@ -143,8 +143,6 @@
     s += shadePenalty(el);
     return s;
   }
-
-  var THRESHOLD = 8;     // 满分 11（减去遮罩扣分）；8 分 = 至少"盖大半屏 + （高 z-index 或 大图）"
 
   function applyHide(el) {
     el.style.setProperty('display', 'none', 'important');
@@ -169,12 +167,14 @@
     try { return document.elementFromPoint(vw() / 2, vh() / 2); } catch (e) { return null; }
   }
 
-  // ── 隐藏 + **自动回滚复核**（v1.0.210 的核心安全网）───────────────────────
-  function hide(el, why) {
+  // ── ⑥ 隐藏 + 复核 ─────────────────────────────────────────────────────────
+  // manual = true（A 强力 / B 点选）：异常时**只还原**，不加站点名单、不 SUSPEND 整页。
+  // manual = false（自动）：异常时还原 + 上报，由原生把该站加进"不清理名单"。
+  function hide(el, why, manual) {
     if (el.hasAttribute(ATTR) || el.__vgBad) return false;
     var beforeSH = sh();
     var c0 = centerEl();
-    var centered = !!(c0 && (c0 === el || el.contains(c0)));   // 它盖着视口中心吗
+    var centered = !!(c0 && (c0 === el || el.contains(c0)));
     try { applyHide(el); } catch (e) { return false; }
 
     hiddenCount++;
@@ -183,24 +183,22 @@
 
     setTimeout(function () {
       try {
-        if (!el.hasAttribute(ATTR)) return;                  // 已被还原/被页面移走
+        if (!el.hasAttribute(ATTR)) return;
         var c1 = centerEl();
         var blank = (c1 === null || c1 === document.body || c1 === document.documentElement);
         var shrunk = (beforeSH > 400 && sh() < beforeSH * 0.6);
-        // 藏之前它盖着中心点，藏完中心点成了空白 → 它就是页面本身（或主容器）
         if ((centered && blank) || shrunk) {
           unhideOne(el);
-          el.__vgBad = true;                                 // 本页不再碰它
+          el.__vgBad = true;                       // 本会话不再碰它
           rolledBack++;
           hiddenCount = Math.max(0, hiddenCount - 1);
-          report('rollback');
+          report(manual ? 'softrollback' : 'rollback');
         }
       } catch (e) {}
     }, 260);
     return true;
   }
 
-  // 还原本页所有被隐藏的层（点「撤销」/ 关开关 都走它）
   function restoreAll() {
     var els;
     try { els = document.querySelectorAll('[' + ATTR + ']'); } catch (e) { return; }
@@ -209,7 +207,7 @@
     recent = [];
   }
 
-  // ── 候选收集：只走到第 4 层（浮层基本都在这个范围），避免遍历整页 ──────────
+  // ── 候选收集（三个触发源共用）──────────────────────────────────────────────
   function candidates() {
     var out = [];
     var body = document.body;
@@ -229,22 +227,24 @@
     return out;
   }
 
-  // ★ 动手的门槛：页面加载完，或者"就绪满 5 秒"（兜底 —— 有些站永远到不了 complete）
   function gateOpen() {
     if (document.readyState === 'complete') return true;
     return readyAt > 0 && (Date.now() - readyAt) > 5000;
   }
 
-  function sweep() {
-    if (MODE === 'off' || SUSPEND || skipped()) return 0;
+  // ── 扫描：strong = 用户按了"再清一遍"；force = 跳过 800ms 限流 ──────────────
+  function sweep(strong, force) {
+    if (MODE === 'off' || PICK) return 0;              // 点选模式下自动一律停手
+    if (SUSPEND || skipped()) return 0;
     if (document.visibilityState && document.visibilityState !== 'visible') return 0;
     if (!vw() || !vh()) return 0;
     if (!gateOpen()) return 0;
-    // ★ 最小间隔：整轮扫要调几百次 getBoundingClientRect（会触发布局），
-    //   DOM 抖得厉害时（MutationObserver 反复触发）必须限流。
     var now = Date.now();
-    if (now - lastSweep < 800) return 0;
+    if (!force && now - lastSweep < 800) return 0;
     lastSweep = now;
+
+    var thr = strong ? STRONG_THRESHOLD : THRESHOLD;
+    var vArea = vw() * vh();
     var list = candidates(), n = 0;
     for (var i = 0; i < list.length; i++) {
       if (hiddenCount >= MAX_HIDE) break;
@@ -252,39 +252,143 @@
       if (excluded(el)) continue;
       var r;
       try { r = el.getBoundingClientRect(); } catch (e) { continue; }
-      if (!bigEnough(r)) continue;                             // 便宜的先判：不够大就跳
+      if (!bigEnough(r)) continue;
+      if (strong && area(r) < vArea * 0.5) continue;   // 强力额外要求"盖住 ≥50% 视口"
       var cs;
       try { cs = getComputedStyle(el); } catch (e) { continue; }
       if (cs.display === 'none' || cs.visibility === 'hidden') continue;
       if (parseFloat(cs.opacity) < 0.05) continue;
-      if (score(el, cs, r) < THRESHOLD) continue;
-      if (hide(el, 'score')) n++;
+      if (score(el, cs, r) < thr) continue;
+      if (hide(el, strong ? 'strong' : 'score', !!strong)) n++;
     }
-    if (n) report('hid');
+    if (n) report(strong ? 'strong' : 'hid');
     return n;
   }
 
-  // ── 点击防护（**独立于上面的清理**，不依赖"已标记"）────────────────────────
-  // 治的是：「广告上的 X 点一下就跳走」。click 的 capture 阶段现场判断落点是否在
-  // 广告浮层里 → 是就把这次点击整个掐掉（站点的 click 处理不跑，跳转就不会执行）。
-  // ★ 只掐"落在浮层里的点击"，**不碰普通链接**（那种是正常导航）。
+  // ── B 点选：高亮 + 几何命中 ───────────────────────────────────────────────
+  function pickCandidates() {
+    var list = candidates(), out = [];
+    var vArea = vw() * vh();
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (!pickable(el)) continue;
+      var cs, r;
+      try { cs = getComputedStyle(el); r = el.getBoundingClientRect(); } catch (e) { continue; }
+      if (!floating(cs)) continue;
+      if (r.bottom < 0 || r.top > vh()) continue;          // 只取视口内的
+      var a = area(r);
+      if (a < vArea * 0.06) continue;                      // 太小的不算（导航条、按钮）
+      if (a > vArea * 1.5) continue;                       // 离谱的大（多半是 body 级容器）
+      out.push({ el: el, a: a });
+    }
+    out.sort(function (x, y) { return y.a - x.a; });
+    var res = [];
+    for (var j = 0; j < out.length && j < MAX_PICK; j++) res.push(out[j].el);
+    return res;
+  }
+
+  function paintOutlines() {
+    for (var i = 0; i < pickList.length; i++) {
+      var el = pickList[i];
+      try {
+        el.setAttribute(PICK_ATTR, '1');
+        el.style.setProperty('outline', '2px solid #ff3b30', 'important');
+        el.style.setProperty('outline-offset', '-2px', 'important');
+      } catch (e) {}
+    }
+  }
+
+  function clearOutlines() {
+    for (var i = 0; i < pickList.length; i++) {
+      var el = pickList[i];
+      try {
+        el.removeAttribute(PICK_ATTR);
+        el.style.removeProperty('outline');
+        el.style.removeProperty('outline-offset');
+      } catch (e) {}
+    }
+    pickList = [];
+  }
+
+  function repaintPick() {
+    clearOutlines();
+    pickList = pickCandidates();
+    paintOutlines();
+  }
+
+  // 几何命中（不靠 elementFromPoint —— 它对 pointer-events:none 的遮罩不靠谱）。
+  // 命中多个时**取面积最大的那个**（= 最外层的浮层根，清了整层就干净）。
+  function hitTest(x, y) {
+    var best = null, bestA = 0;
+    for (var i = 0; i < pickList.length; i++) {
+      var el = pickList[i];
+      if (!el.isConnected) continue;
+      var r;
+      try { r = el.getBoundingClientRect(); } catch (e) { continue; }
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        var a = area(r);
+        if (a > bestA) { bestA = a; best = el; }
+      }
+    }
+    return best;
+  }
+
+  function pickAct(x, y) {
+    lastPickAt = Date.now();
+    var el = hitTest(x, y);
+    if (!el) return;
+    hide(el, 'pick', true);          // 手动：异常只还原，不加站点名单
+    repaintPick();
+    report('pick');
+  }
+
+  // ── 统一的点击入口：**点选优先**，其次点击防护 ─────────────────────────────
+  // ★ 顺序很要紧：不先判点选的话，点选的点击会被点击防护先 preventDefault 掉，选不中。
   function onDocClick(e) {
-    if (MODE === 'off' || SUSPEND || skipped()) return;
+    if (MODE === 'off') return;
+    if (PICK) {
+      // touchend 已经处理过 → 400ms 内去重
+      if (Date.now() - lastPickAt < 400) { swallow(e); return; }
+      var x = (e.clientX || 0), y = (e.clientY || 0);
+      swallow(e);                    // 点选模式下把所有点击都吞掉（免得误跳转）
+      pickAct(x, y);
+      return;
+    }
+    if (SUSPEND || skipped()) return;
+    // ── 点击防护：治"点广告的 X 反而跳走" ──
     var t = e.target;
     if (!t || !t.closest) return;
-    if (t.closest('[' + ATTR + ']')) { swallow(e); return; }   // 已隐藏的（理论上点不到）
+    if (t.closest('[' + ATTR + ']')) { swallow(e); return; }
     var el = t, hops = 0;
     while (el && el !== document.body && hops < 6) {
-      if (el.__vgBad) return;                                  // 判定过是正文 → 放行
+      if (el.__vgBad) return;
       var r, cs;
       try { r = el.getBoundingClientRect(); cs = getComputedStyle(el); } catch (err) { break; }
       if (floating(cs) && bigEnough(r) && safeToTouch(el)) {
         swallow(e);
-        if (hide(el, 'click')) report('hid');     // 顺手清掉，下次不用再拦
+        if (hide(el, 'click', false)) report('hid');
         return;
       }
       el = el.parentElement; hops++;
     }
+  }
+
+  // 点选模式：iOS 上跳转常常发生在 touchend（不只是 click）
+  function onTouchStart(e) {
+    if (!PICK) return;
+    var t = e.changedTouches && e.changedTouches[0];
+    if (t) pickStart = { x: t.clientX, y: t.clientY };
+  }
+  function onTouchEnd(e) {
+    if (!PICK || MODE === 'off') return;
+    var t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    var st = pickStart;
+    pickStart = null;
+    // 位移 > 10px 当作滚动，放行（不影响滚动）
+    if (st && (Math.abs(t.clientX - st.x) > 10 || Math.abs(t.clientY - st.y) > 10)) return;
+    swallow(e);
+    pickAct(t.clientX, t.clientY);
   }
 
   function swallow(e) {
@@ -295,7 +399,6 @@
     } catch (err) {}
   }
 
-  // ── 回传原生（逃生门 + 诊断）──────────────────────────────────────────────
   function report(type) {
     try {
       var h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.vgClean;
@@ -314,23 +417,27 @@
   function start() {
     if (started || skipped() || MODE === 'off') return;
     started = true;
-    try { document.addEventListener('click', onDocClick, true); } catch (e) {}
+    try {
+      document.addEventListener('click', onDocClick, true);
+      document.addEventListener('touchstart', onTouchStart, true);
+      document.addEventListener('touchend', onTouchEnd, true);
+    } catch (e) {}
     try {
       observer = new MutationObserver(function () {
-        if (moTimer) return;
-        moTimer = setTimeout(function () { moTimer = null; sweep(); }, 500);
+        if (moTimer || PICK) return;
+        moTimer = setTimeout(function () { moTimer = null; sweep(false, false); }, 500);
       });
       observer.observe(document.documentElement || document, { childList: true, subtree: true });
     } catch (e) {}
-    timer = setInterval(sweep, 3000);
+    timer = setInterval(function () { sweep(false, false); }, 3000);
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', function () {
         if (!readyAt) readyAt = Date.now();
-        sweep();
+        sweep(false, false);
       });
     } else {
       if (!readyAt) readyAt = Date.now();
-      setTimeout(sweep, 0);
+      setTimeout(function () { sweep(false, false); }, 0);
     }
   }
 
@@ -338,36 +445,58 @@
     if (timer) { clearInterval(timer); timer = null; }
     if (moTimer) { clearTimeout(moTimer); moTimer = null; }
     if (observer) { try { observer.disconnect(); } catch (e) {} observer = null; }
-    try { document.removeEventListener('click', onDocClick, true); } catch (e) {}
+    try {
+      document.removeEventListener('click', onDocClick, true);
+      document.removeEventListener('touchstart', onTouchStart, true);
+      document.removeEventListener('touchend', onTouchEnd, true);
+    } catch (e) {}
     started = false;
   }
 
   // ── 暴露给原生 ────────────────────────────────────────────────────────────
   window.__vgCleanSet = function (mode) {
     MODE = (mode === 'off') ? 'off' : 'on';
-    if (MODE === 'off') { stop(); restoreAll(); } else { SUSPEND = false; start(); sweep(); }
+    if (MODE === 'off') { stop(); clearOutlines(); PICK = false; restoreAll(); }
+    else { SUSPEND = false; start(); sweep(false, true); }
     return MODE;
   };
-  window.__vgCleanNow = function () { return sweep(); };
+  window.__vgCleanNow = function () { return sweep(false, true); };
 
-  /// ★ 本页豁免：还原本页 + 本页不再动手（否则 3 秒后又藏回去）
+  /// ★ A 强力：用户按了「再清一遍」。同一套打分，门槛降到 6 + 要求盖住 ≥50% 视口。
+  ///   **只本次生效**（不持久）—— 持久会跟"不清理名单"打架（站在名单里自动本来就不跑）。
+  window.__vgCleanStrong = function () { return sweep(true, true); };
+
+  /// ★ B 点选：进去之后点哪个清哪个
+  window.__vgPickMode = function (on) {
+    PICK = !!on;
+    if (PICK) {
+      repaintPick();
+      report('pickstart');
+    } else {
+      clearOutlines();
+      sweep(false, true);
+    }
+    return PICK;
+  };
+  window.__vgPickCount = function () { return pickList.length; };
+
   window.__vgCleanRestore = function () {
     SUSPEND = true;
     restoreAll();
     return 'restored';
   };
 
-  /// ★ 例外名单（原生改了名单后调它，不用刷新）
   window.__vgCleanSetSkip = function (list) {
     SKIP_HOSTS = (list && list.length) ? list : [];
     if (skipped()) { stop(); restoreAll(); }
-    else if (!started && MODE !== 'off') { start(); sweep(); }
+    else if (!started && MODE !== 'off') { start(); sweep(false, true); }
     return SKIP_HOSTS.length;
   };
 
   window.__vgCleanStats = function () {
-    return { mode: MODE, suspended: SUSPEND, hidden: hiddenCount,
-             rolled: rolledBack, skip: SKIP_HOSTS.length, recent: recent.slice(-10) };
+    return { mode: MODE, suspended: SUSPEND, pick: PICK, pickCount: pickList.length,
+             hidden: hiddenCount, rolled: rolledBack, skip: SKIP_HOSTS.length,
+             recent: recent.slice(-10) };
   };
 
   if (document.readyState !== 'loading') readyAt = Date.now();

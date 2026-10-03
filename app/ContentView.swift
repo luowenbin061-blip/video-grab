@@ -1240,7 +1240,7 @@ struct ContentView: View {
     @ViewBuilder private var adCleanBanner: some View {
         if let n = model.adCleanNotice {
             HStack(spacing: 10) {
-                Image(systemName: "eye.slash")
+                Image(systemName: n.kind == "pick" ? "hand.point.up.left" : "eye.slash")
                     .font(.system(size: 13))
                     .foregroundStyle(.yellow)
                 Text(n.text)
@@ -1254,9 +1254,12 @@ struct ContentView: View {
                 Button(n.actionTitle) { model.adCleanMainAction() }
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.yellow)
-                Button("知道了") { model.dismissAdCleanNotice() }
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.white.opacity(0.85))
+                // 点选模式那条只留「完成」—— 再给个"知道了"会跟它撞意（都是退出）
+                if n.kind != "pick" {
+                    Button("知道了") { model.dismissAdCleanNotice() }
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
