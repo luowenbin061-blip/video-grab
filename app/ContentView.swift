@@ -469,9 +469,6 @@ struct ContentView: View {
         .overlay(alignment: .top) { toastView }
         // 诊断条：放在顶部（原来在底部，正好压着视频的画面区）。只在诊断开关打开时出现
         .overlay(alignment: .top) { lpDebugBanner }
-        // ★ v1.0.210 广告清理的逃生门：清理器动了手（或自己发现误清并还原）时出现。
-        //   挂在最外层 —— 页面整片灰掉时它必须还看得见，那是唯一的出口。
-        .overlay(alignment: .top) { adCleanBanner }
         // 长按视频的菜单（自绘，照截图：预览卡 + 标题行 + Download 行）
         .overlay {
             if let info = model.lpMenu {
@@ -1229,45 +1226,6 @@ struct ContentView: View {
                 .padding(.top, 116)
                 .onTapGesture { model.dismissLPDebug() }
                 .transition(.opacity)
-        }
-    }
-
-    /// ★ v1.0.210 广告清理的「逃生门」。
-    ///
-    /// 为什么必须有它：清理器偶尔会把"长得像广告浮层"的**正文容器**一起清掉 →
-    /// 页面整片灰掉、打不开。这条就是那种时刻**唯一的出口**。
-    /// 两种情形共用：① 正常隐藏了浮层 →「撤销」；② 发现误清并已自动还原 →「重新启用」。
-    @ViewBuilder private var adCleanBanner: some View {
-        if let n = model.adCleanNotice {
-            HStack(spacing: 10) {
-                Image(systemName: n.kind == "pick" ? "hand.point.up.left" : "eye.slash")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.yellow)
-                Text(n.text)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // ★ 不用 Spacer 把按钮顶到右边（本工程铁律：Spacer 会跟 Text 平分宽度
-                    //   → 文字被压窄截断）。改成"让文字吃掉剩余宽度、左对齐"。
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button(n.actionTitle) { model.adCleanMainAction() }
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.yellow)
-                // 点选模式那条只留「完成」—— 再给个"知道了"会跟它撞意（都是退出）
-                if n.kind != "pick" {
-                    Button("知道了") { model.dismissAdCleanNotice() }
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.black.opacity(0.86),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .padding(.horizontal, 8)
-            .padding(.top, 108)
-            .transition(.opacity)
         }
     }
 

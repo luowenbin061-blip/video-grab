@@ -199,25 +199,6 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 进度 / 暂停 / 分类 / 存文件夹 全部复用。
     var onFileDownload: ((FileDownloadRequest) -> Void)?
     @Published var toast: String?
-    /// ★ v1.0.210 广告清理的「逃生门」提示（页面顶部那条，带一个动作按钮）。
-    ///
-    /// ★ 为什么不 8 秒就消失：清理器误清了正文时页面会**整片灰掉** ——
-    ///   那正是最需要这条的时候，一闪而过就等于没有出口。所以给 15 秒，
-    ///   而且设置页里还留了一份**常驻**兜底（「本页恢复被隐藏的层」）。
-    @Published var adCleanNotice: AdCleanNotice?
-
-    struct AdCleanNotice: Equatable {
-        var host: String
-        var text: String
-        var actionTitle: String
-        /// ★ v1.0.211：这条提示属于哪种情形 —— 决定"按那个按钮做什么"，以及要不要自动消失。
-        ///   "hid"（自动清了东西）/ "strong"（强力再清了一遍）/ "pick"（点选进行中）/
-        ///   "rollback"（自动误清、已还原）/ "softrollback"（手动误清、已还原）
-        var kind: String = "hid"
-        /// 手动操作（强力 / 点选）产生的提示**不自动消失** —— 那是用户正在进行的动作，
-        /// 不能让他正选着选着提示自己没了。
-        var sticky: Bool = false
-    }
     @Published var mseSeen = false
     @Published var hint: String?
     /// 列表最后一次刷新时间（面板上显示，让用户知道数据新不新）
@@ -418,29 +399,14 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 网页广告清理脚本的注入源。
     ///
-    /// ★ 跟 sniffer 同一个手法：把脚本里那两行换成当前的值（开关 / 例外名单）。
-    ///   这样**新开的标签在注入时就带上正确的值**；老标签由
-    ///   `applyAdCleanSetting()` / `applyAdCleanSkipList()` 在运行时通知。
+    /// ★ 跟 sniffer 同一个手法：把脚本里那一行 `var MODE = 'on';` 换成当前的开关值。
+    ///   这样**新开的标签在注入时就带上正确的值**，老标签由
+    ///   `applyAdCleanSetting()` 在运行时用 `__vgCleanSet` 通知。
     static func cleanerSource(on: Bool) -> String {
-        var s = rawCleanerSource
-        let mLine = "var MODE = 'on';"
-        if s.contains(mLine) {
-            s = s.replacingOccurrences(of: mLine, with: "var MODE = '\(on ? "on" : "off")';")
-        }
-        // 例外名单以 JSON 数组注进去（[String] 一定序列化得出来，失败就留空 = 不例外）
-        let kLine = "var SKIP_HOSTS = [];"
-        if s.contains(kLine),
-           let d = try? JSONSerialization.data(withJSONObject: AdClean.skipHosts),
-           let j = String(data: d, encoding: .utf8) {
-            s = s.replacingOccurrences(of: kLine, with: "var SKIP_HOSTS = \(j);")
-        }
-        // ★ v1.0.212：把你「点选保存过」的规则也一起注进去 —— 这样刷新后在**渲染之前**
-        //   那段 CSS 就生效了（而不是先画出来再藏）。这是"刷新后不再出现"的关键。
-        let sLine = "var SAVED = {};"
-        if s.contains(sLine) {
-            s = s.replacingOccurrences(of: sLine, with: "var SAVED = \(AdClean.savedRulesJSON);")
-        }
-        return s
+        let s = rawCleanerSource
+        let line = "var MODE = 'on';"
+        guard s.contains(line) else { return s }   // 脚本没这行 → 原样注入
+        return s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
     }
 
     /// 建一个「裸」的 WebView（不登记成标签）。
@@ -1448,183 +1414,6 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
-    /// 例外名单变了 → 通知所有已建页面（不用刷新）。
-    /// 进名单的页面会**立刻停手 + 还原**（见 cleaner.js 的 `__vgCleanSetSkip`）。
-    func applyAdCleanSkipList() {
-        let json = (try? JSONSerialization.data(withJSONObject: AdClean.skipHosts))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        let js = "window.__vgCleanSetSkip ? window.__vgCleanSetSkip(\(json)) : 0"
-        for t in tabs {
-            guard let wv = t.webView else { continue }
-            wv.evaluateJavaScript(js) { _, _ in }
-        }
-    }
-
-    /// 保存的规则变了 → 推给所有已建页面（不用刷新）。
-    func applyAdCleanSavedRules() {
-        let js = "window.__vgSetSaved ? window.__vgSetSaved(\(AdClean.savedRulesJSON)) : 0"
-        for t in tabs {
-            guard let wv = t.webView else { continue }
-            wv.evaluateJavaScript(js) { _, _ in }
-        }
-    }
-
-    /// ★ 设置页：一键清空"不清理的网站"名单 ——
-    ///   用来救**被旧版本（210/211）自动塞满**的那份名单。
-    func clearAdCleanSkipList() {
-        AdClean.clearAllSkip()
-        applyAdCleanSkipList()
-        showToast("已清空「不清理的网站」名单")
-    }
-
-    func clearAdCleanRules(for host: String) {
-        AdClean.removeRules(for: host)
-        applyAdCleanSavedRules()
-        showToast("已清除 \(host) 的保存规则（刷新后生效）")
-    }
-
-    func clearAllAdCleanRules() {
-        AdClean.clearAllRules()
-        applyAdCleanSavedRules()
-        showToast("已清空全部保存的清理规则")
-    }
-
-    /// ★ 设置页常驻兜底：还原本页被隐藏的层（不需要等那条提示）。
-    func restoreAdCleanOnThisPage() {
-        webView?.evaluateJavaScript("window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
-        showToast("已还原这页被隐藏的层")
-    }
-
-    // MARK: - 广告清理的逃生门
-
-    /// 网页层上报：要么"我隐藏了 N 个浮层"，要么"我误清了、已经自己还原了"。
-    private func handleAdCleanReport(_ body: Any) {
-        guard let d = body as? [String: Any] else { return }
-        let type = (d["type"] as? String) ?? "hid"
-        let host = (d["host"] as? String) ?? ""
-        let n = (d["n"] as? Int) ?? 0
-
-        switch type {
-        case "save":
-            // ★ 点选保存：规则落盘（下次刷新时**在渲染前**就被那段 CSS 隐藏），
-            //   并回推给所有已建页面。
-            guard let rule = d["rule"] as? [String: Any] else { return }
-            AdClean.addRule(host: host, rule: rule)
-            applyAdCleanSavedRules()
-
-        case "rollback":
-            // ★★ v1.0.212：**不再把整个网站拉黑** —— 那正是"越用越差"的根源
-            //   （自检偶尔误判一次就把整站永久判死，还把当页已藏的放回来）。
-            //   现在脚本只**单独还原那一个元素**，原生这边只告诉用户一声。
-            showAdCleanNotice(AdCleanNotice(
-                host: host,
-                text: "刚才有一层像是正文，已单独还原它",
-                actionTitle: "知道了", kind: "rollback"))
-
-        case "softrollback":
-            showAdCleanNotice(AdCleanNotice(
-                host: host,
-                text: "刚清的那层像是正文，已还原",
-                actionTitle: "知道了", kind: "softrollback"))
-
-        case "pickstart":
-            showAdCleanNotice(AdCleanNotice(
-                host: host,
-                text: "点选清理：点你要删的那一层（含播放器/登录框的层不能选）",
-                actionTitle: "完成", kind: "pick", sticky: true))
-
-        case "pick":
-            let depth = (d["depth"] as? Int) ?? 0
-            let total = (d["total"] as? Int) ?? 1
-            showAdCleanNotice(AdCleanNotice(
-                host: host,
-                text: "已删掉第 \(depth + 1) 层（共 \(total) 层）并已保存 · 再点同处换下一层，或按「完成」",
-                actionTitle: "完成", kind: "pick", sticky: true))
-
-        case "pickmiss":
-            showAdCleanNotice(AdCleanNotice(
-                host: host,
-                text: "这一点上没有可以删的层（含播放器/登录框的层不给删）",
-                actionTitle: "完成", kind: "pick", sticky: true))
-
-        case "strong":
-            showAdCleanNotice(AdCleanNotice(
-                host: host,
-                text: "又清掉 \(n) 层", actionTitle: "撤销", kind: "strong", sticky: true))
-
-        default:            // "hid"
-            guard n > 0, !host.isEmpty else { return }
-            showAdCleanNotice(AdCleanNotice(host: host,
-                                            text: "已隐藏 \(n) 个浮层",
-                                            actionTitle: "撤销", kind: "hid"))
-        }
-    }
-
-    private func showAdCleanNotice(_ n: AdCleanNotice) {
-        adCleanNotice = n
-        guard !n.sticky else { return }          // 手动操作 → 不自动消失
-        let host = n.host
-        Task {
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            if self.adCleanNotice?.host == host { self.adCleanNotice = nil }
-        }
-    }
-
-    func dismissAdCleanNotice() {
-        // 点「知道了」时如果正在点选，顺带退出点选模式（否则网页层还停在选择态）
-        if adCleanNotice?.kind == "pick" { adCleanSetPick(false); return }
-        adCleanNotice = nil
-    }
-
-    /// 逃生门上那个按钮：按提示的类型决定做什么。
-    func adCleanMainAction() {
-        guard let n = adCleanNotice else { return }
-        switch n.kind {
-        case "pick":
-            adCleanSetPick(false)                 // 它会一起把提示条收掉
-            showToast("点选清理已结束")
-        case "rollback", "softrollback":
-            adCleanNotice = nil                   // 「知道了」，无需其它动作
-        default:                                   // "hid" / "strong"
-            webView?.evaluateJavaScript(
-                "window.__vgCleanRestore ? window.__vgCleanRestore() : 0") { _, _ in }
-            adCleanNotice = nil
-            showToast("已还原这页被隐藏的层")
-        }
-    }
-
-    // MARK: - 手动清理（A 强力 / B 点选）
-
-    /// ★ A：用户按了「再清一遍」。
-    ///
-    /// 用的是**同一套判据、只是门槛放宽**（8 分 → 6 分，且额外要求盖住 ≥50% 视口）——
-    /// 同一套规则的两个档位，所以它跟自动模式**天然不冲突**。
-    /// **只本次生效**（不持久）：持久会跟"不清理名单"打架 —— 站在名单里自动本来就不跑，
-    /// 那个"强力站"标记就永远用不上，是个死状态。
-    func adCleanStrongPass() {
-        webView?.evaluateJavaScript(
-            "window.__vgCleanStrong ? window.__vgCleanStrong() : 0") { res, _ in
-            Task { @MainActor in
-                // 清到了就由脚本上报弹提示条；一个都没清到才需要自己说一句
-                if ((res as? Int) ?? 0) == 0 { self.showToast("没找到更多能清的浮层") }
-            }
-        }
-    }
-
-    /// 点选模式进行中（工具箱那格显示绿点用）。真正的状态在网页层。
-    @Published var adCleanPicking = false
-
-    /// ★ B：进出点选模式。进去之后网页层会高亮候选，点哪个清哪个。
-    func adCleanSetPick(_ on: Bool) {
-        adCleanPicking = on
-        webView?.evaluateJavaScript(
-            "window.__vgPickMode ? window.__vgPickMode(\(on ? "true" : "false")) : 0") { _, _ in }
-        if !on {
-            adCleanNotice = nil
-            showToast("点选清理已结束")
-        }
-    }
-
     /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
     ///
     /// ★ 为什么加 seconds（v1.0.88）：证书那条提示有 18 个字，1.8 秒根本读不完，
@@ -2158,15 +1947,7 @@ extension BrowserModel: WKScriptMessageHandler {
         // ★ v1.0.209：广告清理的诊断回传走另一条通道 —— 直接记档、**不进嗅探那套流程**
         //   （不然它会被当成嗅探结果喂给 ingest，把下载列表搞脏）。
         if message.name == "vgClean" {
-            let src = message.webView
-            let body = message.body
-            AdClean.record(body)          // 诊断日志照记（不管哪个 frame 来的）
-            Task { @MainActor in
-                // ★ 逃生门只针对**当前正在看的那一页** —— 后台标签别弹提示来打扰。
-                //   （脚本那边已经限制"只有主 frame 会上报"，这里再按标签认领一次。）
-                guard let wv = src, let t = self.tab(for: wv), t === self.currentTab else { return }
-                self.handleAdCleanReport(body)
-            }
+            AdClean.record(message.body)
             return
         }
         guard let body = message.body as? [String: Any] else { return }
@@ -2431,12 +2212,6 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
             self.loadTimeoutTask?.cancel()
             if t === self.currentTab {
-                // ★ v1.0.211：换页/刷新之后，网页层的"点选模式"已经不存在了 ——
-                //   把提示条和那个绿点一起收掉，免得界面上的状态跟页面对不上。
-                if self.adCleanPicking {
-                    self.adCleanPicking = false
-                    if self.adCleanNotice?.kind == "pick" { self.adCleanNotice = nil }
-                }
                 self.isLoading = false
                 self.pageTitle = t.title
                 self.address = t.address

@@ -250,18 +250,11 @@ struct SettingsView: View {
                 Section {
                     Toggle("网页广告清理", isOn: $adClean)
                         .onChange(of: adClean) { _ in model.applyAdCleanSetting() }
-                    Button("本页恢复被隐藏的层") { model.restoreAdCleanOnThisPage() }
                 } header: {
                     Text("网页广告清理")
                 } footer: {
-                    Text("清掉盖在页面上的浮层广告（插屏大图、赌场浮层这种），并拦住「点它的 X 反而跳走」。\n\n**只隐藏、不删原样** —— 关掉开关会立刻还原。\n\n万一某页被误清了（缺一块 / 整片灰）：页面顶部会出一条提示、点「撤销」就行；没看到那条就用上面这个按钮。\n\n**不会再自动把网站拉黑了** —— 旧版本会，那正是「某些站突然不清理了」的根源。\n\n做不到的：画成图片/画布里的广告、跨域子窗口里的广告。")
+                    Text("清掉盖在页面上的那层浮层广告（插屏大图、赌场浮层这种），并拦住「点它的 X 反而跳走」。\n\n**只隐藏、不删原样** —— 关掉开关会立刻还原。\n\n**默认开**。万一某个网站被误清了（页面缺一块、放不出来），把这里关掉再刷新一下就好。\n\n做不到的：画成图片/画布里的广告、藏在跨域子页面里的广告。")
                 }
-
-                // 例外名单单独一个小 View（见文件末尾 AdCleanSkipList）—— 它自己管刷新，
-                // 不用在这里找 Form 的收尾括号去挂 onAppear。
-                AdCleanSkipList(model: model)
-                // ★ v1.0.212：「点选清理」保存下来的规则（保存错了要能自己清掉）
-                AdCleanRuleList(model: model)
 
                 Section {
                     Toggle("长按视频弹下载菜单", isOn: $lpDownload)
@@ -420,98 +413,5 @@ struct SettingsView: View {
     private static var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         return v
-    }
-}
-
-/// 「不清理的网站」名单（设置页里那一节）。
-///
-/// ★ 为什么单独拎出来：`AdClean.skipHosts` 读的是 UserDefaults，**不是 SwiftUI 状态** ——
-///   删掉一条之后列表不会自己重画。所以要拿 `@State` 抄一份、在 `onAppear` 里刷新。
-///   单独一个 View 就能把 `onAppear` 挂在自己身上，不用去改主设置页 Form 的结构。
-private struct AdCleanSkipList: View {
-
-    @ObservedObject var model: BrowserModel
-    @State private var hosts: [String] = AdClean.skipHosts
-
-    var body: some View {
-        if hosts.isEmpty {
-            EmptyView()
-        } else {
-            Section {
-                ForEach(hosts, id: \.self) { h in
-                    HStack {
-                        Text(h).font(.system(size: 13))
-                        Spacer()
-                        Button("恢复清理") {
-                            AdClean.removeSkip(h)
-                            model.applyAdCleanSkipList()
-                            hosts = AdClean.skipHosts
-                            model.showToast("已恢复清理：\(h)")
-                        }
-                        .font(.system(size: 13))
-                    }
-                }
-                // ★ v1.0.212：一键清空 —— 专门用来救**被旧版本自动塞满**的名单
-                Button("清空这份名单（\(hosts.count) 个）") {
-                    model.clearAdCleanSkipList()
-                    hosts = AdClean.skipHosts
-                }
-                .font(.system(size: 13))
-                .foregroundStyle(.red)
-            } header: {
-                Text("不做自动清理的网站（\(hosts.count) 个）")
-            } footer: {
-                Text("这些网站不会**自动**清理（你手动用「清理浮层」还是可以的）。\n\n**如果里面有一堆你没加过的站，那就是旧版本自动塞进去的** —— 点上面那个红色按钮一次清掉，问题就没了。")
-            }
-            .onAppear { hosts = AdClean.skipHosts }
-        }
-    }
-}
-
-/// 「点选清理保存下来的规则」管理（设置页里那一节）。
-///
-/// ★ 这是"点选保存"带来的责任：保存错了得能自己清掉，否则那个站会一直缺一块。
-private struct AdCleanRuleList: View {
-
-    @ObservedObject var model: BrowserModel
-    @State private var hosts: [String] = AdClean.ruleHosts
-
-    private func refresh() { hosts = AdClean.ruleHosts }
-
-    var body: some View {
-        if hosts.isEmpty {
-            EmptyView()
-        } else {
-            Section {
-                ForEach(hosts, id: \.self) { h in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(h).font(.system(size: 13))
-                            Text("\((AdClean.savedRules[h] ?? []).count) 条规则")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("清除") {
-                            model.clearAdCleanRules(for: h)
-                            refresh()
-                        }
-                        .font(.system(size: 13))
-                        .foregroundStyle(.red)
-                    }
-                }
-                Button("全部清空（\(hosts.count) 个网站）") {
-                    model.clearAllAdCleanRules()
-                    refresh()
-                }
-                .font(.system(size: 13))
-                .foregroundStyle(.red)
-            } header: {
-                Text("点选清理保存的规则（\(hosts.count) 个网站）")
-            } footer: {
-                Text("这些是你**用「点选清理」亲手删过**的东西 —— 刷新页面时它们会在**画出来之前**就被隐藏。\n\n如果某页因此缺了一块，在这里把那个站「清除」掉就好。")
-            }
-            .onAppear { refresh() }
-        }
     }
 }

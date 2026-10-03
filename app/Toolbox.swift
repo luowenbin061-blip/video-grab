@@ -40,9 +40,6 @@ struct ToolboxView: View {
     @State private var showCompress = false
     /// ★ v1.0.171：「合并视频」那张卡
     @State private var showMerge = false
-
-    /// ★ v1.0.211：清理浮层（自动清理漏掉的，手动补）—— 一个入口、弹一张卡放两个动作。
-    @State private var showAdClean = false
     /// ★ 合并队列（单例）—— 这格用它显示“还有几个在合”的小角标；
     ///   跟“压画质”那格一个套路（关掉卡片任务仍在跑）。
     @ObservedObject private var mergeQueue = MergeQueue.shared
@@ -122,14 +119,6 @@ struct ToolboxView: View {
                          badge: mergeQueue.badgeCount) {
                         showMerge = true
                     }
-
-                    // ★★ v1.0.211：清理浮层 —— 自动清理**漏掉的**，手动补一把。
-                    //   一个入口、弹一张卡放两个动作（照这个工程一贯的"一级入口 + 卡片"）。
-                    //   绿点 = 正在点选模式（那个模式下页面必须让你能看见状态）。
-                    cell("wand.and.stars", "清理浮层", .brown,
-                         isOn: model.adCleanPicking) {
-                        showAdClean = true
-                    }
                 }
                 .padding(16)
 
@@ -174,17 +163,6 @@ struct ToolboxView: View {
             } message: {
                 // ★ 必须是**单个字面量**：Text(拼接出来的 String) 不渲染 markdown，会露出 **
                 Text("打包：书签、下载记录、首页入口、播放进度、已放行网站、设置。**不含 Cookie**（登录态不外带）。\n恢复前会自动把当前数据另存一份，能回滚。")
-            }
-            // ★★ v1.0.211：清理浮层 —— 自动清理**漏掉的**，这里手动补。
-            //   两个动作走的是**同一套判据**（强力 = 门槛从 8 分降到 6 分），
-            //   所以它们跟自动模式天然不冲突（只是同一个规则的两个档位）。
-            .confirmationDialog("清理浮层", isPresented: $showAdClean,
-                                titleVisibility: .visible) {
-                Button("再清一遍（强力）") { model.adCleanStrongPass() }
-                Button("点选清理（我指哪清哪）") { model.adCleanSetPick(true) }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("**再清一遍**：把门槛放低再扫一遍 —— 连「小号的可关闭悬浮按钮」一起清，只对这一次有效。\n**点选清理**：点你要删的那一层。**点一下 = 手指下最里面那一层；再点同一处 = 往外扩一层**，直到选中你要的。选中后**会自动保存**，以后刷新它不会再出现。点完按页面顶部的「完成」退出。\n\n两种都是**只隐藏、不真删**；含播放器 / 登录框的层不给动。\n保存错了不要紧：设置 → 网页广告清理 →「点选清理保存的规则」里能清掉。")
             }
             // ★ v1.0.171：合并视频
             .sheet(isPresented: $showMerge) {
