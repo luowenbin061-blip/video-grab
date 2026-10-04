@@ -48,6 +48,12 @@
   //   关着的时候：下面那些 hook **照旧装**（抓请求的能力不能丢 —— 一闪而过的
   //   m3u8 全靠它），但**不**反复扫页面、**不**自动上报。用户点开「嗅探结果」
   //   面板时，原生会调 __vgScan() 手动扫一次（那才是"需要的时候"）。
+  // ★ v1.0.214：页面视频清单（给地址栏左侧的「窗口」按钮用）。
+  //   独立于 autoOn —— 那个开关默认是关的，而按钮要始终能用。
+  //   只扫 <video>，不碰网络请求，所以不改变"自动嗅探"的语义。
+  var pageVids = [];
+  var vidTimer = null, vidLastAt = 0, vidObserver = null;
+
   var autoOn = false;
   var booted = false;      // 首扫只做一次
 
@@ -295,6 +301,98 @@
             if (s) add(s, 'dom-source');
           }
         } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  // ---------- 6c. 页面视频清单（v1.0.214 新增） ----------
+  // ★ 这一块**独立于 autoOn**：那个开关默认是关的，而「窗口」按钮要始终能用。
+  //   只扫 <video>（很轻），只上报"有没有、像不像正片"的线索，不碰网络请求。
+  //   原生侧拿到这些线索后**自己算置信度**（谁更可能是正片），JS 这边不做判断。
+  function scanVideos() {
+    var out = [];
+    try {
+      var list = document.querySelectorAll('video');
+      var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+      var vArea = vw * vh;
+      if (!vArea) return 0;
+      for (var i = 0; i < list.length && i < 12; i++) {
+        var v = list[i], r = null;
+        try { r = v.getBoundingClientRect(); } catch (e) { continue; }
+        if (!r || r.width < 80 || r.height < 45) continue;   // 太小的一律不当视频
+        var cur = '';
+        try { cur = v.currentSrc || v.src || ''; } catch (e) {}
+        var playing = false;
+        try { playing = !v.paused && !v.ended && v.currentTime > 0; } catch (e) {}
+        var dur = 0;
+        try { dur = (isFinite(v.duration) && v.duration > 0) ? v.duration : 0; } catch (e) {}
+        var muted = false, ctrls = false, ap = false;
+        try { muted = !!v.muted; } catch (e) {}
+        try { ctrls = !!v.controls; } catch (e) {}
+        try { ap = !!v.autoplay; } catch (e) {}
+        var isBlob = /^blob:/i.test(cur);
+        var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        out.push({
+          i: i,
+          src: isBlob ? '' : cur,                     // blob 不是"能直接播的地址"
+          blob: isBlob,
+          playing: playing,
+          muted: muted,
+          autoplay: ap,
+          controls: ctrls,
+          dur: Math.round(dur),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          area: Math.round(r.width * r.height / vArea * 100),   // 占屏百分比
+          center: (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.25)
+        });
+      }
+    } catch (e) {}
+    pageVids = out;
+    return out.length;
+  }
+
+  function flushVideos() {
+    if (vidTimer) { clearTimeout(vidTimer); vidTimer = null; }
+    vidLastAt = nowMs();
+    try {
+      window.webkit.messageHandlers.vgVideos.postMessage({
+        type: 'videos',
+        href: location.href,
+        videos: pageVids
+      });
+    } catch (e) {}
+  }
+  // 节流：400ms 内的多次变化合并成一次（跨进程 postMessage 不免费）
+  function reportVideos(force) {
+    if (force) { scanVideos(); flushVideos(); return; }
+    if (vidTimer) return;
+    var wait = 400 - (nowMs() - vidLastAt);
+    vidTimer = setTimeout(function () {
+      vidTimer = null;
+      scanVideos();
+      flushVideos();
+    }, wait > 0 ? wait : 0);
+  }
+
+  function startVideos() {
+    if (vidObserver) return;
+    reportVideos(true);
+    try {
+      // ① 页面新增节点 → 重扫。**只观察 childList**（观察 attributes 是最贵的）
+      vidObserver = new MutationObserver(function () { reportVideos(false); });
+      vidObserver.observe(document.documentElement || document,
+                          { childList: true, subtree: true });
+    } catch (e) {}
+    try {
+      // ② video 自己的状态变化（开播 / 暂停 / 换源）→ 重扫。
+      //    用事件委托挂在 document 上（捕获），不逐个元素挂监听。
+      var evs = ['play', 'pause', 'loadedmetadata', 'durationchange', 'emptied', 'volumechange'];
+      for (var i = 0; i < evs.length; i++) {
+        document.addEventListener(evs[i], function (e) {
+          var t = e.target;
+          if (t && String(t.tagName || '').toLowerCase() === 'video') reportVideos(false);
+        }, true);
       }
     } catch (e) {}
   }
@@ -716,6 +814,7 @@
     booted = true;
     scanLive();
     report(true);
+    startVideos();          // ★ v1.0.214：页面视频清单（独立于 autoOn，供「窗口」按钮用）
     // DOMContentLoaded 之后有些播放器才把地址注进页面，稍后补一次重活
     setTimeout(function () { scanPageHtml(); report(false); }, 1200);
   }

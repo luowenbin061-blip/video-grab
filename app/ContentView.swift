@@ -866,6 +866,22 @@ struct ContentView: View {
     }
 
     /// 地址栏提交（回车 / 点「前往」）：是网址就打开，不是就拿去搜
+    /// ★ v1.0.214：「窗口」按钮 —— 把本页视频交给内置播放器播。
+    /// 明确的正片、而且第二名跟它差得远（或只有一条）→ 直接播，省一次点击；
+    /// 拿不准（比如页面既有正片又有自动播放的广告）→ 弹列表让用户自己选。
+    private func pageVideoTapped() {
+        let list = model.pageVideos
+        guard !list.isEmpty else { return }
+        let sorted = list.sorted { $0.confidence > $1.confidence }
+        if let top = sorted.first, top.isConfident,
+           (sorted.count == 1 || top.confidence - sorted[1].confidence >= 3),
+           let t = model.pageVideoPlayTarget(top), let u = URL(string: t.url) {
+            previewItem = PlaylistRelay.PlayTarget(url: u, title: "本页视频", headers: t.headers)
+            return
+        }
+        pageVideoPicker = true
+    }
+
     private func submitInput() {
         urlFocused = false
         model.submit(input)
@@ -877,9 +893,30 @@ struct ContentView: View {
     private var topBar: some View {
         HStack(spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "globe")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                // ★ v1.0.214：这一页有视频时，左上角从地球图标**换成**「窗口」按钮
+                //   （点一下用内置播放器播本页视频）。没有视频时还是地球图标。
+                //   为什么是"换"而不是"加"：同一个位置互相替换，不额外占宽度 ——
+                //   否则地址栏会被挤窄、光标聚焦时更挤。
+                if model.pageVideos.isEmpty {
+                    Image(systemName: "globe")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button { pageVideoTapped() } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.system(size: 11))
+                            Text("窗口")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3.5)
+                        .background(Color.accentColor, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("播放本页视频")
+                }
 
                 TextField("输入网址，或直接搜点什么", text: $input)
                     .focused($urlFocused)
@@ -1271,6 +1308,8 @@ struct SniffPanel: View {
     /// ★ v1.0.138：类型换成 `PlayTarget` —— 地址要先经过一次异步的「清单本地化」才定得下来
     ///   （跟长按播放同一条路，根因见 `PlaylistRelay` 开头）。
     @State private var previewItem: PlaylistRelay.PlayTarget?
+    /// ★ v1.0.214：本页有多个视频 / 拿不准该播哪条时，弹这张卡让用户选
+    @State private var pageVideoPicker = false
     @State private var showAll = false
     /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
     @State private var tab = 0
@@ -1431,6 +1470,26 @@ struct SniffPanel: View {
         //   走同一套播放器，但**带上 Referer/UA/Cookie**（防盗链站不带就 403）。
         //   键固定成 "preview"：**不污染真实任务的续看键**（各任务的进度是按任务 id 记的）。
         // ★ v1.0.138：地址在点按钮时就已经"本地化"过了，这里直接用。
+        // ★ v1.0.214：本页视频的「选择卡片」（有多个 / 拿不准该播哪条时才弹）
+        .sheet(isPresented: $pageVideoPicker) {
+            PageVideoPicker(
+                videos: model.pageVideos,
+                hasCandidates: model.items.contains { $0.kind == "hls" || $0.kind == "file" },
+                onPlay: { v in
+                    pageVideoPicker = false
+                    if let t = model.pageVideoPlayTarget(v), let u = URL(string: t.url) {
+                        previewItem = PlaylistRelay.PlayTarget(url: u, title: "本页视频",
+                                                              headers: t.headers)
+                    } else {
+                        model.showToast("这页的视频地址还没抓到 —— 先去网页里点一下播放，再回来点「窗口」")
+                    }
+                },
+                onOpenSniff: {
+                    pageVideoPicker = false
+                    model.showToast("去「≡ → 嗅探结果」里看，那里能下载")
+                }
+            )
+        }
         .fullScreenCover(item: $previewItem) { t in
             PlayerSheet(url: t.url,
                         title: t.title,

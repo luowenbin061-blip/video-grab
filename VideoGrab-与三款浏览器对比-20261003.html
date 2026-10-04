@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab 与三款浏览器对比 · 2026-10-03</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e5e7eb;
+    --yes:#0a7d4d; --no:#b42318; --part:#b45309; --accent:#1d4ed8; --warnbg:#fff8e6;
+    --warnline:#f0c36d; --okbg:#eefaf3; --okline:#9fd9bb; --nobg:#fdf1f0; --noline:#f0b4ae;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:18px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15.5px;margin:24px 0 8px;color:#111827}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .lead{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 22px 16px;margin-bottom:8px}
+  .lead ol{margin:10px 0 0;padding-left:22px}
+  .lead li{margin:9px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13.5px}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;white-space:nowrap}
+  td.c,th.c{text-align:center;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .col-us{background:#f4f7ff !important}
+  .yes{color:var(--yes);font-weight:700}
+  .no{color:var(--no)}
+  .part{color:var(--part);font-weight:600}
+  .muted{color:var(--muted)}
+  .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11.5px;border:1px solid;margin-left:6px;vertical-align:1px}
+  .t-us{color:#1d4ed8;border-color:#bcd0fb;background:#eef3fe}
+  .t-oth{color:#6b7280;border-color:#dfe3e8;background:#f6f7f9}
+  .box{border-radius:10px;padding:14px 18px;margin:14px 0;border:1px solid}
+  .box.ok{background:var(--okbg);border-color:var(--okline)}
+  .box.warn{background:var(--warnbg);border-color:var(--warnline)}
+  .box.no{background:var(--nobg);border-color:var(--noline)}
+  .box b{display:block;margin-bottom:6px;font-size:14.5px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+  code{background:#f0f2f5;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:Consolas,Menlo,monospace}
+  .big{font-size:16px;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>VideoGrab 与「鲨鱼 / 李白 / 亚瑟」对比</h1>
+<div class="sub">
+  三款对手的数据全部取自 <b>App Store 官方描述</b>（Apple 官方接口，2026-10-03 抓取）＋ 版本号/体积/更新日期；
+  VideoGrab 一侧是<b>逐项对着源码核实</b>的结果，不是凭印象。
+</div>
+
+<div class="lead">
+  <h3 style="margin-top:14px">先给结论（三条）</h3>
+  <ol>
+    <li><b>三款里只有「亚瑟」跟咱们是同一条赛道</b>（资源嗅探＋下载＋m3u8 合并）。
+        另外两款<b>根本不下载</b> —— 鲨鱼和李白的主语都是「播放器」，它们做的是<b>在线看</b>。</li>
+    <li><b>在「下载 ＋ 后处理」这条线上，咱们比它们都厚</b>：
+        局域网共享给电脑、零损失合并、画质压缩、下载队列、回收站 —— <b>这四样三款一个都没有</b>。</li>
+    <li><b>真正的短板是「播放体验」</b>：最扎眼的是<b>倍速播放和投屏，三款全有、咱们一个都没有</b>。
+        而这两项恰恰是最便宜的 —— 都是系统自带 API。</li>
+  </ol>
+  <div class="box warn" style="margin-bottom:14px">
+    <b>还有一条容易忽略、但很重要的事实</b>
+    那三款都是 <b>App Store 上架</b>的应用 → 按苹果政策，它们<b>也必须在 WKWebView 上跑</b>，
+    跟咱们是<b>同一个引擎、同一套限制</b>。所以：<b>它们做得到的功能，咱们原则上都做得到</b>，
+    不需要为了「追上它们」去换引擎。
+  </div>
+</div>
+
+<h2>一、基本盘</h2>
+<table>
+  <thead>
+    <tr>
+      <th>项目</th>
+      <th class="c">鲨鱼浏览器</th>
+      <th class="c">李白浏览器</th>
+      <th class="c">亚瑟浏览器</th>
+      <th class="c col-us">视频抓取 VideoGrab</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>产品定位</b></td>
+      <td>看小说 ＋ 看视频<br><span class="muted">（在线播放为主）</span></td>
+      <td>通用浏览器<br><span class="muted">（＋学习/旅游工具）</span></td>
+      <td><b>下载 ＋ 播放</b><br><span class="muted">（跟咱们最像）</span></td>
+      <td class="col-us"><b>视频下载工具</b><br><span class="muted">（自带浏览器）</span></td>
+    </tr>
+    <tr>
+      <td>开发者</td>
+      <td>公司<span class="muted">（指尖卓越）</span></td>
+      <td>个人</td>
+      <td>个人</td>
+      <td class="col-us">你自己</td>
+    </tr>
+    <tr>
+      <td>上架方式</td>
+      <td>App Store</td>
+      <td>App Store</td>
+      <td>App Store</td>
+      <td class="col-us"><b>巨魔自用</b>（不上架）</td>
+    </tr>
+    <tr>
+      <td><b>要钱吗</b></td>
+      <td>15元/月 · 98元/年 · 30元永久</td>
+      <td>6元/月 · 38元/年 · 68元永久</td>
+      <td>10元/月 · 27元/季 · 73元/年 · 98元永久</td>
+      <td class="col-us"><b>免费</b>（无内购无账号）</td>
+    </tr>
+    <tr>
+      <td>体积</td>
+      <td>105.4 MB</td>
+      <td>99.8 MB</td>
+      <td>104.6 MB</td>
+      <td class="col-us"><b>10.9 MB</b><span class="muted">（约 1/10）</span></td>
+    </tr>
+    <tr>
+      <td>最低系统</td>
+      <td>iOS 15</td>
+      <td>iOS 13</td>
+      <td>iOS 13</td>
+      <td class="col-us">iOS 15</td>
+    </tr>
+    <tr>
+      <td>最近更新</td>
+      <td>2026-09-29</td>
+      <td>2026-05-07<span class="tag t-oth">5 个月没动</span></td>
+      <td>2026-09-17</td>
+      <td class="col-us">今天<span class="tag t-us">自己说了算</span></td>
+    </tr>
+    <tr>
+      <td>开源吗</td>
+      <td class="no">不开源</td>
+      <td class="no">不开源</td>
+      <td class="no">不开源<span class="muted">（隐私页挂在 GitHub Pages，但代码不公开）</span></td>
+      <td class="col-us"><b>源码在你自己手里</b></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>二、视频这条线（重点 —— 决定谁跟你是同类）</h2>
+<table>
+  <thead>
+    <tr>
+      <th>能力</th>
+      <th class="c">鲨鱼</th><th class="c">李白</th><th class="c">亚瑟</th>
+      <th class="c col-us">咱们</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>资源 / 视频嗅探</td>
+      <td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes">●</td><td class="c yes col-us">●<span class="muted"> 全类型</span></td></tr>
+    <tr><td>视频下载到本地</td>
+      <td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes">●</td><td class="c yes col-us">●</td></tr>
+    <tr><td>加密 m3u8（AES-128 解密）</td>
+      <td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes">●<span class="muted"> 描述写明</span></td><td class="c yes col-us">●</td></tr>
+    <tr><td>m3u8 合并 / 转 MP4</td>
+      <td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes">●</td><td class="c yes col-us">●<span class="muted"> 含零损失合并</span></td></tr>
+    <tr><td><b>压画质省空间</b></td>
+      <td class="c no">○</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes col-us"><b>● 独有</b></td></tr>
+    <tr><td><b>倍速播放</b></td>
+      <td class="c yes">●<span class="muted"> 最高 16×</span></td>
+      <td class="c yes">●</td><td class="c yes">●</td>
+      <td class="c no col-us"><b>○ 缺口</b></td></tr>
+    <tr><td><b>投屏（AirPlay / DLNA）</b></td>
+      <td class="c yes">●</td><td class="c yes">●</td><td class="c yes">●</td>
+      <td class="c no col-us"><b>○ 缺口</b></td></tr>
+    <tr><td>小窗 / 悬浮播放</td>
+      <td class="c yes">●</td><td class="c yes">●<span class="muted"> 悬浮</span></td>
+      <td class="c yes">●</td>
+      <td class="c part col-us">◐<span class="muted"> 只有 PiP 保活</span></td></tr>
+    <tr><td>长按快进 / 快退</td>
+      <td class="c yes">●</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>导出到「文件」/ 分享</td>
+      <td class="c yes">●</td><td class="c no">○</td><td class="c yes">●</td>
+      <td class="c yes col-us">●</td></tr>
+    <tr><td><b>局域网共享给电脑</b><br><span class="muted">手机里的片子用电脑浏览器直接取</span></td>
+      <td class="c no">○</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes col-us"><b>● 独有</b></td></tr>
+    <tr><td><b>下载队列 / 同时下载数</b></td>
+      <td class="c no">○</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes col-us"><b>● 独有</b></td></tr>
+    <tr><td><b>回收站（删错能找回）</b></td>
+      <td class="c no">○</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes col-us"><b>● 独有</b></td></tr>
+    <tr><td>边下边播 / 断点续传</td>
+      <td class="c no">○</td><td class="c no">○</td><td class="c part">◐</td>
+      <td class="c yes col-us">●</td></tr>
+  </tbody>
+</table>
+<p class="muted" style="font-size:12.5px;margin:8px 2px">
+  ● 有 &nbsp;|&nbsp; ◐ 部分有 / 形态不同 &nbsp;|&nbsp; ○ 没有（依据：App Store 官方描述原文 ＋ 咱们侧源码逐个 grep 核实）
+</p>
+
+<h2>三、浏览器通用能力</h2>
+<table>
+  <thead>
+    <tr><th>能力</th><th class="c">鲨鱼</th><th class="c">李白</th><th class="c">亚瑟</th><th class="c col-us">咱们</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>标签页</td><td class="c yes">●</td><td class="c yes">●</td><td class="c yes">●</td>
+      <td class="c yes col-us">●<span class="muted"> 网格＋标签组</span></td></tr>
+    <tr><td>收藏 / 历史</td><td class="c yes">●</td>
+      <td class="c yes">●<span class="muted"> iCloud 同步</span></td>
+      <td class="c yes">●<span class="muted"> iCloud 同步</span></td>
+      <td class="c part col-us">◐<span class="muted"> 本地，无同步</span></td></tr>
+    <tr><td>无图模式</td><td class="c yes">●</td><td class="c yes">●</td><td class="c no">○</td>
+      <td class="c yes col-us">●</td></tr>
+    <tr><td>页内查找</td><td class="c no">○</td><td class="c yes">●</td>
+      <td class="c part">◐</td><td class="c yes col-us">●</td></tr>
+    <tr><td>桌面模式（电脑版网页）</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c part">◐</td><td class="c yes col-us">●</td></tr>
+    <tr><td><b>导出 PDF</b></td><td class="c no">○</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes col-us"><b>● 独有</b></td></tr>
+    <tr><td>阅读模式</td>
+      <td class="c yes">●<span class="muted"> 小说专用</span></td>
+      <td class="c yes">●</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>夜间模式</td><td class="c yes">●</td><td class="c yes">●</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>无痕模式</td><td class="c yes">●</td><td class="c no">○</td><td class="c yes">●</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>广告过滤</td><td class="c no">○</td><td class="c yes">●</td>
+      <td class="c yes">●<span class="muted"> 脚本</span></td>
+      <td class="c part col-us">◐<span class="muted"> 自研清理器＋无图，无网络层拦截</span></td></tr>
+    <tr><td>油猴脚本</td><td class="c no">○</td><td class="c yes">●</td><td class="c yes">●</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>开发者工具</td><td class="c no">○</td><td class="c no">○</td><td class="c yes">●</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>翻译 / 朗读</td><td class="c no">○</td><td class="c yes">●</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>OCR 扫描识字</td><td class="c no">○</td><td class="c yes">●</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>二维码扫描</td><td class="c yes">●</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>电子书 / 小说</td><td class="c yes">●</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c no col-us">○</td></tr>
+    <tr><td>导入书签 / 导入本地视频 / 备份数据</td>
+      <td class="c no">○</td><td class="c no">○</td><td class="c no">○</td>
+      <td class="c yes col-us"><b>● 独有</b></td></tr>
+  </tbody>
+</table>
+
+<h2>四、各家的「独家本领」</h2>
+<div class="card">
+  <h3>鲨鱼 —— 主打「看」</h3>
+  <ul>
+    <li><b>最高 16 倍速播放</b>（三款里最猛）、AirPlay / DLNA 投屏、一键锁屏、一键静音、后台播放</li>
+    <li><b>分屏浏览</b>（同一页开两个窗口，压着调整布局）—— 只此一家</li>
+    <li>小说阅读模式（自动预加载、章节收藏、双击翻页）＋ 电子书（翻页效果、章节目录）</li>
+    <li>页面任意位置滑动返回、扫码、文件解压</li>
+  </ul>
+</div>
+<div class="card">
+  <h3>李白 —— 主打「工具」</h3>
+  <ul>
+    <li><b>语音文本翻译 ＋ 朗读</b>（明确说面向出国旅游）</li>
+    <li><b>OCR 拍照取字</b></li>
+    <li>用户自定义脚本（油猴类）、iCloud 书签同步</li>
+    <li>视频悬浮播放</li>
+    <li class="muted">注意：最近一次更新停在 2026-05-07，已经 5 个月没动</li>
+  </ul>
+</div>
+<div class="card">
+  <h3>亚瑟 —— 跟咱们最像的那个</h3>
+  <ul>
+    <li>资源嗅探、加密 m3u8、文件下载、导出、投屏合并</li>
+    <li><b>开发者工具</b>（移动端少见）、<b>油猴脚本</b></li>
+    <li>隐私加密相册、小游戏存档</li>
+    <li>主打「体积小、内存低」—— 但实际包体 104.6 MB，跟另两款一个量级</li>
+  </ul>
+</div>
+<div class="card" style="border-color:#bcd0fb;background:#f8faff">
+  <h3>咱们 —— 主打「下载 ＋ 后处理」</h3>
+  <ul>
+    <li><b>局域网共享给电脑</b>：手机里下好的片子，电脑浏览器直接打开取走（自带 HTTP 服务 ＋ WebDAV）—— <b>三款都没有</b></li>
+    <li><b>零损失合并</b>（规格一样的片段直接搬、不重编码）＋ <b>压画质省空间</b> —— <b>三款都没有</b></li>
+    <li><b>下载队列</b>（同时下载数 1/3/5/不限）＋ <b>回收站</b>（删错能找回）—— <b>三款都没有</b></li>
+    <li>边下边播、断点续传、PiP 保活（下载时后台不被杀）</li>
+    <li>导出 PDF、导入书签、导入本地视频、备份数据</li>
+    <li><b>免费、无广告、无内购、无账号</b></li>
+  </ul>
+</div>
+
+<h2>五、差距清单与建议</h2>
+
+<div class="box no">
+  <b>P0 —— 建议补，成本极低（都是系统自带 API）</b>
+  <ul>
+    <li><b>倍速播放</b>：三款全有、咱们没有。播放器加一个速度档位（<code>AVPlayer.rate</code>，0.5× / 1× / 1.5× / 2×）—— 改动几十行</li>
+    <li><b>投屏 AirPlay</b>：三款全有、咱们没有。系统自带一个投屏按钮控件（<code>AVRoutePickerView</code>），接上去就行</li>
+    <li><b>长按快进 / 快退</b>：鲨鱼有，看片时很实用，手势加一下即可</li>
+  </ul>
+  <div class="muted" style="margin-top:6px">这三条加起来就是一个「播放体验」小版本，风险低、每天都能感觉到。</div>
+</div>
+
+<div class="box warn">
+  <b>P1 —— 值得做，成本中等</b>
+  <ul>
+    <li><b>小窗 / 悬浮播放</b>：咱们已经有画中画（现在主要当"下载保活"用），扩成「播放时也能小窗」并不远</li>
+    <li><b>夜间模式</b>：往网页里注入一段变暗的 CSS 即可（跟现有注入通道是同一套）</li>
+  </ul>
+</div>
+
+<div class="box">
+  <b>P2 —— 看你要不要（成本更高，收益看个人习惯）</b>
+  <ul>
+    <li><b>阅读模式</b>：咱们已有「导出 PDF」的正文提取底子，做起来比另两款从零做要容易</li>
+    <li><b>用户脚本（油猴）</b>：亚瑟／李白有。技术上可行，但等于要维护一个脚本运行环境</li>
+    <li><b>网络层广告拦截</b>：这是唯一能「从根上」拦广告的路（拦请求，而不是事后清浮层）—— 但需要规则库，之前评估过成本</li>
+  </ul>
+</div>
+
+<div class="box ok">
+  <b>建议不要补（对「自用」没有意义）</b>
+  <ul>
+    <li>账号体系、内购、iCloud 同步 —— 那是人家的商业模式，你不需要</li>
+    <li>翻译 / OCR / 电子书 / 扫码 —— 那是「通用浏览器引流功能」，跟你「下片」的目标不搭</li>
+    <li>为了「追上它们」去换浏览器引擎 —— <b>没必要</b>：它们也跑在 WKWebView 上，同一个引擎能做到的事，你现在这套也能做</li>
+  </ul>
+</div>
+
+<div class="box" style="border-color:#bcd0fb;background:#f4f7ff">
+  <b>一句话总结</b>
+  三款里真正跟你同类的是<b>亚瑟</b>；而在「下载 ＋ 后处理」这条线上，<b>你已经比它更厚</b>
+  （局域网共享、合并压缩、下载队列、回收站，它一样没有）。
+  你真正落后的是<b>播放体验</b> —— <b>倍速和投屏</b>这两块三款全有，而它们恰恰是<b>最便宜</b>就能补上的。
+</div>
+
+<div class="foot">
+  数据来源：三款 App 的信息取自 <b>Apple 官方接口</b>（<code>itunes.apple.com/cn/lookup</code>）返回的官方描述、版本号、体积、最低系统版本、更新日期，抓取时间 2026-10-03。
+  VideoGrab 一侧的能力为<b>对当前源码逐项核实</b>（当前基线 = 回退后的 v1.0.209）。
+  标注「独有」的项目，含义是<b>在本次对比的四款里只有它有</b>。
+</div>
+
+</div>
+</body>
+</html>

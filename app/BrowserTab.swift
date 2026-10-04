@@ -41,6 +41,9 @@ final class BrowserTab {
     var title = ""
     var address = ""
     var items: [SniffItem] = []
+    /// ★ v1.0.214：这一页的 `<video>` 清单（地址栏左侧「窗口」按钮用）。
+    ///   跟 items 一样**按标签各存一份** —— 否则切回一个有视频的标签时按钮不会出现。
+    var pageVideos: [PageVideo] = []
     var groups: [SniffGroup] = []
     /// ★ v1.0.203（代码体检 P2）：**图片也按标签存**（跟 items/groups 一个规矩）。
     ///   以前只存在 model 上 → 切标签时不会跟着换，图片面板显示的还是上一个标签的图（串台）。

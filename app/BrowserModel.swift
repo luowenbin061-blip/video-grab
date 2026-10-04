@@ -135,6 +135,10 @@ struct FileDownloadRequest {
 @MainActor
 final class BrowserModel: NSObject, ObservableObject {
 
+    /// ★ v1.0.214：当前页的 `<video>` 清单（镜像当前标签的那份）。
+    ///   它只用来决定「地址栏左侧要不要出现窗口按钮」+「点了播哪个」。
+    @Published var pageVideos: [PageVideo] = []
+
     @Published var items: [SniffItem] = []
     /// 分组去重后的展示列表（同目录清单变体合并成一条）
     @Published var groups: [SniffGroup] = []
@@ -601,6 +605,12 @@ final class BrowserModel: NSObject, ObservableObject {
         // 每条消息都当嗅探结果喂给 ingest，混进来会污染列表）。
         ucc.add(self, contentWorld: world, name: "vgClean")
 
+        // ★ v1.0.214 页面视频清单：走**第三条通道**。
+        //   为什么不并进 vgSniff —— ① 那边的处理会把每条消息都当嗅探结果喂给 ingest，
+        //   混进来会污染下载列表；② 它受「自动嗅探」开关控制，而那个开关**默认是关的**，
+        //   这个功能必须任何时候都在（打开有视频的页面就出现按钮）。
+        ucc.add(self, contentWorld: world, name: "vgVideos")
+
         // ★ v1.0.119 无图模式：在网络层把图片请求拦掉（真省流量）。
         //   注意只能拿到**已经编译好**的规则 —— 编译是异步的，启动时已经预热过了
         //   （见 VideoGrabApp 里的 NoImageMode.warmUp()），所以这里基本都能拿到；
@@ -992,6 +1002,7 @@ final class BrowserModel: NSObject, ObservableObject {
         items = t.items
         groups = t.groups
         images = t.images              // ★ v1.0.203：图片也要跟着标签换（以前漏了 → 串台）
+        pageVideos = t.pageVideos      // ★ v1.0.214：窗口按钮跟着标签换
         imageGroups = t.imageGroups
         mseSeen = t.mseSeen
         hint = t.hint
@@ -1000,6 +1011,35 @@ final class BrowserModel: NSObject, ObservableObject {
         loadError = t.loadError
         canGoBack = t.canGoBack
         canGoForward = t.canGoForward
+    }
+
+    /// ★ v1.0.214：给某条「页面视频」挑一个能播的地址 + 该带的请求头。
+    ///
+    /// 两条路：
+    /// ① 它自己有 `src`（直链 / m3u8）→ 直接用；能在嗅探结果里对上就用那条的 Referer/UA/Cookie。
+    /// ② 它是 `blob:`（现代播放器最常见）→ **拿不到地址**，只能退到嗅探结果里能直接播的候选
+    ///    （优先"正在播的那条"，其次 hls，再其次直链文件）。
+    /// 都拿不到就返回 nil —— 由调用方提示"先去网页点一下播放"（别假装能播）。
+    func pageVideoPlayTarget(_ v: PageVideo) -> (url: String, headers: [String: String])? {
+        let playable = items.filter { $0.kind == "hls" || $0.kind == "file" }
+        func heads(_ it: SniffItem?) -> [String: String] {
+            // 兜底只带 Referer（用当前页地址）—— 很多站只校验这一项
+            guard let it else { return ["Referer": address] }
+            var h: [String: String] = [:]
+            if !it.referrer.isEmpty { h["Referer"] = it.referrer }
+            if !it.ua.isEmpty { h["User-Agent"] = it.ua }
+            if !it.cookie.isEmpty { h["Cookie"] = it.cookie }
+            if h["Referer"] == nil { h["Referer"] = address }
+            return h
+        }
+        if !v.src.isEmpty {
+            let hit = playable.first { $0.url == v.src } ?? items.first { $0.url == v.src }
+            return (v.src, heads(hit))
+        }
+        guard let c = playable.first(where: { $0.playing })
+                ?? playable.first(where: { $0.kind == "hls" })
+                ?? playable.first else { return nil }
+        return (c.url, heads(c))
     }
 
     /// 最后一个窗口的「关闭」= 清回空白页（真关掉的话界面就空了）
@@ -1948,6 +1988,19 @@ extension BrowserModel: WKScriptMessageHandler {
         //   （不然它会被当成嗅探结果喂给 ingest，把下载列表搞脏）。
         if message.name == "vgClean" {
             AdClean.record(message.body)
+            return
+        }
+        // ★ v1.0.214：页面视频清单 —— 只写进「这条 WebView 所属标签」的那份快照，
+        //   当前标签才镜像到界面上（跟嗅探结果同一套多标签规矩，后台标签不会串上来）。
+        if message.name == "vgVideos" {
+            guard let d = message.body as? [String: Any] else { return }
+            let list = PageVideo.parse(d)
+            let src = message.webView
+            Task { @MainActor in
+                guard let wv = src, let t = self.tab(for: wv) else { return }
+                t.pageVideos = list
+                if t === self.currentTab { self.pageVideos = list }
+            }
             return
         }
         guard let body = message.body as? [String: Any] else { return }
