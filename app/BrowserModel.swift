@@ -1998,6 +1998,12 @@ extension BrowserModel: WKScriptMessageHandler {
             let src = message.webView
             Task { @MainActor in
                 guard let wv = src, let t = self.tab(for: wv) else { return }
+                // ★ v1.0.216：**空清单不覆盖非空清单**。
+                //   播放器在 <iframe> 里的站（聚合站很常见）—— 子 frame 报的是"有视频"，
+                //   主 frame 自己扫不到任何 <video>，只能报空。谁后到谁赢的话，主 frame 的
+                //   一条空消息就能把按钮擦掉。换页时会先清空
+                //   （见 didStartProvisionalNavigation），所以"视频没了按钮还在"最多残留到下次导航。
+                if list.isEmpty && !t.pageVideos.isEmpty { return }
                 t.pageVideos = list
                 if t === self.currentTab { self.pageVideos = list }
             }
@@ -2162,7 +2168,13 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
             t.isLoading = true
-            if t === self.currentTab { self.isLoading = true }
+            // ★ v1.0.216：换页了 —— 上一页的页面视频清单立刻作废（配合 vgVideos 那条
+            //   "空清单不覆盖非空清单"：不然视频没了按钮会一直留着）。
+            t.pageVideos = []
+            if t === self.currentTab {
+                self.pageVideos = []
+                self.isLoading = true
+            }
             self.clearLoadError(t)      // 又开始加载了 → 上一页的错误页收掉
             self.startLoadTimeout(t)
         }

@@ -352,9 +352,27 @@
     return out.length;
   }
 
-  function flushVideos() {
+  // ★ v1.0.216：清单没变就**不再重发**。原来每次 DOM 变化都重发一条（节流 400ms），
+  //   有两个害处：① 播放器在 <iframe> 里的站（聚合站很常见）—— 主 frame 自己扫不到
+  //   <video>，只能报空，这条"空清单"会把子 frame 报上来的视频一遍遍擦掉（按钮闪一下
+  //   就没了）；② 页面每 400ms 一条同内容的跨进程消息 + 原生侧一次无谓的界面刷新。
+  var vidSig = null;
+  function vidSignature(list) {
+    var a = [];
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i];
+      a.push(v.i + '|' + v.src + '|' + (v.playing ? 1 : 0) + '|' + v.dur +
+             '|' + v.w + 'x' + v.h + '|' + (v.muted ? 1 : 0) + '|' + v.area);
+    }
+    return a.join(';');
+  }
+
+  function flushVideos(force) {
     if (vidTimer) { clearTimeout(vidTimer); vidTimer = null; }
     vidLastAt = nowMs();
+    var sig = vidSignature(pageVids);
+    if (!force && sig === vidSig) return;    // 没变化 → 不发
+    vidSig = sig;
     try {
       window.webkit.messageHandlers.vgVideos.postMessage({
         type: 'videos',
@@ -365,19 +383,31 @@
   }
   // 节流：400ms 内的多次变化合并成一次（跨进程 postMessage 不免费）
   function reportVideos(force) {
-    if (force) { scanVideos(); flushVideos(); return; }
+    if (force) { scanVideos(); flushVideos(true); return; }
     if (vidTimer) return;
     var wait = 400 - (nowMs() - vidLastAt);
     vidTimer = setTimeout(function () {
       vidTimer = null;
       scanVideos();
-      flushVideos();
+      flushVideos(false);
     }, wait > 0 ? wait : 0);
   }
 
+  // ★ v1.0.216：首扫时视频常常还没铺好（懒加载 / 播放器后置 / 尺寸还是 0×0 被上面
+  //   那条尺寸过滤挡掉），而 MutationObserver 只看"节点新增"，抓不到"尺寸后置"
+  //   （尺寸变化不是属性变化）。所以在还没扫到任何视频之前，每 1.5 秒补扫一次，
+  //   最多 20 次（30 秒）；扫到就停。用户后来点播放会触发 play 事件 → 同样会重扫。
+  var vidRetry = null, vidRetryLeft = 0;
   function startVideos() {
     if (vidObserver) return;
     reportVideos(true);
+    vidRetryLeft = 20;
+    vidRetry = setInterval(function () {
+      if (vidRetryLeft-- <= 0 || pageVids.length > 0) {
+        clearInterval(vidRetry); vidRetry = null; return;
+      }
+      reportVideos(false);
+    }, 1500);
     try {
       // ① 页面新增节点 → 重扫。**只观察 childList**（观察 attributes 是最贵的）
       vidObserver = new MutationObserver(function () { reportVideos(false); });
@@ -814,7 +844,6 @@
     booted = true;
     scanLive();
     report(true);
-    startVideos();          // ★ v1.0.214：页面视频清单（独立于 autoOn，供「窗口」按钮用）
     // DOMContentLoaded 之后有些播放器才把地址注进页面，稍后补一次重活
     setTimeout(function () { scanPageHtml(); report(false); }, 1200);
   }
@@ -908,4 +937,14 @@
   // ★ 默认关。注意：**长按和抓请求都不依赖这个开关** ——
   //   长按走 __vgHit（第 10 段，独立），抓请求走上面那些 hook（第 1~5 段）。
   if (autoOn) startAuto();
+
+  // ★ v1.0.216：页面视频清单**必须无条件启动** —— 它的条件是「这页有没有 <video>」，
+  //   跟「后台自动嗅探」那个开关（默认关）毫无关系。v1.0.214/215 把它挂在 boot() 里，
+  //   而 boot() 只在 autoOn 时才跑 → 真机上「窗口」按钮**从来没出现过**（用户实测复现）。
+  //   startVideos 自己带 `if (vidObserver) return;`，重复调用无害。
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startVideos);
+  } else {
+    startVideos();
+  }
 })();
