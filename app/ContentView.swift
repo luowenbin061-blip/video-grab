@@ -384,6 +384,8 @@ struct ContentView: View {
     ///   **AVPlayer 对"分片名是原生中文的相对路径"那份清单解析错了**，
     ///   把 `<名称>0.ts` 请求成了 `<名称>.ts` → 404。
     @State private var lpPlay: PlaylistRelay.PlayTarget?
+    /// ★ v1.0.214：本页视频的「选择卡片」开关（多个视频 / 拿不准该播哪条时弹）
+    @State private var pageVideoPicker = false
     /// ★ v1.0.119 首页快捷入口（单例：存档 + 图标缓存都在它手里）
     @ObservedObject private var homeStore = HomeStore.shared
     /// ★ v1.0.119 系统分享面板：要分享的东西（当前网址 / 下载好的文件 / 截出来的长图）
@@ -601,6 +603,25 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView(model: model, downloads: downloads, store: store,
                          isPresented: $showSettings)
+        }
+        // ★ v1.0.214：本页视频的「选择卡片」（有多个 / 拿不准该播哪条时才弹）
+        .sheet(isPresented: $pageVideoPicker) {
+            PageVideoPicker(
+                videos: model.pageVideos,
+                hasCandidates: model.items.contains { $0.kind == "hls" || $0.kind == "file" },
+                onPlay: { v in
+                    pageVideoPicker = false
+                    if let t = model.pageVideoPlayTarget(v), let u = URL(string: t.url) {
+                        lpPlay = PlaylistRelay.PlayTarget(url: u, title: "本页视频", headers: t.headers)
+                    } else {
+                        model.showToast("这页的视频地址还没抓到 —— 先去网页里点一下播放，再回来点「窗口」")
+                    }
+                },
+                onOpenSniff: {
+                    pageVideoPicker = false
+                    model.showToast("去「≡ → 嗅探结果」里看，那里能下载")
+                }
+            )
         }
         .sheet(isPresented: $showToolbox) {
             ToolboxView(model: model, center: downloads, store: store,
@@ -876,7 +897,7 @@ struct ContentView: View {
         if let top = sorted.first, top.isConfident,
            (sorted.count == 1 || top.confidence - sorted[1].confidence >= 3),
            let t = model.pageVideoPlayTarget(top), let u = URL(string: t.url) {
-            previewItem = PlaylistRelay.PlayTarget(url: u, title: "本页视频", headers: t.headers)
+            lpPlay = PlaylistRelay.PlayTarget(url: u, title: "本页视频", headers: t.headers)
             return
         }
         pageVideoPicker = true
@@ -1308,8 +1329,6 @@ struct SniffPanel: View {
     /// ★ v1.0.138：类型换成 `PlayTarget` —— 地址要先经过一次异步的「清单本地化」才定得下来
     ///   （跟长按播放同一条路，根因见 `PlaylistRelay` 开头）。
     @State private var previewItem: PlaylistRelay.PlayTarget?
-    /// ★ v1.0.214：本页有多个视频 / 拿不准该播哪条时，弹这张卡让用户选
-    @State private var pageVideoPicker = false
     @State private var showAll = false
     /// ★ v1.0.109：0 = 视频，1 = 图片（两个独立列表）
     @State private var tab = 0
@@ -1470,26 +1489,6 @@ struct SniffPanel: View {
         //   走同一套播放器，但**带上 Referer/UA/Cookie**（防盗链站不带就 403）。
         //   键固定成 "preview"：**不污染真实任务的续看键**（各任务的进度是按任务 id 记的）。
         // ★ v1.0.138：地址在点按钮时就已经"本地化"过了，这里直接用。
-        // ★ v1.0.214：本页视频的「选择卡片」（有多个 / 拿不准该播哪条时才弹）
-        .sheet(isPresented: $pageVideoPicker) {
-            PageVideoPicker(
-                videos: model.pageVideos,
-                hasCandidates: model.items.contains { $0.kind == "hls" || $0.kind == "file" },
-                onPlay: { v in
-                    pageVideoPicker = false
-                    if let t = model.pageVideoPlayTarget(v), let u = URL(string: t.url) {
-                        previewItem = PlaylistRelay.PlayTarget(url: u, title: "本页视频",
-                                                              headers: t.headers)
-                    } else {
-                        model.showToast("这页的视频地址还没抓到 —— 先去网页里点一下播放，再回来点「窗口」")
-                    }
-                },
-                onOpenSniff: {
-                    pageVideoPicker = false
-                    model.showToast("去「≡ → 嗅探结果」里看，那里能下载")
-                }
-            )
-        }
         .fullScreenCover(item: $previewItem) { t in
             PlayerSheet(url: t.url,
                         title: t.title,
