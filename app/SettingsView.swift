@@ -11,6 +11,17 @@ import SwiftUI
 ///      ② 说明文字能砍就砍 —— 能靠命名讲清楚的就不写，
 ///         footer 只留「名字看不出来的后果 / 反直觉的点」；
 ///      ③ **功能一项都不删** —— 这一版纯粹是"搬家 + 折叠说明"。
+///
+/// ★★ v1.0.220：拿两家（亚瑟 / 李白）的设置页截图逐项对齐**观感**。四处改动：
+///    · **摘要只留两行**（其余 6 行删掉）—— 我上一版给每一行都挂了摘要，
+///      等于把刚砍掉的说明文字又搬回了顶层；两家基本都是光名字、没有摘要。
+///      **只有「名字看不出里面装什么」的那两行才留**（通用设置 / 数据与清理）——
+///      李白那版的「通用设置 → 手势密码」就是这个道理。
+///    · 名称 15 → **17pt**（两家都是 17）；图标 28 → **30pt**（符号 15pt ≈ 一半）；
+///      行内再补一点上下留白，把行撑到 ~56pt（两家都是这个高度）。
+///    · ★ **没有摘要的行也要占一行的高度**（`sub.isEmpty ? " " : sub`）——
+///      这条是外部审查提出、我原来没想到的：只给 2 行留摘要、其余删干净的话，
+///      行高会变成"隔几行矮一下"，反而比原来更乱。**8 行高度一致才叫齐。**
 struct SettingsView: View {
     @ObservedObject var model: BrowserModel
     @ObservedObject var downloads: DownloadCenter
@@ -25,15 +36,15 @@ struct SettingsView: View {
         NavigationView {
             List {
                 Section {
-                    navEntry("网页设置", "广告清理 · 嗅探 · 长按 · 证书",
+                    navEntry("网页设置", "",
                              "globe", .blue) {
                         SettingsWebPage(model: model)
                     }
-                    navEntry("播放设置", "续看进度 · 自动横屏 · 后台声音",
+                    navEntry("播放设置", "",
                              "play.circle.fill", .red) {
                         SettingsPlayPage()
                     }
-                    navEntry("下载设置", "同时下载数 · 保活 · 压缩保活",
+                    navEntry("下载设置", "",
                              "arrow.down.circle.fill", .green) {
                         SettingsDownloadPage(downloads: downloads)
                     }
@@ -44,11 +55,11 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    navEntry("数据与清理", "收藏 · 历史 · 回收站 · 清缓存",
-                             "folder.fill", .gray) {
+                    navEntry("数据与清理", "收藏 · 历史 · 回收站",
+                             "folder.fill", .purple) {
                         SettingsDataPage(model: model, downloads: downloads, store: store)
                     }
-                    navEntry("局域网共享", "共享给电脑 · 记住口令",
+                    navEntry("局域网共享", "",
                              "wifi", .teal) {
                         SettingsSharePage(downloads: downloads)
                     }
@@ -58,13 +69,13 @@ struct SettingsView: View {
                     Button {
                         showHelp = true
                     } label: {
-                        entryLabel("使用说明", "怎么用 · 常见问题",
+                        entryLabel("使用说明", "",
                                    "questionmark.circle.fill", .indigo)
                     }
                     // 不写这句，默认样式的按钮只让文字那一小块可点（整行点不动）
                     .buttonStyle(.plain)
 
-                    navEntry("关于", "版本 · 网络权限 · 项目仓库",
+                    navEntry("关于", "",
                              "info.circle.fill", .gray) {
                         SettingsAboutPage()
                     }
@@ -82,18 +93,22 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 顶层那一行（只有一种长相：图标 + 名字 + 一行小字）
+    // MARK: - 顶层那一行（只有一种长相：图标 + 名字 + 可选一行小字）
 
     private func entryLabel(_ title: String, _ sub: String,
                             _ symbol: String, _ color: Color) -> some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 12) {
             SettingsIcon(symbol: symbol, color: color)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 15))
-                Text(sub)
-                    .font(.system(size: 11.5))
+                Text(title).font(.system(size: 17))
+                // ★★ 没摘要的行**也占一行的高度**：8 行高度一致，才不会有"隔几行矮一下"的节奏。
+                //   （用空格而不是空串 —— 空串在 SwiftUI 里不保证占高。）
+                Text(sub.isEmpty ? " " : sub)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

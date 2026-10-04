@@ -24,11 +24,15 @@ struct SettingsIcon: View {
     let color: Color
 
     var body: some View {
+        // ★ v1.0.220：28 → **30pt**（对齐两家），里面的符号 15pt ≈ 方块的一半
+        //   （Apple 设置图标就是这个比例）。
+        //   圆角保持 8 + `.continuous`（squircle）：外部审查建议过 5.25（按 Apple 原生比例算的），
+        //   但**我们的验收标准是亚瑟 / 李白** —— 那两家的圆角明显更大，所以不动。
         Image(systemName: symbol)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
-            .frame(width: 28, height: 28)
-            .background(color, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(width: 30, height: 30)
+            .background(color, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
