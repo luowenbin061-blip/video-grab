@@ -302,7 +302,10 @@ struct SettingsDataPage: View {
 
     var body: some View {
         Form {
-            Section("浏览数据") {
+            // ★ 注意别写成 `Section("浏览数据") { ... } footer: { ... }` ——
+            //   带标题的那个便利 init **没有 footer 参数**，编译报
+            //   "generic parameter 'Content' could not be inferred"。统一用 header: 写。
+            Section {
                 settingsKVRow("收藏", "\(store.marks.count) 条")
                 settingsKVRow("浏览历史", "\(store.history.count) 条")
                 Button {
@@ -328,6 +331,8 @@ struct SettingsDataPage: View {
                 Button("清空标签存档（下次启动是空白页）", role: .destructive) {
                     model.wipeSavedTabs()
                 }
+            } header: {
+                Text("浏览数据")
             } footer: {
                 Text("「清空标签存档」下次启动就是干净的空白页（标签组也一起没）。")
             }
