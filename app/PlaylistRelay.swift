@@ -77,6 +77,20 @@ enum PlaylistRelay {
                        headers: [String: String]?) async -> PlayTarget? {
         let cleaned = M3U8Playlist.sanitizeURLString(remote)
         guard let raw = URL(string: cleaned) else { return nil }
+
+        // ★★ v1.0.217：**先试"本机代理"，不再先试"清单本地化"**。
+        //
+        //   为什么换顺序（2026-10-04 用户实测：某站播不了，而亚瑟的"超级解码"立刻能播）：
+        //   `AVURLAssetHTTPHeaderFieldsKey` 那个私有键**对 HLS 的内部请求不可靠** ——
+        //   子清单 / 分片 / AES 钥匙**都带不上头**（v1.0.166 已真机定案，见 `MediaProxy` 开头）。
+        //   下面那条"清单本地化"只是把**清单**搬到本地，清单里的分片仍是**远端绝对地址**、
+        //   照样裸奔 → "分片要校验 Referer / Cookie"的站必然 400/403。**错在请求，不在解码。**
+        //   走本机代理则清单会被改写成代理地址 → 清单、子清单、分片、钥匙**每一跳都带头**。
+        if let proxied = MediaProxy.wrap(cleaned, headers: headers) {
+            // 头已经登记在代理里 → 这里传 nil，别重复带（免得两条路各带一份、互相打架）
+            return PlayTarget(url: proxied, title: title, headers: nil)
+        }
+        // 代理起不来（本机服务没起来）→ 退回"清单本地化"，绝不比现在更差
         let final = await localPlaybackURL(remote: raw, headers: headers, root: JobStore.dir) ?? raw
         return PlayTarget(url: final, title: title, headers: headers)
     }

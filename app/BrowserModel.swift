@@ -1023,13 +1023,17 @@ final class BrowserModel: NSObject, ObservableObject {
     func pageVideoPlayTarget(_ v: PageVideo) -> (url: String, headers: [String: String])? {
         let playable = items.filter { $0.kind == "hls" || $0.kind == "file" }
         func heads(_ it: SniffItem?) -> [String: String] {
-            // 兜底只带 Referer（用当前页地址）—— 很多站只校验这一项
-            guard let it else { return ["Referer": address] }
-            var h: [String: String] = [:]
-            if !it.referrer.isEmpty { h["Referer"] = it.referrer }
-            if !it.ua.isEmpty { h["User-Agent"] = it.ua }
-            if !it.cookie.isEmpty { h["Cookie"] = it.cookie }
-            if h["Referer"] == nil { h["Referer"] = address }
+            // ★ v1.0.217：兜底把 **Referer + UA** 都带上。
+            //   以前只在"没有嗅探记录"时兜一个 Referer —— 而有些站是**按 UA 放行/拦截**的，
+            //   少这一项就可能整条流播不了。
+            var h: [String: String] = ["Referer": address]
+            let fbUA = Self.userAgent(desktop: desktopUAOn)
+            if !fbUA.isEmpty { h["User-Agent"] = fbUA }
+            if let it {
+                if !it.referrer.isEmpty { h["Referer"] = it.referrer }
+                if !it.ua.isEmpty { h["User-Agent"] = it.ua }
+                if !it.cookie.isEmpty { h["Cookie"] = it.cookie }
+            }
             return h
         }
         if !v.src.isEmpty {

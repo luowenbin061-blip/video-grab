@@ -611,11 +611,9 @@ struct ContentView: View {
                 hasCandidates: model.items.contains { $0.kind == "hls" || $0.kind == "file" },
                 onPlay: { v in
                     pageVideoPicker = false
-                    if let t = model.pageVideoPlayTarget(v), let u = URL(string: t.url) {
-                        lpPlay = PlaylistRelay.PlayTarget(url: u, title: "本页视频", headers: t.headers)
-                    } else {
-                        model.showToast("这页的视频地址还没抓到 —— 先去网页里点一下播放，再回来点「窗口」")
-                    }
+                    // ★ v1.0.217：跟「窗口」按钮走**同一条路**（都经 PlaylistRelay → 本机代理），
+                    //   不再各自拼一个裸地址的 PlayTarget —— 那样分片不带 Referer，防盗链的站播不了。
+                    playPageVideo(v)
                 },
                 onOpenSniff: {
                     pageVideoPicker = false
@@ -895,12 +893,33 @@ struct ContentView: View {
         guard !list.isEmpty else { return }
         let sorted = list.sorted { $0.confidence > $1.confidence }
         if let top = sorted.first, top.isConfident,
-           (sorted.count == 1 || top.confidence - sorted[1].confidence >= 3),
-           let t = model.pageVideoPlayTarget(top), let u = URL(string: t.url) {
-            lpPlay = PlaylistRelay.PlayTarget(url: u, title: "本页视频", headers: t.headers)
+           (sorted.count == 1 || top.confidence - sorted[1].confidence >= 3) {
+            playPageVideo(top)
             return
         }
         pageVideoPicker = true
+    }
+
+    /// ★ v1.0.217：本页视频**统一从这里播**。
+    ///
+    /// 以前这里是自己拼一个 `PlayTarget(url: 裸地址, ...)` —— 那正是"某些站播不了"的原因：
+    /// HLS 的分片请求**不受** `AVURLAssetHTTPHeaderFieldsKey` 管（v1.0.166 定案，见 `MediaProxy`），
+    /// 裸地址 = 分片不带 Referer / UA / Cookie → 防盗链的站直接 400/403。
+    /// 现在交给 `PlaylistRelay.target()`：它会先把地址接到**本机代理**上，清单和分片每一跳都带头。
+    private func playPageVideo(_ v: PageVideo) {
+        guard let t = model.pageVideoPlayTarget(v) else {
+            model.showToast("这页的视频地址还没抓到 —— 先去网页里点一下播放，再回来点「窗口」")
+            return
+        }
+        Task { @MainActor in
+            if let target = await PlaylistRelay.target(remote: t.url,
+                                                       title: "本页视频",
+                                                       headers: t.headers) {
+                lpPlay = target
+            } else {
+                model.showToast("这个地址读不出来，播不了。")
+            }
+        }
     }
 
     private func submitInput() {
