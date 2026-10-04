@@ -107,9 +107,15 @@ struct SettingsView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // ★ v1.0.221：行内垂直留白**自己定**，不再叠系统的默认值。
+        //   实测（拿三张截图逐像素量）：上一版行高 **65.3pt**，亚瑟 49.7 / 李白 52.7 —— 高出 13pt，
+        //   整页因此显得"空、散"。根因是三样叠一起：字号变大 + 摘要占位 + **系统默认行内边距 ~11pt**。
+        //   用 `listRowInsets` 把系统那一份**替换**掉（`EdgeInsets()` 表示"没有 inset" →
+        //   说明它是替换语义，不是叠加）：上下各 8 + 左右各 16
+        //   → 行高 = 内容 35.6 + 16 = **51.6pt**，正好落进两家的区间。
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
     }
 
     private func navEntry<D: View>(_ title: String, _ sub: String,
