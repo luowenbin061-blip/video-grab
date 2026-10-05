@@ -309,6 +309,36 @@
   // ★ 这一块**独立于 autoOn**：那个开关默认是关的，而「窗口」按钮要始终能用。
   //   只扫 <video>（很轻），只上报"有没有、像不像正片"的线索，不碰网络请求。
   //   原生侧拿到这些线索后**自己算置信度**（谁更可能是正片），JS 这边不做判断。
+  // ★ v1.0.226：给「视频历史」抓一张封面帧。
+  //   · 只有**同源**视频抓得到 —— 跨域画面会把 canvas "污染"，
+  //     到 `toDataURL` 那一步直接抛 SecurityError，被下面 catch 吃掉、返回空串。
+  //     所以这不是"漏了"，是浏览器规矩，别在这儿纠结。
+  //   · 抓帧结果按 src 缓存（blob 用下标当 key）；**失败不缓存** ——
+  //     视频刚进页面时 `readyState < 2`，那会儿画出来是黑的，等它加载好了下次再抓。
+  //   · 页面一换就把缓存整个丢掉（下标会错位）。
+  //   · 尺寸压到 240 宽 + 0.6 质量：postMessage 传大字符串很贵，封面够看就行。
+  var shotCache = {};
+  var shotPage = '';
+  function grabShot(v, src, idx) {
+    try {
+      var page = location.href || '';
+      if (page !== shotPage) { shotCache = {}; shotPage = page; }
+      var key = src || ('idx' + idx);
+      if (shotCache[key]) return shotCache[key];
+      if (v.readyState < 2 || !v.videoWidth || !v.videoHeight) return '';
+      var tw = 240, th = Math.round(v.videoHeight * tw / v.videoWidth);
+      var c = document.createElement('canvas');
+      c.width = tw; c.height = th;
+      var ctx = c.getContext('2d');
+      if (!ctx) return '';
+      ctx.drawImage(v, 0, 0, tw, th);
+      var s = c.toDataURL('image/jpeg', 0.6);   // ← 跨域在这一行抛
+      if (!s || s.length > 60000) return '';    // 太大的不要
+      shotCache[key] = s;
+      return s;
+    } catch (e) { return ''; }
+  }
+
   function scanVideos() {
     var out = [];
     try {
@@ -332,6 +362,12 @@
         try { ap = !!v.autoplay; } catch (e) {}
         var isBlob = /^blob:/i.test(cur);
         var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        // ★ v1.0.226：两条封面的来源，给「视频历史」当缩略图 ——
+        //   ① `poster`：页面自己声明的封面图地址（最省事、最准）→ 原生下载它；
+        //   ② `shot`：从当前画面上抓的一帧（仅同源抓得到，见 grabShot）。
+        //   只有 `src` 为空的那条也不能丢 —— 它就是"没能直接播"的那种，历史里要如实记着。
+        var poster = '';
+        try { poster = v.poster || ''; } catch (e) {}
         out.push({
           i: i,
           src: isBlob ? '' : cur,                     // blob 不是"能直接播的地址"
@@ -344,7 +380,9 @@
           w: Math.round(r.width),
           h: Math.round(r.height),
           area: Math.round(r.width * r.height / vArea * 100),   // 占屏百分比
-          center: (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.25)
+          center: (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.25),
+          poster: poster,
+          shot: grabShot(v, cur, i)
         });
       }
     } catch (e) {}

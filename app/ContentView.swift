@@ -520,6 +520,8 @@ struct ContentView: View {
                                                 title: m.title.isEmpty ? "视频" : m.title,
                                                 headers: lpHeaders(m)) {
                                               Haptics.tap()   // ★ v1.0.224：开始播放
+                                              // ★ v1.0.226：长按播的也记一笔（对得上就标"播过"）
+                                              WatchHistory.shared.markPlayed(page: model.address, video: m.url)
                                               lpPlay = t
                                           } else {
                                               model.showToast("这个地址读不懂，播不了。可以换个源，或者直接下载试试。")
@@ -616,11 +618,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showShare) { LanShareView(downloads: downloads) }
         .sheet(isPresented: $showBookmarks) {
-            BookmarksView(store: store, isPresented: $showBookmarks) { url in
-                input = url
-                // ★ v1.0.205：传进来的本来就是网址，别再过"是网址还是关键词"那层
-                model.openURL(url)
-            }
+            BookmarksView(store: store, isPresented: $showBookmarks,
+                          onOpen: { url in
+                              input = url
+                              // ★ v1.0.205：传进来的本来就是网址，别再过"是网址还是关键词"那层
+                              model.openURL(url)
+                          },
+                          onPlay: { e in
+                              // ★ v1.0.226：视频历史的「直接播放」。
+                              //   **先把这张卡片关掉** —— 播放器是另一个 sheet，两个不能同时开。
+                              showBookmarks = false
+                              playFromHistory(e)
+                          })
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(model: model, downloads: downloads, store: store,
@@ -938,9 +947,40 @@ struct ContentView: View {
                                                        title: "本页视频",
                                                        headers: t.headers) {
                 Haptics.tap()           // ★ v1.0.224：开始播放
+                // ★ v1.0.226：给「视频历史」里那条补个"播过"的标记
+                WatchHistory.shared.markPlayed(page: model.address, video: t.url)
                 lpPlay = target
             } else {
                 model.showToast("这个地址读不出来，播不了。")
+            }
+        }
+    }
+
+    /// ★ v1.0.226：从「视频历史」直接播一条。
+    ///
+    /// ★ 为什么走 `PlaylistRelay.target`、不自己拼地址：
+    ///   分片请求必须带上该站的 Referer/UA 才播得动（v1.0.217 的教训），
+    ///   而那条路会先把地址接到本机代理上。**别再自己拼裸地址**。
+    /// ★ headers 只给 `Referer = 原网页` —— 历史里**故意不落盘 Cookie**（项目规矩：
+    ///   这类记录绝不进共享目录、也不留敏感字段），剩下靠代理那条路的兜底。
+    private func playFromHistory(_ e: WatchEntry) {
+        guard !e.video.isEmpty else {
+            model.showToast("这条当时没抓到可播地址 —— 用「打开原网页」回去点一下播放")
+            return
+        }
+        let page = e.page, video = e.video
+        var heads: [String: String] = [:]
+        if !page.isEmpty { heads["Referer"] = page }
+        let title = e.title.isEmpty ? "视频" : e.title
+        Task { @MainActor in
+            // 历史卡片正在关 —— 隔一帧再抬播放器（跟长按菜单那套"先关再开"同一个道理）
+            try? await Task.sleep(nanoseconds: 420_000_000)
+            if let t = await PlaylistRelay.target(remote: video, title: title, headers: heads) {
+                Haptics.tap()
+                WatchHistory.shared.markPlayed(page: page, video: video)
+                lpPlay = t
+            } else {
+                model.showToast("这个地址读不出来，播不了。可以「打开原网页」再试。")
             }
         }
     }

@@ -260,6 +260,8 @@ struct SettingsPlayPage: View {
     @AppStorage(PlayerBox.autoLandscapeKey) private var autoLandscape = false
     @AppStorage(PlayerBox.backgroundAudioKey) private var bgAudio = true
     @AppStorage("playerPiPEnabled") private var playerPiP = true
+    /// ★ v1.0.226：视频历史总开关（**默认开** —— 这个功能本体就是"记录"）
+    @AppStorage(WatchHistory.enabledKey) private var watchHistory = true
 
     @State private var note: String?
 
@@ -283,6 +285,19 @@ struct SettingsPlayPage: View {
                 Toggle("播放小窗（切出去继续播）", isOn: $playerPiP)
             } footer: {
                 Text("切到别的 App 时画面缩成小窗继续播（也能直接点播放器上的画中画按钮）。")
+            }
+
+            // ★ v1.0.226：视频历史总开关。
+            //   为什么给它一个开关：它会把"你上过哪些带视频的页"记下来（含封面图），属于隐私；
+            //   默认开着是因为这个功能本体就是"记录"。
+            //   ★ 关掉**不清空**已有的 —— 跟上面「记录播放进度」刻意不同：
+            //     那个是"续看位置"，留着会突然冒出一堆旧进度；这个是"历史"，
+            //     用户关掉多半只是不想再记新的。要清有明确的「清空」按钮。
+            Section {
+                Toggle("记录视频历史", isOn: $watchHistory)
+                    .onChange(of: watchHistory) { on in WatchHistory.setEnabled(on) }
+            } footer: {
+                Text("记的是**网页里出现过的视频**（不用等它播过）。在「收藏 / 历史 → 视频」里看。")
             }
 
             if let note {

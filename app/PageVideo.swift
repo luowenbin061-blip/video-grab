@@ -19,6 +19,11 @@ struct PageVideo: Identifiable, Equatable {
     let h: Int
     let area: Int            // 占屏百分比
     let center: Bool
+    /// ★ v1.0.226：页面声明的封面图地址（可能空）—— 给「视频历史」当缩略图用。
+    let poster: String
+    /// ★ v1.0.226：从画面上抓的一帧（`data:image/jpeg;base64,...`）。
+    ///   跨域视频抓不到，是空串 —— 那是浏览器规矩（canvas 被污染），不是我们漏了。
+    let shot: String
 
     /// 「更像正片还是更像广告」的粗打分。
     ///
@@ -85,7 +90,9 @@ struct PageVideo: Identifiable, Equatable {
                 w: int("w"),
                 h: int("h"),
                 area: int("area"),
-                center: bool("center")))
+                center: bool("center"),
+                poster: (d["poster"] as? String) ?? "",
+                shot: (d["shot"] as? String) ?? ""))
         }
         return out
     }

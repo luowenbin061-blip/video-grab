@@ -13,9 +13,16 @@ struct BookmarksView: View {
     @ObservedObject var store: BookmarkStore
     @Binding var isPresented: Bool
     var onOpen: (String) -> Void
+    /// ★ v1.0.226：视频历史里点「直接播放」时回调
+    ///   （由 ContentView 负责：**先关掉这张卡片**再去开播放器 —— 两个 sheet 不能同时开）
+    var onPlay: (WatchEntry) -> Void
 
-    @State private var tab = 0                 // 0 = 收藏，1 = 历史
+    @State private var tab = 0                 // 0 = 收藏，1 = 历史，2 = 视频历史
     @State private var confirmClear = false
+    /// ★ v1.0.226：视频历史里"点了哪一条"（非 nil = 弹「打开原网页 / 直接播放」）
+    @State private var actionTarget: WatchEntry?
+    /// ★ v1.0.226：视频历史（单例，跨页面一直累积）
+    @ObservedObject private var watch = WatchHistory.shared
     /// 导入书签（v1.0.90）—— 工具箱里有入口，这里也放一个：整理书签时就该在收藏页顺手能点
     @State private var showPick = false
     @State private var note: String?
@@ -42,12 +49,16 @@ struct BookmarksView: View {
                 Picker("", selection: $tab) {
                     Text("收藏 \(store.marks.count)").tag(0)
                     Text("历史 \(store.history.count)").tag(1)
+                    // ★ v1.0.226：第三个 —— 「网页里出现过的视频」。
+                    //   为什么挤在这页而不是新开入口：用户要的就是"看历史"，浏览历史和视频历史
+                    //   本来就该在一处（他定的规矩：界面上东西越少越好、同一功能不重复占两处）。
+                    Text("视频 \(watch.items.count)").tag(2)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
 
-                if tab == 0 { marksList } else { historyList }
+                if tab == 0 { marksList } else if tab == 1 { historyList } else { watchList }
             }
             .navigationTitle("收藏 / 历史")
             .navigationBarTitleDisplayMode(.inline)
@@ -91,13 +102,28 @@ struct BookmarksView: View {
                     Button("完成") { isPresented = false }
                 }
             }
-            .alert(tab == 0 ? "清空收藏？" : "清空历史？", isPresented: $confirmClear) {
+            .alert(clearTitle, isPresented: $confirmClear) {
                 Button("取消", role: .cancel) {}
-                Button("清空", role: .destructive) {
-                    if tab == 0 { store.clearMarks() } else { store.clearHistory() }
-                }
+                Button("清空", role: .destructive) { clearCurrent() }
             } message: {
                 Text("全部删掉，删了就找不回来了。")
+            }
+            // ★ v1.0.226：视频历史点一条 → 两个选项（用户指定的交互形态：打开原网页 / 直接播放）
+            .confirmationDialog(actionTarget.map { $0.title.isEmpty ? $0.host : $0.title } ?? "这条视频",
+                                isPresented: Binding(get: { actionTarget != nil },
+                                                     set: { if !$0 { actionTarget = nil } }),
+                                titleVisibility: .visible) {
+                Button("直接播放") {
+                    let e = actionTarget
+                    actionTarget = nil
+                    if let e { onPlay(e) }
+                }
+                Button("打开原网页") {
+                    let e = actionTarget
+                    actionTarget = nil
+                    if let e { onOpen(e.page) }
+                }
+                Button("取消", role: .cancel) { actionTarget = nil }
             }
             .sheet(isPresented: $showPick) {
                 FilePickerBox(onPicked: { files in importBookmarks(files) },
@@ -215,7 +241,11 @@ struct BookmarksView: View {
     }
 
     private var currentCount: Int {
-        tab == 0 ? store.marks.count : store.history.count
+        switch tab {
+        case 0: return store.marks.count
+        case 1: return store.history.count
+        default: return watch.items.count
+        }
     }
 
     // MARK: - 两个列表
@@ -372,6 +402,97 @@ struct BookmarksView: View {
                 }
             }
             .listStyle(.plain)
+        }
+    }
+
+    // MARK: - ★ v1.0.226 视频历史
+
+    /// 一条 = 网页里出现过的一个视频（不用等它播过）。
+    ///
+    /// ★ 交互按用户指定的来：**点一条 → 弹两个选项**（打开原网页 / 直接播放）。
+    ///   不做"点一下就播" —— 很多条压根没有可播地址（`blob:` 那种页面自制流），
+    ///   一上来就播会撞一鼻子灰；给两个选项让他自己挑更实在。
+    @ViewBuilder
+    private var watchList: some View {
+        if watch.items.isEmpty {
+            empty("还没有视频记录。\n网页里只要有视频就会自动记在这儿 —— 不用等它播过。")
+        } else {
+            List {
+                ForEach(watch.items) { e in
+                    Button { actionTarget = e } label: { watchRow(e) }
+                        .buttonStyle(.plain)
+                }
+                .onDelete { idx in
+                    for i in idx { watch.remove(watch.items[i].id) }
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    /// 一行：缩略图 + 标题 + 时长/分辨率 + 域名·时间
+    private func watchRow(_ e: WatchEntry) -> some View {
+        HStack(spacing: 10) {
+            ZStack {
+                if let n = e.thumb, let img = watch.image(for: n) {
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Color(.tertiarySystemFill)
+                    Image(systemName: "play.rectangle")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            // ★ 高度写死 + 宽度跟随容器 —— 老规矩：`.aspectRatio(_, contentMode: .fill)`
+            //   在高度不受限时会拿**图片原始尺寸**当理想尺寸，把整格撑爆（踩过）。
+            .frame(width: 76, height: 46)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(e.title.isEmpty ? e.host : e.title)
+                    .font(.system(size: 14))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 6) {
+                    if e.played {
+                        Text("播过")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Color.green, in: Capsule())
+                    }
+                    Text(e.specText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(e.host.isEmpty ? e.timeText : "\(e.host) · \(e.timeText)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// 「清空」那一栏的标题 —— 三栏了，三元表达式不够用，抽出来。
+    private var clearTitle: String {
+        switch tab {
+        case 0: return "清空收藏？"
+        case 1: return "清空历史？"
+        default: return "清空视频记录？"
+        }
+    }
+
+    private func clearCurrent() {
+        switch tab {
+        case 0: store.clearMarks()
+        case 1: store.clearHistory()
+        default: WatchHistory.shared.removeAll()      // 记录 + 缩略图文件一起删
         }
     }
 

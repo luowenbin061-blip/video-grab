@@ -2055,7 +2055,18 @@ extension BrowserModel: WKScriptMessageHandler {
                 //   （见 didStartProvisionalNavigation），所以"视频没了按钮还在"最多残留到下次导航。
                 if list.isEmpty && !t.pageVideos.isEmpty { return }
                 t.pageVideos = list
-                if t === self.currentTab { self.pageVideos = list }
+                let isCur = (t === self.currentTab)
+                if isCur { self.pageVideos = list }
+                // ★ v1.0.226：顺手记进「视频历史」。
+                //   用户要的是「**网页里出现过就记**，不是播过才记」→ 写入点就在这儿，
+                //   不在播放入口（播放只负责给已记的那条补一个 played 标记）。
+                //   `playable` 只在**当前标签**才敢算 —— `pageVideoPlayTarget` 读的是
+                //   当前标签的嗅探结果，后台标签调它会把别的页的流算进来。
+                let page = t.address, ptitle = t.title
+                WatchHistory.shared.note(page: page, title: ptitle, videos: list) { v in
+                    if isCur { return self.pageVideoPlayTarget(v)?.url }
+                    return v.src.isEmpty ? nil : v.src
+                }
             }
             return
         }
