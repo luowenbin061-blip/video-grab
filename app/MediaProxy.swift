@@ -108,7 +108,10 @@ enum MediaProxy {
               let scheme = u.scheme?.lowercased(), scheme == "http" || scheme == "https"
         else { return nil }
         // 本机服务要先起来（root 用下载目录 —— 跟边下边播 / 清单本地化同一个根）
-        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        // ★ v1.0.229：改用 `ensureAlive()` —— 它多做一步"回环自检"，
+        //   发现服务其实没人接就重开。原来只 `start()`，一旦接受循环废了就永远坏着
+        //   （用户实测"点窗口报播放器起不来 / -1004 无法连接服务器"，多站点复现）。
+        guard LocalHTTPServer.shared.ensureAlive() != nil else { return nil }
         // ★ v1.0.168：把清单地址一并登记（分片那一跳要靠它刷新）
         return URL(string: proxyString(for: u, key: register(hs, playlist: cleaned)) ?? "")
     }

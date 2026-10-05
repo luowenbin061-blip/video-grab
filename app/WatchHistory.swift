@@ -66,6 +66,15 @@ struct WatchEntry: Codable, Identifiable, Equatable {
         return p.joined(separator: " · ")
     }
 
+    /// ★ v1.0.229：**内容指纹** —— 收掉"换线路 / 换清晰度"造成的那批重复。
+    ///   同一部片子的不同清晰度/线路，**标题和时长是一样的**，地址不一样。
+    ///   所以拿「站点 + 归一化标题 + 时长（2 秒一档）」当"这是同一条"的判据。
+    ///   ★★ 故意很保守（缺一条就不合并）：用户明确说了**两种错都不能接受** ——
+    ///     · 标题必须非空、两边相同；
+    ///     · 时长必须两边都 > 0 且落在同一个 2 秒档里。
+    ///   这样"少一条"是不可能的：真正不同的片子，标题或时长至少有一条对不上。
+    var mergeKey: String? { WatchHistory.mergeKey(title: title, dur: dur, page: page) }
+
     /// 缩略图该显示的文字占位（没图时）
     var initial: String { title.isEmpty ? "视频" : String(title.prefix(1)) }
 }
@@ -149,22 +158,42 @@ final class WatchHistory: ObservableObject {
     private static func migrate(_ list: [WatchEntry]) -> [WatchEntry] {
         var out: [WatchEntry] = []
         var seen: [String: Int] = [:]                    // 新键 → 在 out 里的下标
+        // ★ v1.0.229：内容指纹 → 下标（收掉"换清晰度 / 换线路"留下的那批重复）
+        var byMerge: [String: Int] = [:]
+
+        /// 撞车了 → 合并：能补的都补上，时间取最近的
+        func merge(_ i: Int, _ e: WatchEntry) {
+            if out[i].thumb == nil, e.thumb != nil { out[i].thumb = e.thumb }
+            if !out[i].played, e.played { out[i].played = true }
+            if out[i].video.isEmpty, !e.video.isEmpty { out[i].video = e.video }
+            if out[i].poster.isEmpty, !e.poster.isEmpty { out[i].poster = e.poster }
+            if e.at > out[i].at { out[i].at = e.at }
+            if out[i].title.isEmpty, !e.title.isEmpty { out[i].title = e.title }
+            if !e.page.isEmpty { out[i].page = e.page }
+        }
+
         for var e in list {
             if !e.id.hasPrefix("v|"), !e.id.hasPrefix("b|"), let bar = e.id.firstIndex(of: "|") {
                 let url = String(e.id[e.id.index(after: bar)...])
                 if url.hasPrefix("http") { e.id = videoKey(url) }
             }
-            if let i = seen[e.id] {
-                // 撞车 → 合并：能补的都补上，时间取最近的
-                if out[i].thumb == nil, e.thumb != nil { out[i].thumb = e.thumb }
-                if !out[i].played, e.played { out[i].played = true }
-                if out[i].video.isEmpty, !e.video.isEmpty { out[i].video = e.video }
-                if out[i].poster.isEmpty, !e.poster.isEmpty { out[i].poster = e.poster }
-                if e.at > out[i].at { out[i].at = e.at }
-                if !e.page.isEmpty { out[i].page = e.page }
-                if out[i].title.isEmpty, !e.title.isEmpty { out[i].title = e.title }
+            // ★ v1.0.229：除了"同一个地址"，**内容指纹相同**也算同一条。
+            //   用户手机里那批"切清晰度留下的重复"就是靠这一条收掉的。
+            var hit = seen[e.id]
+            if hit == nil, let mk = mergeKey(title: e.title, dur: e.dur, page: e.page) {
+                hit = byMerge[mk]
+            }
+            if let i = hit {
+                merge(i, e)
+                seen[e.id] = i                                   // 这个地址以后也指到这条
+                if let mk = mergeKey(title: out[i].title, dur: out[i].dur, page: out[i].page) {
+                    byMerge[mk] = i
+                }
             } else {
                 seen[e.id] = out.count
+                if let mk = mergeKey(title: e.title, dur: e.dur, page: e.page) {
+                    byMerge[mk] = out.count
+                }
                 out.append(e)
             }
         }
@@ -214,10 +243,45 @@ final class WatchHistory: ObservableObject {
         return "v|" + s
     }
 
+    /// ★★ v1.0.229：**内容指纹** —— 同一部片子的"换线路 / 换清晰度"版本靠它认成一条。
+    ///
+    /// 用户实测：「在页面里切到更高/更低清晰度，历史里就又新增一条，本质是同一条」。
+    /// 根因是身份判据**只看地址**（换清晰度 = 换地址 = 他以为是新视频），
+    /// 而同一个播放器换源时**标题和时长都不变** —— 那就用它们当判据。
+    ///
+    /// ★ 保守到"缺一条就不合并"，因为用户明确说**两种错都不能接受**：
+    ///   · 标题必须非空（≥2 字）且两边归一化后完全相同；
+    ///   · 时长必须两边都 > 0，且落在同一个 2 秒档里（`dur / 2`）。
+    ///   反过来说：真正不同的片子，标题或时长至少有一条对不上 → **不会误并成一条**。
+    static func mergeKey(title: String, dur: Int, page: String) -> String? {
+        let t = normTitle(title)
+        guard t.count >= 2, dur > 0 else { return nil }
+        let host = (URL(string: page)?.host ?? "").lowercased()
+        guard !host.isEmpty else { return nil }
+        return host + "|" + t + "|" + String(dur / 2)
+    }
+
+    /// 标题归一化：**只用于"是不是同一条"的判断**（不改显示）。
+    /// 去掉空白 / 全角空格 / 常见的站名后缀，避免"同一部片子不同页面标题略有差异"漏合并。
+    static func normTitle(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let junk = [" - 在线观看", "-在线观看", "在线观看", " - 免费在线观看",
+                    "免费在线观看", "高清在线观看", "- 高清在线观看", "在线播放"]
+        for j in junk where t.hasSuffix(j) { t = String(t.dropLast(j.count)) }
+        t = t.replacingOccurrences(of: " ", with: "")
+        t = t.replacingOccurrences(of: "\u{3000}", with: "")
+        return String(t.prefix(60))
+    }
+
     /// 页面视频清单到了 → 逐条记一笔（已存在的**更新**，不重复新增）。
     ///
+    /// ★★ v1.0.229 口径变了（用户实测定）：**只记"我点开过的"**。
+    ///   上一版是"网页里出现过就记、越全越好"，结果站里那些 10 秒以内的小视频、
+    ///   悬停自动播的预览片全被记了进去 —— 他实测反馈"没主动点开也被记了一堆"。
+    ///   现在只收 `v.ever`（判据在 `sniffer.js`：**在播 且 不是静音**）那一批。
+    ///
     /// - Parameters:
-    ///   - page:  当前页面地址（去重键的一半，也是"打开原网页"的目标）
+    ///   - page:  当前页面地址（"打开原网页"的目标，也是合并判据的一部分）
     ///   - title: 当时的页面标题
     ///   - videos: `sniffer.js` 上报的页面视频清单
     ///   - playable: 把某个 `<video>` 换成"能播的地址"（拿不到就返回 nil）。
@@ -226,12 +290,18 @@ final class WatchHistory: ObservableObject {
               playable: (PageVideo) -> String?) {
         guard Self.isEnabled else { return }
         guard !page.isEmpty, !videos.isEmpty else { return }
+        // ★ 只收"被点开过"的 —— 没播过的一条都不记（这就是"误统计"的根治）
+        let wanted = videos.filter { $0.ever }
+        guard !wanted.isEmpty else { return }
 
         var touched = false
-        for v in videos {
+        var fresh: [(PageVideo, String)] = []      // 新记的 → 循环外再去拿封面（别边遍历边改数组）
+
+        for v in wanted {
             let key = Self.key(title: title, v: v)
             let vt = v.vtitle.isEmpty ? title : v.vtitle     // ★ 视频自己的名字优先
 
+            // ① 同一条地址 → 就地更新（最准的一路）
             if let i = items.firstIndex(where: { $0.id == key }) {
                 var e = items[i]
                 if v.dur > 0 { e.dur = v.dur }               // 时长/分辨率是后到的，能补就补
@@ -246,33 +316,84 @@ final class WatchHistory: ObservableObject {
                 items[i] = e
                 touched = true
                 if e.thumb == nil { grabThumb(v, for: key) }
-            } else {
-                let e = WatchEntry(id: key, title: vt, page: page,
-                                   video: playable(v) ?? v.src,
-                                   poster: v.poster, thumb: nil,
-                                   dur: v.dur, w: v.w, h: v.h,
-                                   played: false, at: Date())
+                continue
+            }
+
+            // ② ★ v1.0.229：内容指纹撞上 → 认成**同一条**（"换清晰度 / 换线路"走的就是这条）。
+            //   用户要求"只保留最后一次的结果"→ 地址换成最新这次，并把这条提到最前面。
+            if let mk = Self.mergeKey(title: vt, dur: v.dur, page: page),
+               let i = items.firstIndex(where: { $0.mergeKey == mk }) {
+                var e = items[i]
+                if v.dur > 0 { e.dur = v.dur }
+                if v.w > 0 { e.w = v.w; e.h = v.h }
+                if let u = playable(v) { e.video = u }        // ★ 换成最新那次的地址
+                if !v.poster.isEmpty { e.poster = v.poster }
+                if !vt.isEmpty { e.title = vt }
+                if !page.isEmpty { e.page = page }
+                e.id = key                                   // 键跟着新地址走
+                e.at = Date()
+                items[i] = e
+                items.remove(at: i)
                 items.insert(e, at: 0)
                 touched = true
-                grabThumb(v, for: key)
+                if e.thumb == nil { grabThumb(v, for: key) }
+                continue
             }
+
+            // ③ 全新的一条
+            let e = WatchEntry(id: key, title: vt, page: page,
+                               video: playable(v) ?? v.src,
+                               poster: v.poster, thumb: nil,
+                               dur: v.dur, w: v.w, h: v.h,
+                               played: false, at: Date())
+            items.insert(e, at: 0)
+            fresh.append((v, key))
+            touched = true
         }
 
         guard touched else { return }
         trim()
         scheduleFlush()
+        for (v, id) in fresh { grabThumb(v, for: id) }
     }
 
-    /// 用内置播放器播了它 —— 给这一条打个标记。
-    /// ★ 找不到就**什么都不做**（不新增）：播放过的按道理早被页面清单记下了；
-    ///   真没记上说明当时开关关着或者页面没上报，那也不该在这儿凭空造一条。
-    func markPlayed(page: String, video: String) {
-        // ★ v1.0.228：键跟 `note` 那边保持一致（只有地址这一种情况）
-        guard let i = items.firstIndex(where: { $0.id == Self.videoKey(video) }) else { return }
-        guard !items[i].played else { return }
-        items[i].played = true
-        items[i].at = Date()
+    /// 用内置播放器播了它 —— 打上标记；**没有记录时顺手建一条**。
+    ///
+    /// ★ v1.0.229 改了两点（跟着"只记点开过的"这个口径走）：
+    ///   ① 老实现"找不到就什么都不做" ── 但按新口径，**从播放这条路进来的正是"点开过"**，
+    ///      所以没有记录时要补记（不然从「窗口」/长按/预览进来的就漏了）；
+    ///   ② 顺手把标题/封面/时长一起带上，比之后再靠页面清单补更准。
+    func markPlayed(page: String, title: String = "", video: String,
+                    poster: String = "", shot: String = "", dur: Int = 0) {
+        guard Self.isEnabled else { return }
+        guard !video.isEmpty else { return }
+        let key = Self.videoKey(video)
+
+        if let i = items.firstIndex(where: { $0.id == key }) {
+            items[i].played = true
+            items[i].at = Date()
+            if !title.isEmpty { items[i].title = title }
+            if !page.isEmpty { items[i].page = page }
+            if dur > 0 { items[i].dur = dur }
+            if items[i].poster.isEmpty, !poster.isEmpty { items[i].poster = poster }
+            let needThumb = (items[i].thumb == nil)
+            scheduleFlush()
+            if needThumb, !poster.isEmpty { downloadPoster(poster, referer: page, for: key) }
+            else if needThumb, let n = saveShot(shot) { setThumb(n, for: key, replace: false) }
+            return
+        }
+
+        // 没记过 → 现在记（他确实点开播了）
+        var t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { t = URL(string: page)?.host ?? "视频" }
+        let e = WatchEntry(id: key, title: t, page: page, video: video,
+                           poster: poster, thumb: nil, dur: dur, w: 0, h: 0,
+                           played: true, at: Date())
+        items.insert(e, at: 0)
+        trim()
         scheduleFlush()
+        if !poster.isEmpty { downloadPoster(poster, referer: page, for: key) }
+        else if let n = saveShot(shot) { setThumb(n, for: key, replace: false) }
     }
 
     /// 删一条（连同它的缩略图文件）
@@ -367,7 +488,9 @@ final class WatchHistory: ObservableObject {
     ///   每浏览一个页面就抽一次不可接受，等他真去翻历史页时再补才对。
     /// ★ 一次最多补 `limit` 张、**一条一条串行**：同时开一堆 AVAssetImageGenerator
     ///   会把网络和 CPU 一起抢光，反而谁都抽不出来。
-    func fillMissingThumbs(limit: Int = 12) {
+    /// ★ v1.0.229：一次只补 **4** 张（原来 12 张）—— 用户实测"网页卡死"，而抽帧是这套里
+    ///   最重的活（要真的加载一段视频）。少而慢，别跟网页抢资源。
+    func fillMissingThumbs(limit: Int = 4) {
         guard Self.isEnabled, !filling else { return }
         let todo = items.filter {
             $0.thumb == nil && !$0.video.isEmpty && !thumbTried.contains($0.id)
@@ -412,9 +535,12 @@ final class WatchHistory: ObservableObject {
                 cont.resume(returning: result == .succeeded ? img : nil)
             }
             // ★ 超时兜底：8 秒还没回调就自己收掉（否则 m3u8 那种会把这条任务一直吊着）
+            // ★ v1.0.229：**顺手把生成器也停掉** —— 只 resume 不 cancel 的话，
+            //   那个加载还在后台跑（占网络和内存），12 条一起吊着就是"资源被抽干"。
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                 if once.done { return }
                 once.done = true
+                gen.cancelAllCGImageGeneration()
                 cont.resume(returning: nil)
             }
         }

@@ -520,8 +520,12 @@ struct ContentView: View {
                                                 title: m.title.isEmpty ? "视频" : m.title,
                                                 headers: lpHeaders(m)) {
                                               Haptics.tap()   // ★ v1.0.224：开始播放
-                                              // ★ v1.0.226：长按播的也记一笔（对得上就标"播过"）
-                                              WatchHistory.shared.markPlayed(page: model.address, video: m.url)
+                                              // ★ v1.0.229：长按播的也是"点开过" → 记一笔
+                                              //   （新口径下没有记录时会补记一条）
+                                              WatchHistory.shared.markPlayed(
+                                                  page: model.address,
+                                                  title: m.title,
+                                                  video: m.url)
                                               lpPlay = t
                                           } else {
                                               model.showToast("这个地址读不懂，播不了。可以换个源，或者直接下载试试。")
@@ -569,7 +573,8 @@ struct ContentView: View {
                         // 键固定成 "lp"：跟"预览"同一个道理 —— 长按随手点开不该污染
                         // 任何真实下载任务的续看进度（各任务的键是任务 id）。
                         key: "lp",
-                        headers: t.headers)
+                        headers: t.headers,
+                        fallback: t.fallback)      // ★ v1.0.229：本机中转连不上就退回直连
         }
         // ★ v1.0.119：系统分享面板（当前网页 / 拼好的长图 / 下载好的文件都走它）
         .sheet(item: $shareBundle) { b in
@@ -947,8 +952,14 @@ struct ContentView: View {
                                                        title: "本页视频",
                                                        headers: t.headers) {
                 Haptics.tap()           // ★ v1.0.224：开始播放
-                // ★ v1.0.226：给「视频历史」里那条补个"播过"的标记
-                WatchHistory.shared.markPlayed(page: model.address, video: t.url)
+                // ★ v1.0.229：口径改成"只有点开过的才记" —— 从这里播正是"点开过"，
+                //   所以顺手把标题/封面/时长一起带过去（没有记录时就补记一条）。
+                //   跟页面清单那条路进的是同一个键，不会变成两条。
+                WatchHistory.shared.markPlayed(
+                    page: model.address,
+                    title: v.vtitle.isEmpty ? model.pageTitle : v.vtitle,
+                    video: t.url,
+                    poster: v.poster, shot: v.shot, dur: v.dur)
                 lpPlay = target
             } else {
                 model.showToast("这个地址读不出来，播不了。")
@@ -969,6 +980,8 @@ struct ContentView: View {
             return
         }
         let page = e.page, video = e.video
+        // ★ v1.0.229：这几个先取成局部量再进 Task —— 免得并发闭包直接捕获整条 `e`
+        let pTitle = e.title, pPoster = e.poster, pDur = e.dur
         var heads: [String: String] = [:]
         if !page.isEmpty { heads["Referer"] = page }
         let title = e.title.isEmpty ? "视频" : e.title
@@ -977,7 +990,10 @@ struct ContentView: View {
             try? await Task.sleep(nanoseconds: 420_000_000)
             if let t = await PlaylistRelay.target(remote: video, title: title, headers: heads) {
                 Haptics.tap()
-                WatchHistory.shared.markPlayed(page: page, video: video)
+                // ★ v1.0.229：带上标题/封面/时长（找不到就补一条）——
+                //   新口径"播放 = 该记"，从历史进来这次也算"点开过"。
+                WatchHistory.shared.markPlayed(page: page, title: pTitle, video: video,
+                                               poster: pPoster, dur: pDur)
                 lpPlay = t
             } else {
                 model.showToast("这个地址读不出来，播不了。可以「打开原网页」再试。")
@@ -1581,7 +1597,8 @@ struct SniffPanel: View {
             PlayerSheet(url: t.url,
                         title: t.title,
                         key: "preview",
-                        headers: t.headers)
+                        headers: t.headers,
+                        fallback: t.fallback)      // ★ v1.0.229：本机中转连不上就退回直连
         }
         .sheet(item: $variantItem) { it in
             VariantPickerSheet(model: model, url: it.url,

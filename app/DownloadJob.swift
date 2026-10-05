@@ -394,7 +394,8 @@ final class DownloadJob: ObservableObject, Identifiable {
         }
         // 没转成 mp4：本地 .ts 只能靠本机 HTTP 包成 HLS 才能被播放器读
         guard let pl = playlistName, JobStore.exists(named: n) else { return nil }
-        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        // ★ v1.0.229：`start` → `ensureAlive` —— 多一步"回环自检"，服务其实没人接就重开
+        guard LocalHTTPServer.shared.ensureAlive() != nil else { return nil }
         return LocalHTTPServer.shared.url(pl)
     }
 
@@ -404,7 +405,8 @@ final class DownloadJob: ObservableObject, Identifiable {
     func livePreviewURL() -> URL? {
         guard livePreviewReady else { return nil }
         guard LivePreview.canPlay(taskID: id, root: JobStore.dir) else { return nil }
-        guard LocalHTTPServer.shared.start(root: JobStore.dir) != nil else { return nil }
+        // ★ v1.0.229：同上 —— 用 `ensureAlive` 而不是 `start`
+        guard LocalHTTPServer.shared.ensureAlive() != nil else { return nil }
         return LocalHTTPServer.shared.url(LivePreview.relativePath(taskID: id))
     }
 

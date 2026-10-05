@@ -318,25 +318,35 @@
   //   · 页面一换就把缓存整个丢掉（下标会错位）。
   //   · 尺寸压到 240 宽 + 0.6 质量：postMessage 传大字符串很贵，封面够看就行。
   var shotCache = {};
+  // ★ v1.0.229：**抓不到的也记账**。原来失败不缓存 —— 跨域视频（toDataURL 必抛）
+  //   每扫一次就重画重编码一遍，这是全脚本最贵的一步。现在一次失败就不再试。
+  var shotFail = {};
   var shotPage = '';
   function grabShot(v, src, idx) {
+    var key = src || ('idx' + idx);
     try {
       var page = location.href || '';
-      if (page !== shotPage) { shotCache = {}; shotPage = page; }
-      var key = src || ('idx' + idx);
+      if (page !== shotPage) { shotCache = {}; shotFail = {}; shotPage = page; }
       if (shotCache[key]) return shotCache[key];
-      if (v.readyState < 2 || !v.videoWidth || !v.videoHeight) return '';
+      if (shotFail[key]) return '';
+      // ★ v1.0.229：**只给"点开过 / 正在播"的抓帧**。
+      //   用户实测定下的口径是「历史只记我点开过的」，没点开的连图都不用抓 ——
+      //   直接省掉最贵的一步（canvas 重绘 + JPEG 编码）。
+      var ever = false;
+      try { ever = !!v.__vgPlayed; } catch (e2) {}
+      if (!ever && v.paused) return '';
+      if (v.readyState < 2 || !v.videoWidth || !v.videoHeight) return '';   // 还没就绪：下次再看，**不记失败**
       var tw = 240, th = Math.round(v.videoHeight * tw / v.videoWidth);
       var c = document.createElement('canvas');
       c.width = tw; c.height = th;
       var ctx = c.getContext('2d');
-      if (!ctx) return '';
+      if (!ctx) { shotFail[key] = 1; return ''; }
       ctx.drawImage(v, 0, 0, tw, th);
       var s = c.toDataURL('image/jpeg', 0.6);   // ← 跨域在这一行抛
-      if (!s || s.length > 60000) return '';    // 太大的不要
+      if (!s || s.length > 60000) { shotFail[key] = 1; return ''; }   // 太大的不要，也别再试
       shotCache[key] = s;
       return s;
-    } catch (e) { return ''; }
+    } catch (e) { shotFail[key] = 1; return ''; }
   }
 
   // ★ v1.0.228：封面图**多来源**查找 —— 只认 `video.poster` 命中率太低（多数站根本不用它，
@@ -345,25 +355,35 @@
   //        （很多站的封面是给播放器容器设的背景图）。
   //   都没找到就返回空串，再由原生侧决定"要不要抽帧"。
   function findCover(v) {
-    try { if (v.poster) return v.poster; } catch (e) {}
-    try {
-      var p = v.parentElement;
-      for (var k = 0; k < 3 && p; k++, p = p.parentElement) {
-        var bg = '';
-        try { bg = window.getComputedStyle(p).backgroundImage || ''; } catch (e) {}
-        var m = /url\(["']?(.*?)["']?\)/.exec(bg);
-        if (m && m[1] && !/^data:/i.test(m[1])) return m[1];
-      }
-    } catch (e) {}
-    return '';
+    // ★ v1.0.229：**只在真找到时才缓存到元素上**。
+    //   以前每扫一次都要对最多 3 层祖先跑 getComputedStyle（会逼样式重算，是重活），
+    //   而封面常常是"后设的" —— 缓存空值会让它永远补不上，缓存非空值才是既省又对。
+    try { if (v.__vgCover) return v.__vgCover; } catch (e) {}
+    var got = '';
+    try { if (v.poster) got = v.poster; } catch (e) {}
+    if (!got) {
+      try {
+        var p = v.parentElement;
+        for (var k = 0; k < 3 && p; k++, p = p.parentElement) {
+          var bg = '';
+          try { bg = window.getComputedStyle(p).backgroundImage || ''; } catch (e) {}
+          var m = /url\(["']?(.*?)["']?\)/.exec(bg);
+          if (m && m[1] && !/^data:/i.test(m[1])) { got = m[1]; break; }
+        }
+      } catch (e) {}
+    }
+    if (got) { try { v.__vgCover = got; } catch (e) {} }
+    return got;
   }
 
   // ★ v1.0.228：页面级封面（og:image / twitter:image）—— 单视频页里它通常就是海报图。
   //   注意是**兜底**：多视频页会全都挂同一张图，所以只在 video 自己找不到时用。
   var ogCoverCache = null;
   function ogCover() {
-    if (ogCoverCache !== null) return ogCoverCache;
-    ogCoverCache = '';
+    // ★ v1.0.229：**只在找到之后才缓存**。以前第一次没找到就把空串缓存下来 ——
+    //   而 og:image 那个 meta 往往是页面脚本后插的 → 之后**永远**拿不到封面
+    //   （用户实测"多数网站还是没有缩略图"，这一条就是原因之一）。
+    if (ogCoverCache) return ogCoverCache;
     try {
       var sels = ['meta[property="og:image"]', 'meta[name="og:image"]',
                   'meta[name="twitter:image"]', 'meta[property="twitter:image"]'];
@@ -372,7 +392,7 @@
         if (m && m.content) { ogCoverCache = m.content; break; }
       }
     } catch (e) {}
-    return ogCoverCache;
+    return ogCoverCache || '';
   }
 
   // ★ v1.0.228：标题 —— 用户实测「大多显示站点名称」，根因是原来只用了 `document.title`
@@ -380,16 +400,17 @@
   //   顺序：og:title → 第一个 h1 → document.title。
   var pageTitleCache = null;
   function pageTitle() {
-    if (pageTitleCache !== null) return pageTitleCache;
+    // ★ v1.0.229：同样**只缓存"好的那个"** —— og:title / h1 是后插的，
+    //   而 document.title 一般一开始就有；缓存了它，真片名就永远覆盖不上来了。
+    if (pageTitleCache) return pageTitleCache;
     var t = '';
     try {
       var m = document.querySelector('meta[property="og:title"], meta[name="og:title"]');
       if (m && m.content) t = (m.content || '').trim();
     } catch (e) {}
     if (!t) { try { var h = document.querySelector('h1'); if (h) t = (h.textContent || '').trim(); } catch (e) {} }
-    if (!t) { try { t = (document.title || '').trim(); } catch (e) {} }
-    pageTitleCache = t.slice(0, 140);
-    return pageTitleCache;
+    if (t) { pageTitleCache = t.slice(0, 140); return pageTitleCache; }
+    try { return (document.title || '').trim().slice(0, 140); } catch (e) { return ''; }
   }
 
   // ★ v1.0.228：视频**自己**的名字（有的播放器会写在 title / aria-label 上）
@@ -423,6 +444,13 @@
         try { ctrls = !!v.controls; } catch (e) {}
         try { ap = !!v.autoplay; } catch (e) {}
         var isBlob = /^blob:/i.test(cur);
+        // ★ v1.0.229：这个 video 被「点开过」没有（在播 且 不是静音，见 latchPlayed）。
+        //   用户口径：历史**只记点开过的** —— 10 秒小视频、悬停自动播的预览片都要挡在外面。
+        //   ★ 顺手先 latch 一次：事件监听是"页面装载时"挂上去的，万一有视频在我们之前
+        //     就已经在播（脚本注入晚了一步 / SPA 路由），光靠事件会漏掉它。
+        latchPlayed(v);
+        var ever = false;
+        try { ever = !!v.__vgPlayed; } catch (e) {}
         var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
         // ★ v1.0.226：两条封面的来源，给「视频历史」当缩略图 ——
         //   ① `poster`：页面自己声明的封面图地址（最省事、最准）→ 原生下载它；
@@ -447,6 +475,7 @@
           center: (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.25),
           poster: cover,
           vtitle: videoTitle(v),
+          ever: ever,
           shot: grabShot(v, cur, i)
         });
       }
@@ -466,9 +495,11 @@
       var v = list[i];
       // ★ v1.0.228：**封面也算进签名** —— 页面刚加载时 og:image 那个 meta 可能还没解析，
       //   封面会先空后有；不含进签名的话那次变化不触发重发，就永远拿不到封面了。
+      // ★ v1.0.229：**`ever`（点开过）也要算进签名** —— 它是"要不要记进历史"的开关，
+      //   钉上的那一刻必须让原生侧知道，否则只点一下不换源就永远不上报。
       a.push(v.i + '|' + v.src + '|' + (v.playing ? 1 : 0) + '|' + v.dur +
              '|' + v.w + 'x' + v.h + '|' + (v.muted ? 1 : 0) + '|' + v.area +
-             '|' + (v.poster || ''));
+             '|' + (v.poster || '') + '|' + (v.ever ? 1 : 0));
     }
     return a.join(';');
   }
@@ -507,6 +538,24 @@
   //   （尺寸变化不是属性变化）。所以在还没扫到任何视频之前，每 1.5 秒补扫一次，
   //   最多 20 次（30 秒）；扫到就停。用户后来点播放会触发 play 事件 → 同样会重扫。
   var vidRetry = null, vidRetryLeft = 0;
+  // ★ v1.0.229：这个 <video> 到底被"点开过"没有。
+  //
+  // 用户实测定下的口径：「视频历史只记**我点开过的**」—— 站里那些 10 秒以内的小视频、
+  // 悬停就自动播的预览片都不该进历史（他实测"没主动点开也被记了一堆"）。
+  // 判据用**"在播 且 不是静音 且 已经播过一点"**：
+  //   · 静音自动播的广告 / 预览片 → 不算；
+  //   · 他点一下（出声了）、或本来就带声音在放 → 算。
+  // 一旦算过就**钉在元素上**（`__vgPlayed`）—— 之后暂停、播完都不再变。
+  function latchPlayed(v) {
+    try {
+      if (v.__vgPlayed) return false;
+      if (v.paused || v.muted || v.ended) return false;
+      if (!(v.currentTime > 0)) return false;
+      v.__vgPlayed = 1;
+      return true;
+    } catch (e) { return false; }
+  }
+
   function startVideos() {
     if (vidObserver) return;
     reportVideos(true);
@@ -519,18 +568,51 @@
     }, 1500);
     try {
       // ① 页面新增节点 → 重扫。**只观察 childList**（观察 attributes 是最贵的）
-      vidObserver = new MutationObserver(function () { reportVideos(false); });
+      //
+      // ★★ v1.0.229：**先看一眼这次变动值不值得重扫**（这是"网页卡死"的主治）。
+      //   原来这里是"任何 DOM 变化都全量重扫一遍"，而一次重扫包含
+      //   getBoundingClientRect（逼重排）+ getComputedStyle（逼样式重算）+ canvas 重绘编码。
+      //   广告 / 轮播 / 评论流这类页面一秒几十次变动 → 页面主线程被打满。
+      //   只有这三种情况才算"值得"：
+      //     ① 还没找到任何视频（尺寸是后置的，得继续等）；
+      //     ② 新增的节点里含 <video>；
+      //     ③ 变动发生在某个 <video> 内部（换 <source> 那种）。
+      vidObserver = new MutationObserver(function (recs) {
+        var worth = pageVids.length === 0;
+        for (var r = 0; r < recs.length && !worth; r++) {
+          var rec = recs[r];
+          var tgt = rec.target;
+          if (tgt && tgt.nodeType === 1) {
+            if (String(tgt.tagName || '').toLowerCase() === 'video') { worth = true; break; }
+            try { if (tgt.closest && tgt.closest('video')) { worth = true; break; } } catch (e) {}
+          }
+          var add = rec.addedNodes;
+          if (!add) continue;
+          for (var n = 0; n < add.length && !worth; n++) {
+            var el = add[n];
+            if (!el || el.nodeType !== 1) continue;
+            if (String(el.tagName || '').toLowerCase() === 'video') { worth = true; break; }
+            try { if (el.querySelector && el.querySelector('video')) worth = true; } catch (e) {}
+          }
+        }
+        if (worth) reportVideos(false);
+      });
       vidObserver.observe(document.documentElement || document,
                           { childList: true, subtree: true });
     } catch (e) {}
     try {
       // ② video 自己的状态变化（开播 / 暂停 / 换源）→ 重扫。
       //    用事件委托挂在 document 上（捕获），不逐个元素挂监听。
-      var evs = ['play', 'pause', 'loadedmetadata', 'durationchange', 'emptied', 'volumechange'];
+      //    ★ v1.0.229：加了 'playing'（真正出画那一刻）和 'seeked'，
+      //    因为"点开过"要在**已经播起来**时才能判定（play 事件那一刻 currentTime 还是 0）。
+      var evs = ['play', 'playing', 'pause', 'loadedmetadata', 'durationchange',
+                 'emptied', 'volumechange', 'seeked'];
       for (var i = 0; i < evs.length; i++) {
         document.addEventListener(evs[i], function (e) {
           var t = e.target;
-          if (t && String(t.tagName || '').toLowerCase() === 'video') reportVideos(false);
+          if (!t || String(t.tagName || '').toLowerCase() !== 'video') return;
+          latchPlayed(t);            // 先钉"点开过"，再让上报把这件事带出去
+          reportVideos(false);
         }, true);
       }
     } catch (e) {}

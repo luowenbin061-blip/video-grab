@@ -27,6 +27,10 @@ struct PageVideo: Identifiable, Equatable {
     /// ★ v1.0.228：视频**自己**的名字（有的播放器写在 `title` / `aria-label` 上）。
     ///   多数站是空串 —— 那时退回页面标题（见 `WatchHistory.note`）。
     let vtitle: String
+    /// ★ v1.0.229：这个视频**被点开过**没有（在播 且 不是静音）。
+    ///   用户实测定下的口径：「视频历史只记**我点开过的**」——
+    ///   站里的 10 秒小视频、悬停自动播的预览片都挡在外面（判据在 `sniffer.js` 的 `latchPlayed`）。
+    let ever: Bool
 
     /// 「更像正片还是更像广告」的粗打分。
     ///
@@ -96,7 +100,8 @@ struct PageVideo: Identifiable, Equatable {
                 center: bool("center"),
                 poster: (d["poster"] as? String) ?? "",
                 shot: (d["shot"] as? String) ?? "",
-                vtitle: (d["vtitle"] as? String) ?? ""))
+                vtitle: (d["vtitle"] as? String) ?? "",
+                ever: bool("ever")))
         }
         return out
     }

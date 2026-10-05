@@ -66,6 +66,11 @@ enum PlaylistRelay {
         let url: URL
         let title: String
         let headers: [String: String]?
+        /// ★ v1.0.229：**兜底地址** —— 当前播的是本机代理地址时，它是那条**原始地址**。
+        ///   本机代理是我们自己开的小服务器（v1.0.217 起播放入口都走它）；它一旦没在接连接，
+        ///   播放器只会报「无法连接服务器 -1004」（用户实测截图就是这个）。
+        ///   有这一条，播放器会自动改用直连再试一次 —— 最坏也只是回到"没有代理那会儿"。
+        let fallback: URL?
     }
 
     /// 统一入口：把"网页/嗅探拿到的那条地址"变成一个能播的目标。
@@ -87,12 +92,15 @@ enum PlaylistRelay {
         //   照样裸奔 → "分片要校验 Referer / Cookie"的站必然 400/403。**错在请求，不在解码。**
         //   走本机代理则清单会被改写成代理地址 → 清单、子清单、分片、钥匙**每一跳都带头**。
         if let proxied = MediaProxy.wrap(cleaned, headers: headers) {
-            // 头已经登记在代理里 → 这里传 nil，别重复带（免得两条路各带一份、互相打架）
-            return PlayTarget(url: proxied, title: title, headers: nil)
+            // ★ v1.0.217 原来的注释是"头已经登记在代理里 → 这里传 nil，别重复带"。
+            //   ★ v1.0.229 改回**带上**：这一份头是给"兜底直连"那条路用的
+            //   （本机服务没在接的时候播放器会退回原始地址重试，那时没有 Referer/UA 就是 403）。
+            //   代理那条路照样用登记在它自己表里的头，两边值一样，不会互相打架。
+            return PlayTarget(url: proxied, title: title, headers: headers, fallback: raw)
         }
         // 代理起不来（本机服务没起来）→ 退回"清单本地化"，绝不比现在更差
         let final = await localPlaybackURL(remote: raw, headers: headers, root: JobStore.dir) ?? raw
-        return PlayTarget(url: final, title: title, headers: headers)
+        return PlayTarget(url: final, title: title, headers: headers, fallback: nil)
     }
 
     /// 生成一份本地清单并返回它的本机 http 地址。

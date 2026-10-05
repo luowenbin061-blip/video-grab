@@ -43,6 +43,13 @@ final class LocalHTTPServer {
     private var running = false
     /// ★ v1.0.203：监听代次号（重绑端口/重开共享时 +1，旧 accept 循环据此退出）
     private var listenGen = 0
+    /// ★ v1.0.229：起/停服务要**串行**。
+    ///   为什么：`start()` 里是「先关旧监听、再绑新端口」——两台线程同时进来时，
+    ///   先跑到 `tryListen` 的那次会拿到端口 P1 并把它交给播放器，紧接着另一次又把监听
+    ///   挪到 P2 → 播放器拿着 P1 去连，得到的就是 **-1004「连不上」**。
+    ///   本机服务同时被播放、下载、共享三条路调用，这个竞态是真实存在的。
+    ///   用递归锁：`start()` 内部还会调 `closeListener()`（同一把锁再进一层）。
+    private let lock = NSRecursiveLock()
 
     private var root: URL?
     private(set) var port: UInt16 = 0
@@ -82,6 +89,8 @@ final class LocalHTTPServer {
     /// 启动（幂等）。root 是要对外暴露的目录。
     @discardableResult
     func start(root: URL) -> UInt16? {
+        lock.lock()
+        defer { lock.unlock() }
         self.root = root
         if running, port > 0, listenFD >= 0 { return port }
 
@@ -101,6 +110,45 @@ final class LocalHTTPServer {
     }
 
     func stop() { closeListener() }
+
+    /// ★★ v1.0.229：**自检 + 自愈** —— 回环连一下自己，连不上就把监听重开。
+    ///
+    /// 为什么非要有它（用户实测「点『窗口』报播放器起不来」，截图是
+    /// `http://127.0.0.1:<端口>/__vgproxy/… → -1004 无法连接服务器`）：
+    /// `start()` 是"已经在跑就直接返回那个端口"的幂等实现 —— 万一接受循环已经废了
+    /// （资源耗尽那类），它会**一直返回一个没人接的端口**，于是所有走本机代理的播放
+    /// 永远是"连不上"，而且**永远不会自己好**，只能重启 App。
+    /// 现在每次要用之前先探一下（一次回环 connect，几十微秒），坏了就重开。
+    @discardableResult
+    func ensureAlive() -> UInt16? {
+        lock.lock()
+        defer { lock.unlock() }
+        if running, port > 0, listenFD >= 0, canReachSelf() { return port }
+        closeListener()
+        return start(root: root ?? JobStore.dir)
+    }
+
+    /// 往自己的监听端口连一下（只为确认"有人在接"）。连上就立刻断开，不发请求。
+    private func canReachSelf() -> Bool {
+        guard port > 0 else { return false }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        // 200ms 够本机回环用了；真卡住也不能把调用方（播放链路）拖住
+        var tv = timeval(tv_sec: 0, tv_usec: 200_000)
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        guard inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1 else { return false }
+        let r: Int32 = withUnsafePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return r == 0
+    }
 
     // MARK: - 开 / 关 局域网共享
 
@@ -216,6 +264,8 @@ final class LocalHTTPServer {
     }
 
     private func closeListener() {
+        lock.lock()
+        defer { lock.unlock() }
         running = false
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         port = 0

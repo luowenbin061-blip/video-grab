@@ -96,7 +96,7 @@ struct PlayerSheet: View {
 
     /// ★ v1.0.127：`headers` 给"预览嗅探到的地址"用（要带 Referer/UA/Cookie 才过防盗链）。
     init(url: URL, title: String = "", pip: PiPProgress? = nil, key: String = "",
-         headers: [String: String]? = nil) {
+         headers: [String: String]? = nil, fallback: URL? = nil) {
         self.url = url
         self.title = title
         self.pip = pip
@@ -107,7 +107,7 @@ struct PlayerSheet: View {
         let resolvedKey = key.isEmpty ? url.lastPathComponent : key
         self.progressKey = resolvedKey
         _box = StateObject(wrappedValue: PlayerBox(url: url, resumeKey: resolvedKey,
-                                                   headers: headers))
+                                                   headers: headers, fallback: fallback))
     }
 
     /// ★ v1.0.115：续看提示（顶部那颗小药丸）。
@@ -437,9 +437,19 @@ final class PlayerBox: ObservableObject {
     }
 
     let player: AVPlayer
-    private let item: AVPlayerItem
+    /// ★ v1.0.229：`let` → `var` —— 本机代理连不上时会换一条新 item（见 `fallbackURL`）
+    private var item: AVPlayerItem
     /// ★ v1.0.115 续看：这条内容的身份（列表传的是任务 id）。进度就记在它下面。
     private let resumeKey: String
+    /// ★ v1.0.229：兜底地址。当前播的是**本机代理**地址时，这里放那条原始地址 ——
+    ///   代理没在接连接时（用户实测报 `-1004 无法连接服务器`）自动退回直连再试一次。
+    private let fallbackURL: URL?
+    /// 传给 AVPlayer 的请求头 —— 兜底那一次也要带上（防盗链的站不给头就是 403）
+    private let itemHeaders: [String: String]?
+    /// 当前这条 item 用的是哪个地址（换 item 时要跟着变）
+    private var currentURL: URL
+    /// 兜底只试一次，免得连不上时来回换
+    private var didFallBack = false
     /// 待恢复的位置（0 = 不恢复）
     private var pendingResume: Double = 0
     /// 只跳一次（ready 可能被多次判定）
@@ -477,19 +487,19 @@ final class PlayerBox: ObservableObject {
     /// ★ v1.0.127：`headers` 给**预览 / 在线播放**用 —— 有些地址要带 Referer/UA/Cookie 才放行。
     ///   AVPlayer **没有公开办法**给请求带头，只有这个未公开的 `AVURLAssetHTTPHeaderFieldsKey`
     ///   （TrollStore 自用可以接受）。传 nil / 空 = 走原来的路，与以前完全一致。
-    init(url: URL, resumeKey: String = "", headers: [String: String]? = nil) {
+    init(url: URL, resumeKey: String = "", headers: [String: String]? = nil,
+         fallback: URL? = nil) {
         self.resumeKey = resumeKey
+        self.fallbackURL = fallback
+        let hs = (headers?.isEmpty == false) ? headers : nil
+        self.itemHeaders = hs
+        self.currentURL = url
         // ★ v1.0.115 续看：先读上次看到哪儿；太靠前（<5 秒）就不打扰，从头播。
         // ★ v1.0.133：总开关（设置 → 播放 → 「记录播放进度」）关着时
         //   `WatchProgress.position` 直接返回 0 —— 也就是"每次从头播"。
         let saved = WatchProgress.position(for: resumeKey)
         pendingResume = saved > WatchProgress.minResume ? saved : 0
-        if let headers, !headers.isEmpty {
-            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-            item = AVPlayerItem(asset: asset)
-        } else {
-            item = AVPlayerItem(url: url)
-        }
+        item = PlayerBox.makeItem(url, headers: hs)
         player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause
         player.automaticallyWaitsToMinimizeStalling = true
@@ -510,18 +520,9 @@ final class PlayerBox: ObservableObject {
         // NotificationCenter 的 block 是 @Sendable 的：直接在闭包里调实例方法没问题
         // （queue: .main 保证已在主线程），但**不能在里面再套一层并发闭包引用 weak self**，
         // 那会报 "reference to captured var 'self' in concurrently-executing code"。
-        failObs = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemFailedToPlayToEndTime,
-            object: item, queue: .main) { [weak self] n in
-            let msg = PlayerBox.message(from: n)
-            self?.fail(msg)
-        }
-
-        stallObs = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.playbackStalledNotification,
-            object: item, queue: .main) { [weak self] _ in
-            self?.beginStallWatch()
-        }
+        // ★ v1.0.229：这两条抽成 `hookItemObservers()` 了 —— 换 item（兜底直连）时要**重新挂**，
+        //   内联写在这里的话，一换 item 就再也收不到"失败 / 卡住"通知了。
+        hookItemObservers()
 
         // 音频被别的 App/系统抢走（来电、闹钟、Siri…）
         interruptionObs = NotificationCenter.default.addObserver(
@@ -535,6 +536,32 @@ final class PlayerBox: ObservableObject {
             forName: AVAudioSession.routeChangeNotification,
             object: nil, queue: .main) { [weak self] n in
             self?.handleAudioRouteChange(n)
+        }
+    }
+
+    /// 造一条 AVPlayerItem。★ static：`init` 里要用它，那时还不能碰 `self`。
+    private static func makeItem(_ url: URL, headers: [String: String]?) -> AVPlayerItem {
+        if let headers, !headers.isEmpty {
+            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            return AVPlayerItem(asset: asset)
+        }
+        return AVPlayerItem(url: url)
+    }
+
+    /// 挂钩「这条 item 失败 / 卡住」两个通知。★ 换 item 之后必须重新调一次。
+    private func hookItemObservers() {
+        if let f = failObs { NotificationCenter.default.removeObserver(f) }
+        if let s = stallObs { NotificationCenter.default.removeObserver(s) }
+        failObs = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item, queue: .main) { [weak self] n in
+            let msg = PlayerBox.message(from: n)
+            self?.fail(msg)
+        }
+        stallObs = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.playbackStalledNotification,
+            object: item, queue: .main) { [weak self] _ in
+            self?.beginStallWatch()
         }
     }
 
@@ -714,6 +741,27 @@ final class PlayerBox: ObservableObject {
             player.play()
             return true
         case .failed:
+            // ★★ v1.0.229：**本机代理连不上 → 自动改用直连再试一次**。
+            //   用户实测的「点『窗口』报播放器起不来」错误长这样：
+            //   `http://127.0.0.1:<端口>/__vgproxy/… → -1004 无法连接服务器`。
+            //   那条地址是**我们自己开的小服务器**（为了让 HLS 分片带上 Referer/UA 才做的），
+            //   它一旦没在接连接，播放器只会甩一句天书，用户完全不知道怎么办。
+            //   这里退回**原始地址**重试一次：最坏也只是回到"没有代理那会儿"，不会更差。
+            if let fb = fallbackURL, !didFallBack, currentURL.host == "127.0.0.1" {
+                didFallBack = true
+                currentURL = fb
+                item = PlayerBox.makeItem(fb, headers: itemHeaders)
+                player.replaceCurrentItem(with: item)
+                hookItemObservers()
+                resumeApplied = false        // 新 item 从头开始 → 续看位置要重跳一次
+                error = nil
+                loading = true
+                player.play()
+                // 这里**不能**再调 startPolling()：那会把正在跑的这轮轮询取消掉，
+                // 而取消的 task 里 Task.sleep 会立刻抛错 → 变成一次快速空转。
+                // 直接返回 false 让现有那轮继续盯新 item 就行。
+                return false
+            }
             loading = false
             var msg = PlayerBox.describe(item.error) ?? "系统没能打开这个视频"
             // ★ v1.0.136：把 AVPlayer **自己的错误日志**贴上来。
