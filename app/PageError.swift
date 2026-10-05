@@ -17,6 +17,10 @@ struct PageError: Equatable {
     let url: String
     /// 是不是证书问题 —— 是的话多给一个「仍然访问」
     let isCertificate: Bool
+    /// ★ v1.0.225：是不是**被黑名单拦下来的**（不是"加载失败"，是我们主动不让进）。
+    ///   它只改图标和按钮文案，不影响别的 —— 所以给了默认值，
+    ///   现有的几个构造点（`make` / `crashGaveUp` …）一个都不用动。
+    var isBlocked: Bool = false
 
     /// 把系统报的错翻成人话。
     ///
@@ -102,14 +106,30 @@ struct PageError: Equatable {
                   url: url,
                   isCertificate: false)
     }
+
+    /// ★ v1.0.225：这个站被**用户自己的黑名单**拦下来了。
+    ///
+    /// ★ 为什么走"整页提示"、而不是"静默退回上一页"：
+    ///   从地址栏敲进来的情况**没有上一页可退**；而且地址栏那一栏会跟页面内容对不上
+    ///   （导航被取消，地址栏停在旧地址）—— 用户只会觉得"点了没反应"。
+    ///   整页说清"为什么进不去、怎么进去"，正好复用错误页这一套。
+    static func blocked(url: String, host: String) -> PageError {
+        PageError(title: "这个网站在黑名单里",
+                  reason: "你把它加进了黑名单，所以不再加载它。\n"
+                        + "想进来就点下面的按钮 —— 进去的同时会把它移出黑名单。",
+                  detail: "blocked · \(host)",
+                  url: url,
+                  isCertificate: false,
+                  isBlocked: true)
+    }
 }
 
 /// 错误页本体：整页盖住网页内容（不透明），给原因 + 「重试」。
 struct PageErrorView: View {
 
     let info: PageError
-    /// 点「重试」
-    let onRetry: () -> Void
+    /// 主要按钮的动作。普通加载失败 = 「重试」；被黑名单拦住 = 「移出黑名单并访问」。
+    let onPrimary: () -> Void
     /// 只有证书问题才有的「仍然访问」（其他错误传 nil）
     var onTrust: (() -> Void)? = nil
 
@@ -119,7 +139,8 @@ struct PageErrorView: View {
             Color(.systemBackground).ignoresSafeArea()
 
             VStack(spacing: 13) {
-                Image(systemName: info.isCertificate ? "lock.fill" : "exclamationmark.triangle")
+                Image(systemName: info.isBlocked ? "hand.raised.fill"
+                                 : (info.isCertificate ? "lock.fill" : "exclamationmark.triangle"))
                     .font(.system(size: 40, weight: .light))
                     .foregroundStyle(.secondary)
 
@@ -134,8 +155,10 @@ struct PageErrorView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 10) {
-                    Button(action: onRetry) {
-                        Text("重试")
+                    // ★ v1.0.225：被黑名单拦住时，这个按钮是「进去 + 顺手移出黑名单」，
+                    //   所以它的动作名从 onRetry 改成了 onPrimary（名字要跟语义一致）。
+                    Button(action: onPrimary) {
+                        Text(info.isBlocked ? "移出黑名单并访问" : "重试")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 24)

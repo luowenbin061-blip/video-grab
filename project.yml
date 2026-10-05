@@ -140,6 +140,9 @@ targets:
       # ★ v1.0.158：压缩的档位账（纯计算）也进回归集 ——
       #   "预估体积比原片还大"那个真机事故，就是这类错。
       - path: app/CompressPlan.swift
+      # ★ v1.0.225：网页黑名单的域名判据（纯逻辑，只 import Foundation）——
+      #   "子域该命中 / 长得像的域名不该命中"这种，光看代码看不出对错，必须跑。
+      - path: app/BlockList.swift
       - path: VideoGrabTests
     settings:
       base:

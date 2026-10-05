@@ -74,6 +74,8 @@ struct SettingsWebPage: View {
     @AppStorage("noImageMode") private var noImage = false
 
     @State private var trustedCount = 0
+    /// ★ v1.0.225：黑名单里有几条（跟 trustedCount 一个用法）
+    @State private var blockCount = 0
     @State private var note: String?
 
     var body: some View {
@@ -134,13 +136,119 @@ struct SettingsWebPage: View {
                 Text("证书不被系统信任的网站一律照常打开，只在第一次提醒一句。")
             }
 
+            // ★ v1.0.225：网页黑名单（5 项新功能第 3 项）。
+            //   「加进去的站不再加载」—— 跟上面「证书」的语义正好相反（那个是从不拦）；
+            //   放同一页是因为都属于「网页规则」，用户找的时候就在这一片。
+            Section {
+                NavigationLink {
+                    SettingsBlockListPage(model: model)
+                } label: {
+                    settingsKVRow("网页黑名单", blockCount == 0 ? "未设置" : "\(blockCount) 个")
+                }
+            } footer: {
+                Text("加进去的网站不再加载，也不会被跳转过去。")
+            }
+
             if let note {
                 Section { Text(note).font(.system(size: 13)) }
             }
         }
         .navigationTitle("网页设置")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { trustedCount = TrustedHosts.count }
+        .onAppear {
+            trustedCount = TrustedHosts.count
+            blockCount = BlockList.count
+        }
+    }
+}
+
+// MARK: - 网页黑名单（★ v1.0.225）
+
+/// 网页黑名单：看已拦的站、把当前网站一键加进去、手动加、左滑删。
+///
+/// ★ 入口为什么放这儿、而不是功能卡片：卡片那 8 格是「浏览时随手要用」的；
+///   黑名单是**低频、加一次就不管**的设置，跟同页的「广告清理 / 证书」一个性质。
+struct SettingsBlockListPage: View {
+    @ObservedObject var model: BrowserModel
+
+    @State private var hosts: [String] = []
+    @State private var draft = ""
+    @State private var note: String?
+
+    /// 当前正在看的那个网页的域名（没有就 nil）
+    private var currentHost: String? {
+        guard let s = model.currentURL, let h = URL(string: s)?.host, !h.isEmpty else { return nil }
+        return h
+    }
+
+    var body: some View {
+        Form {
+            // 最常见的用法：人就在这个站上，想"以后别再让我进来"
+            if let host = currentHost {
+                Section {
+                    Button {
+                        add(host)
+                    } label: {
+                        Text(BlockList.hit(host) == nil ? "把当前网站加入黑名单"
+                                                        : "当前网站已在黑名单里")
+                    }
+                    .disabled(BlockList.hit(host) != nil)
+                } footer: {
+                    Text("当前：\(host)")
+                }
+            }
+
+            Section {
+                if hosts.isEmpty {
+                    Text("还没有拉黑任何网站").foregroundStyle(.secondary)
+                }
+                ForEach(hosts, id: \.self) { h in
+                    Text(h).font(.system(size: 15))
+                }
+                .onDelete { idx in
+                    for i in idx { BlockList.remove(hosts[i]) }
+                    reload()
+                    note = "已移出黑名单 —— 这个站可以正常进了。"
+                }
+            } header: {
+                Text("已拉黑")
+            } footer: {
+                Text("左滑一条可以移出。拦的是**整个域名**（它下面的子域名也一起）。")
+            }
+
+            Section {
+                HStack {
+                    TextField("手动加一个网址", text: $draft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .keyboardType(.URL)
+                        .font(.system(size: 14))
+                    Button("加入") { add(draft); draft = "" }
+                        .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } footer: {
+                Text("网址里的路径会被忽略 —— 拉黑的是整个网站，不是某一个页面。")
+            }
+
+            if let note {
+                Section { Text(note).font(.system(size: 13)) }
+            }
+        }
+        .navigationTitle("网页黑名单")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { reload() }
+    }
+
+    private func reload() { hosts = BlockList.all }
+
+    private func add(_ raw: String) {
+        let rule = BlockList.normalize(raw)
+        guard !rule.isEmpty else {
+            note = "这个看不出是个网址，换个写法再试。"
+            return
+        }
+        note = BlockList.add(rule) ? "已拉黑 \(rule)" : "\(rule) 本来就在黑名单里。"
+        reload()
     }
 }
 

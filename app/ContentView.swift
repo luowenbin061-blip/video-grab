@@ -446,7 +446,8 @@ struct ContentView: View {
                 // 而且正好压在页面顶部挡内容 —— 已经有进度条了，删掉。
                 if let err = model.loadError {
                     PageErrorView(info: err,
-                                  onRetry: { model.retry() },
+                                  // ★ v1.0.225：黑名单拦下来的那个页，按钮是「移出黑名单并访问」
+                                  onPrimary: { err.isBlocked ? model.unblockAndReload() : model.retry() },
                                   onTrust: err.isCertificate ? { model.trustAndReload() } : nil)
                 }
 

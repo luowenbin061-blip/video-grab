@@ -55,6 +55,10 @@ enum DataBackup {
     /// 我们绝不在界面上假装"已自动恢复信任" —— 做不到的事不装作做到了。
     static let trustedHostsKey = "vgTrustedCertHosts"
 
+    /// ★ v1.0.225：网页黑名单（`BlockList` 里那串域名）。
+    ///   跟上面同一个道理 —— 它只是一串域名，能原样带走，不绑任何设备。
+    static let blockedHostsKey = "vgBlockedHosts"
+
     enum BackupError: LocalizedError {
         case badFormat
         case tooNew
@@ -92,6 +96,10 @@ enum DataBackup {
         //   空名单不写这个键 —— 免得备份文件里多一个没用的空数组。
         let hosts = ud.stringArray(forKey: trustedHostsKey) ?? []
         if !hosts.isEmpty { defaults[trustedHostsKey] = hosts }
+
+        // ★ v1.0.225：网页黑名单也一起带走（同样只是一串域名）。
+        let blocked = ud.stringArray(forKey: blockedHostsKey) ?? []
+        if !blocked.isEmpty { defaults[blockedHostsKey] = blocked }
 
         guard !files.isEmpty || !defaults.isEmpty else { throw BackupError.empty }
 
@@ -154,6 +162,7 @@ enum DataBackup {
         //   所以这里同时把 "最近一次放行" 清掉 —— 那条记录指向的是旧设备上的旧时间点，
         //   留着会让设置页显示一个对不上的"最近一次"。名单本身照常回来。
         var nHosts = 0
+        var nBlocked = 0
         if let defs = obj["defaults"] as? [String: Any] {
             let ud = UserDefaults.standard
             let hosts = (defs[trustedHostsKey] as? [String]) ?? []
@@ -164,6 +173,16 @@ enum DataBackup {
             }
             ud.removeObject(forKey: "vgTrustedCertLastHost")
             ud.removeObject(forKey: "vgTrustedCertLastAt")
+
+            // ★ v1.0.225：网页黑名单也一起恢复。
+            //   ★ 必须 `invalidateCache()` —— 跟上面同理：恢复是**直接改写 UserDefaults**，
+            //     进程里那份缓存不刷的话，界面显示和实际生效的都还是旧名单。
+            let blocked = (defs[blockedHostsKey] as? [String]) ?? []
+            if !blocked.isEmpty {
+                ud.set(blocked, forKey: blockedHostsKey)
+                BlockList.invalidateCache()
+                nBlocked = blocked.count
+            }
         }
 
         var text = "已恢复 \(nFile) 个数据文件、\(nKey) 项设置。\n"
@@ -172,6 +191,9 @@ enum DataBackup {
             text += "已放行的网站名单也带回来了（\(nHosts) 个）。\n"
                 + "注意：**证书信任这件事系统不让程序代劳** —— "
                 + "这几家网站下次打开还会提醒你放行一次，点一下「仍然访问」就记住了。\n"
+        }
+        if nBlocked > 0 {
+            text += "网页黑名单也带回来了（\(nBlocked) 个）。\n"
         }
         text += "要完全退出 App 再打开才生效（现在内存里还是旧数据）。\n"
             + "恢复前的旧数据已另存为「恢复前备份-\(f.string(from: Date())).json」。"

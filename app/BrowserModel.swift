@@ -255,6 +255,30 @@ final class BrowserModel: NSObject, ObservableObject {
         readyWebView().load(URLRequest(url: u))
     }
 
+    // MARK: - 网页黑名单（★ v1.0.225）
+
+    /// 导航被黑名单拦下 → 给这个标签记一条"拦截页"，界面整页显示（复用错误页那套 UI）。
+    ///
+    /// ★ 为什么是"整页提示"、不是"静默退回上一页"：
+    ///   从地址栏敲进来的情况**没有上一页可退**；而地址栏又停在被拦的那个地址上
+    ///   （导航被取消 → KVO 不会更新它）—— 不解释一句，用户只会觉得"点了没反应"。
+    @MainActor
+    private func showBlocked(_ wv: WKWebView, url: URL, rule: String) {
+        guard let t = tab(for: wv) else { return }
+        let info = PageError.blocked(url: url.absoluteString, host: rule)
+        t.loadError = info
+        if t === currentTab { loadError = info }
+    }
+
+    /// 拦截页上的「移出黑名单并访问」：把这个站从名单里删掉，然后重新加载。
+    /// 跟 `trustAndReload()` 完全对称（一个加名单、一个删名单）。
+    func unblockAndReload() {
+        guard let s = loadError?.url, !s.isEmpty, let u = URL(string: s) else { return }
+        if let h = u.host { BlockList.remove(h) }
+        clearLoadError(currentTab)
+        readyWebView().load(URLRequest(url: u))
+    }
+
     // MARK: 系统弹窗的公共零件
 
     /// 这个弹窗该不该弹、由谁弹。
@@ -2112,6 +2136,18 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     nonisolated func webView(_ wv: WKWebView,
                              decidePolicyFor action: WKNavigationAction,
                              decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        // ★ v1.0.225：网页黑名单 —— **只拦主文档**（子资源不拦：那是广告拦截的活，别越界）。
+        //   放在最前面：被拉黑的站，连"下载"那条路也不该走通。
+        //   `targetFrame == nil` 的那种（`target="_blank"`）单独在 createWebViewWith 里管。
+        if action.targetFrame?.isMainFrame == true,
+           let u = action.request.url,
+           let rule = BlockList.hit(u.host ?? "") {
+            decisionHandler(.cancel)
+            Task { @MainActor in
+                self.showBlocked(wv, url: u, rule: rule)
+            }
+            return
+        }
         guard action.shouldPerformDownload else {
             decisionHandler(.allow)
             return
@@ -2540,6 +2576,14 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                              for action: WKNavigationAction,
                              windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard let url = action.request.url else { return nil }
+        // ★ v1.0.225：黑名单在"新窗口"这条路上同样要拦 ——
+        //   否则点一个指向黑名单站的链接，照样会开个新标签进去（拦了主文档却漏了这条路）。
+        if action.navigationType == .linkActivated, BlockList.blocks(url.absoluteString) {
+            Task { @MainActor in
+                self.showBlocked(wv, url: url, rule: BlockList.hit(url.host ?? "") ?? "")
+            }
+            return nil
+        }
         // ★ v1.0.112：这个"新窗口"其实是要下文件 → 不开标签，直接交给下载器。
         //   不这么做的话：新标签会去加载附件 → 被响应阶段取消 → **白留一个空标签**。
         if action.shouldPerformDownload || Self.looksLikeFileDownload(url.absoluteString) {
