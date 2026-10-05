@@ -105,6 +105,7 @@ struct TabGridView: View {
             ZStack(alignment: .topTrailing) {
                 thumbnail(t)
                 Button {
+                    Haptics.select()           // ★ v1.0.224：关标签
                     model.closeTab(id: t.id)
                 } label: {
                     Image(systemName: "xmark")
@@ -131,6 +132,7 @@ struct TabGridView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
+            Haptics.select()            // ★ v1.0.224：切标签（最轻那一档）
             model.switchTo(id: t.id)
             isPresented = false
         }
@@ -303,6 +305,7 @@ struct TabGridView: View {
     private var bottomBar: some View {
         HStack {
             Button {
+                Haptics.select()           // ★ v1.0.224：新建标签
                 model.newTab()
             } label: {
                 Image(systemName: "plus")

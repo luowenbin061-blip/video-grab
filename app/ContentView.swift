@@ -7,11 +7,30 @@ import UIKit
 final class DownloadCenter: ObservableObject {
     @Published var jobs: [DownloadJob] = []
 
+    /// ★ v1.0.224：上一次看到的「已结束」状态（按任务 id）。
+    ///   只在**我们看着它从"没结束"变成"结束"**时才震 ——
+    ///   所以从回收站恢复出来的老任务（一进来就是已完成）不会平白震一下。
+    private var lastFinished: [UUID: Bool] = [:]
+
+    /// 任务结束时震一下（成功 / 失败两种节奏）。
+    ///
+    /// ★ 为什么震动**收在这里**：`DownloadJob` 里 `finished = true` 有**十多处**
+    ///   （直链 / 转码 / 导入 / 失败…），逐处加必漏；这里挂在每条任务的 `onUpdate`
+    ///   上（状态一变就会调），一处覆盖全部。
+    /// ★ 判「成功 / 失败」看 `failed`：成功路径要么从没设过它，
+    ///   要么在重试时清成了 nil（见 `DownloadJob` 的 start / retry）。
+    private func noticeFinish(_ job: DownloadJob) {
+        let was = lastFinished[job.id]
+        lastFinished[job.id] = job.finished
+        guard job.finished, was == false else { return }
+        if job.failed == nil { Haptics.success() } else { Haptics.warning() }
+    }
+
     init() {
         // 启动时把上次的记录读回来（文件还在的就还能播、还能存相册）
         jobs = JobStore.load().map { rec in
             let job = DownloadJob(record: rec)
-            job.onUpdate = { [weak self] in self?.save() }
+            job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
             return job
         }
         // ★ v1.0.160：启动顺手扫掉上次被杀留下的**压缩半成品**（`.partial.` 那种）——
@@ -28,9 +47,10 @@ final class DownloadCenter: ObservableObject {
         let job = DownloadJob(title: title, sourceURL: url,
                               referrer: referrer, ua: ua, cookie: cookie,
                               kind: kind)
-        job.onUpdate = { [weak self] in self?.save() }
+        job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
         jobs.insert(job, at: 0)
         save()
+        Haptics.tap()                  // ★ v1.0.224：加入下载（长按/嗅探/网页文件…所有入口都汇到这里）
         begin(job)
         return job
     }
@@ -41,7 +61,7 @@ final class DownloadCenter: ObservableObject {
         guard !files.isEmpty else { return }
         for f in files {
             let job = DownloadJob.makeImported(originalName: f.originalName)
-            job.onUpdate = { [weak self] in self?.save() }
+            job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
             jobs.insert(job, at: 0)
             let src = f.url
             Task { await job.runImport(from: src) }
@@ -74,7 +94,7 @@ final class DownloadCenter: ObservableObject {
             name = dest.lastPathComponent
         }
         let job = DownloadJob.makeAdopted(name: name, title: title, kind: kind)
-        job.onUpdate = { [weak self] in self?.save() }
+        job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
         jobs.insert(job, at: 0)
         save()
         Task { await job.adoptInPlace(name: name) }
@@ -156,7 +176,7 @@ final class DownloadCenter: ObservableObject {
     func restoreFromBin(_ record: JobRecord) {
         guard !jobs.contains(where: { $0.id == record.id }) else { return }
         let job = DownloadJob(record: record)
-        job.onUpdate = { [weak self] in self?.save() }
+        job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
         jobs.insert(job, at: 0)
         save()
     }
@@ -498,6 +518,7 @@ struct ContentView: View {
                                                 remote: m.url,
                                                 title: m.title.isEmpty ? "视频" : m.title,
                                                 headers: lpHeaders(m)) {
+                                              Haptics.tap()   // ★ v1.0.224：开始播放
                                               lpPlay = t
                                           } else {
                                               model.showToast("这个地址读不懂，播不了。可以换个源，或者直接下载试试。")
@@ -915,6 +936,7 @@ struct ContentView: View {
             if let target = await PlaylistRelay.target(remote: t.url,
                                                        title: "本页视频",
                                                        headers: t.headers) {
+                Haptics.tap()           // ★ v1.0.224：开始播放
                 lpPlay = target
             } else {
                 model.showToast("这个地址读不出来，播不了。")
@@ -1046,7 +1068,12 @@ struct ContentView: View {
                            enabled: Bool = true, active: Bool = false,
                            badge: Int = 0,
                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        // ★ v1.0.224：底栏按钮**统一轻震** —— 五个按钮都在这一处，改一次全覆盖。
+        //   按钮被 `.disabled` 时根本走不到这个闭包 → 置灰的按钮不会震，正好。
+        Button(action: {
+            Haptics.tap()
+            action()
+        }) {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: icon)
                     .font(.system(size: size))
@@ -1217,6 +1244,7 @@ struct ContentView: View {
             return
         }
         let marked = store.toggleMark(url: page, title: model.pageTitle)
+        Haptics.tap()                      // ★ v1.0.224：收藏 / 取消收藏
         model.showToast(marked ? "已收藏" : "已取消收藏")
     }
 

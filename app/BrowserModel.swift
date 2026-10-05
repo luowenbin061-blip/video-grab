@@ -649,6 +649,16 @@ final class BrowserModel: NSObject, ObservableObject {
         //   对嗅探有实际好处：有些站的手机版是私有播放器（抓不到地址），
         //   桌面版反而吐标准 HLS；还有些站只在桌面 UA 下才给高清晰度。
         wv.customUserAgent = Self.userAgent(desktop: desktopUAOn)
+        // ★ v1.0.224：下拉刷新 —— 系统控件（UIRefreshControl），挂在 WKWebView
+        //   **自带的那层滚动视图**上。为什么要这么挂：WKWebView 不是 SwiftUI 的 ScrollView，
+        //   `.refreshable` 对它完全无效，只有这条路。
+        //   · `alwaysBounceVertical = true` 必须开 —— 内容不满一屏时也要拉得动，
+        //     否则那些短页面上"下拉没反应"（这是 UIRefreshControl 的通用脾气）。
+        //   · 每个标签的 WebView 都挂一个：切过去就是它自己的那层。
+        wv.scrollView.alwaysBounceVertical = true
+        let pullRefresh = UIRefreshControl()
+        pullRefresh.addTarget(self, action: #selector(onPullToRefresh(_:)), for: .valueChanged)
+        wv.scrollView.refreshControl = pullRefresh
         return wv
     }
 
@@ -1409,6 +1419,18 @@ final class BrowserModel: NSObject, ObservableObject {
         clearItems(silent: true)      // 顺带把标签快照一起清掉，免得旧数据复活
         clearLoadError(currentTab)
         webView?.reload()
+    }
+
+    /// ★ v1.0.224：下拉刷新被触发（挂在每个 WebView 自带滚动视图上的那个系统控件）。
+    ///   · 轻震一下 —— 这是本次新增的**唯一一个新交互**，震动能明确告诉用户"这一下拉到了"。
+    ///   · 圈延后 0.35 秒收：真实的加载进度由顶部那条 2pt 进度线表示，
+    ///     两个一起转反而乱；留一点点时间是为了让"确实刷新了"这件事**看得见**。
+    @objc private func onPullToRefresh(_ sender: UIRefreshControl) {
+        Haptics.tap()
+        reload()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            sender.endRefreshing()
+        }
     }
 
     /// 手动催一次扫描（面板下拉刷新用）

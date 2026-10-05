@@ -253,6 +253,9 @@ struct SettingsGeneralPage: View {
     /// ★ v1.0.222：保持屏幕常亮（**默认关**）。键跟 `ScreenAwake.key` 是同一个，
     ///   改完立刻 `ScreenAwake.apply()` 落到系统上。
     @AppStorage(ScreenAwake.key) private var keepAwake = false
+    /// ★ v1.0.224：触感反馈（震动）。键跟 `Haptics.key` 是同一个，**默认开**。
+    ///   用户定的：一个开关、强度固定最轻、靠命名自明（不写多余说明）。
+    @AppStorage(Haptics.key) private var haptics = true
 
     var body: some View {
         Form {
@@ -286,11 +289,15 @@ struct SettingsGeneralPage: View {
                 Text("地址栏里输的不是网址时，用它去搜。自定义模板必须含 %@。")
             }
 
-            // ★ v1.0.222：保持屏幕常亮。
-            //   用户定的：放这儿（不新开分类）、默认关、**不写提示**（名字够清楚）。
+            // ★ v1.0.222 保持屏幕常亮 / ★ v1.0.224 触感反馈 —— 都是「系统行为」，
+            //   收在同一节里：一个管显示（别息屏），一个管反馈（按下去有回应）。
+            //   用户定的：放这儿不新开分类、常亮默认关、震动默认开、**不写多余说明**（靠命名自明）。
             Section {
                 Toggle("保持屏幕常亮", isOn: $keepAwake)
                     .onChange(of: keepAwake) { _ in ScreenAwake.apply() }
+                Toggle("触感反馈", isOn: $haptics)
+            } header: {
+                Text("显示与反馈")
             }
         }
         .navigationTitle("通用设置")
