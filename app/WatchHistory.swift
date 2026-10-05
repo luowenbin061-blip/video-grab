@@ -254,7 +254,7 @@ final class WatchHistory: ObservableObject {
               let comma = dataURL.firstIndex(of: ",") else { return nil }
         let b64 = String(dataURL[dataURL.index(after: comma)...])
         guard let d = Data(base64Encoded: b64), d.count > 800, d.count < 400_000 else { return nil }
-        return writeThumb(d)
+        return Self.storeThumb(d)
     }
 
     private func downloadPoster(_ urlString: String, referer: String, for id: String) {
@@ -264,19 +264,27 @@ final class WatchHistory: ObservableObject {
         // 封面图同样受防盗链管 —— 带上来源页最稳
         if !referer.isEmpty { req.setValue(referer, forHTTPHeaderField: "Referer") }
         req.setValue(Self.mobileUA, forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: req) { [weak self] d, resp, _ in
+        // ★★ 这个闭包是**并发执行**的，所以里面一个 `self` 都不能碰 ——
+        //   写 `guard let self` 会直接编译失败：
+        //   "reference to captured var 'self' in concurrently-executing code"（run #226 就这么挂的）。
+        //   修法：落盘这一步本来就是纯静态的（不需要主线程）→ 做成 `Self.storeThumb`；
+        //   只有"更新列表"丢回主线程，而那里走的是 `WatchHistory.shared`，同样不碰 self。
+        URLSession.shared.dataTask(with: req) { d, resp, _ in
             guard let d, d.count > 800, d.count < 2_000_000,
                   let http = resp as? HTTPURLResponse, http.statusCode < 400 else { return }
+            guard let name = Self.storeThumb(d) else { return }
             Task { @MainActor in
-                guard let self, let name = self.writeThumb(d) else { return }
                 // ★ replace: true —— 官方封面比"抓的那一帧"好看，值得换掉
-                self.setThumb(name, for: id, replace: true)
+                WatchHistory.shared.setThumb(name, for: id, replace: true)
             }
         }.resume()
     }
 
-    private func writeThumb(_ d: Data) -> String? {
-        let dir = Self.thumbDir
+    /// 把一张图落盘，返回文件名。
+    /// ★ 做成 **static**：下载回调跑在后台线程，这样它就不用碰 `self`
+    ///   （也就没有"并发闭包里引用 self"那类编译错 —— 见 `downloadPoster` 的注释）。
+    private static func storeThumb(_ d: Data) -> String? {
+        let dir = thumbDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let name = "wh_\(UUID().uuidString.prefix(12)).jpg"
         do {
