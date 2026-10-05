@@ -13,7 +13,10 @@ import UIKit
 ///     所以启动时落一次、用户拨开关时再落一次就够了。
 ///
 /// ★ 用户 2026-10-05 拍板的三条：放「通用设置」、**默认关**、**不写**耗电提示（名字够清楚）。
-@MainActor
+///
+/// ★★ **不能**给这个 enum 挂 `@MainActor`：设置页里 `@AppStorage(ScreenAwake.key)` 是在
+///   **非隔离**上下文的属性初始化器里读 `key`，而 `@MainActor` 会把类型内的 `static let`
+///   一起隔离 → 那句直接编不过。所以只给 `apply()` 单独标。
 enum ScreenAwake {
 
     /// UserDefaults 键。设置页的 `@AppStorage` 用同一个键。
@@ -27,6 +30,10 @@ enum ScreenAwake {
     }
 
     /// 把开关状态落到系统上。**幂等** —— 启动时、拨开关时、回到前台时都可以随便调。
+    ///
+    /// ★ 只给这个方法标 `@MainActor`（不是整个 enum）：`UIApplication.shared` 是主线程隔离的，
+    ///   而调用方（View 的 `onAppear` / `onChange`）本来就都在主线程。
+    @MainActor
     static func apply() {
         UIApplication.shared.isIdleTimerDisabled = isOn
     }
