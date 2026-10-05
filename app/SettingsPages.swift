@@ -250,6 +250,9 @@ struct SettingsGeneralPage: View {
     @AppStorage("homePageURL") private var homePage = ""
     @AppStorage(SearchEngine.key) private var searchEngine = SearchEngine.baidu.rawValue
     @AppStorage(SearchEngine.customKey) private var searchEngineCustom = ""
+    /// ★ v1.0.222：保持屏幕常亮（**默认关**）。键跟 `ScreenAwake.key` 是同一个，
+    ///   改完立刻 `ScreenAwake.apply()` 落到系统上。
+    @AppStorage(ScreenAwake.key) private var keepAwake = false
 
     var body: some View {
         Form {
@@ -281,6 +284,13 @@ struct SettingsGeneralPage: View {
                 Text("搜索")
             } footer: {
                 Text("地址栏里输的不是网址时，用它去搜。自定义模板必须含 %@。")
+            }
+
+            // ★ v1.0.222：保持屏幕常亮。
+            //   用户定的：放这儿（不新开分类）、默认关、**不写提示**（名字够清楚）。
+            Section {
+                Toggle("保持屏幕常亮", isOn: $keepAwake)
+                    .onChange(of: keepAwake) { _ in ScreenAwake.apply() }
             }
         }
         .navigationTitle("通用设置")
