@@ -24,6 +24,9 @@ struct PageVideo: Identifiable, Equatable {
     /// ★ v1.0.226：从画面上抓的一帧（`data:image/jpeg;base64,...`）。
     ///   跨域视频抓不到，是空串 —— 那是浏览器规矩（canvas 被污染），不是我们漏了。
     let shot: String
+    /// ★ v1.0.228：视频**自己**的名字（有的播放器写在 `title` / `aria-label` 上）。
+    ///   多数站是空串 —— 那时退回页面标题（见 `WatchHistory.note`）。
+    let vtitle: String
 
     /// 「更像正片还是更像广告」的粗打分。
     ///
@@ -92,7 +95,8 @@ struct PageVideo: Identifiable, Equatable {
                 area: int("area"),
                 center: bool("center"),
                 poster: (d["poster"] as? String) ?? "",
-                shot: (d["shot"] as? String) ?? ""))
+                shot: (d["shot"] as? String) ?? "",
+                vtitle: (d["vtitle"] as? String) ?? ""))
         }
         return out
     }

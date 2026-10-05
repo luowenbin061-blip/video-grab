@@ -2062,7 +2062,11 @@ extension BrowserModel: WKScriptMessageHandler {
                 //   不在播放入口（播放只负责给已记的那条补一个 played 标记）。
                 //   `playable` 只在**当前标签**才敢算 —— `pageVideoPlayTarget` 读的是
                 //   当前标签的嗅探结果，后台标签调它会把别的页的流算进来。
-                let page = t.address, ptitle = t.title
+                // ★ v1.0.228：标题优先用 JS 给的**页面级标题**（og:title > h1 > document.title）——
+                //   用户实测「大多显示站点名称」，就因为原来直接用 t.title（有些站它就是站名）。
+                //   视频自己若带名字（vtitle），`WatchHistory.note` 里还会再优先一层。
+                let page = t.address
+                let ptitle = (d["ptitle"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? t.title
                 WatchHistory.shared.note(page: page, title: ptitle, videos: list) { v in
                     if isCur { return self.pageVideoPlayTarget(v)?.url }
                     return v.src.isEmpty ? nil : v.src

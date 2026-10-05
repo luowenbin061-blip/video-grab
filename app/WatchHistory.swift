@@ -1,5 +1,12 @@
+import AVFoundation
 import Foundation
 import UIKit
+
+/// continuation 只许 resume 一次的小闸门 —— 多一次会直接崩。
+/// （`DownloadJob` 里那个 `ResumeOnce` 是 private 的、跨文件用不了，这里自己来一个。）
+private final class OnceFlag {
+    var done = false
+}
 
 /// 一条「视频历史」。
 ///
@@ -8,8 +15,11 @@ import UIKit
 ///   一个页面可能有 0 个、也可能有好几个视频 → 一条视频一条记录。
 struct WatchEntry: Codable, Identifiable, Equatable {
 
-    /// 去重键：`页面地址 | 视频地址`；拿不到视频地址的（blob 那种）用 `页面地址 | blob<下标>`。
-    /// ★ 用字符串而不是 UUID：同一个视频在同页反复出现时，靠它**更新而不是新增**。
+    /// 去重键 —— ★ v1.0.228 改成**只认视频本身**
+    /// （旧键带页面地址，实测会刷出一堆重复，理由见 `WatchHistory.key`）：
+    ///   · 有地址：`v|<地址去掉 query/fragment>`；
+    ///   · 没地址（blob）：`b|<标题>|<时长>|<宽x高>`。
+    /// ★ 用字符串而不是 UUID：同一个视频反复出现时，靠它**更新而不是新增**。
     var id: String
     /// 标题（记的是**当时的页面标题** —— 这类站基本都是"页面标题即片名"）。
     var title: String
@@ -107,7 +117,12 @@ final class WatchHistory: ObservableObject {
     private var flushTask: Task<Void, Never>?
     private var imageCache = NSCache<NSString, UIImage>()
 
-    private init() { items = Self.readFromDisk() }
+    private init() {
+        items = Self.readFromDisk()
+        // ★ v1.0.228：读盘时做过一次迁移（旧键 → 新键 + 合并重复）。**立刻写回** ——
+        //   不然每次启动都要重算，而且旧格式的文件会一直躺在那儿。
+        if !items.isEmpty { flush() }
+    }
 
     // MARK: - 位置
 
@@ -123,7 +138,37 @@ final class WatchHistory: ObservableObject {
     private static func readFromDisk() -> [WatchEntry] {
         guard let d = try? Data(contentsOf: fileURL),
               let list = try? JSONDecoder().decode([WatchEntry].self, from: d) else { return [] }
-        return list.sorted { $0.at > $1.at }
+        return migrate(list)
+    }
+
+    /// ★ v1.0.228：把**旧格式**的键（`页面|地址`）迁到新格式（`v|地址`）+ 顺便去重。
+    ///
+    /// ★★ 为什么非迁不可：光改新写入的规则不够 —— 他手机里已经躺着几十条旧记录，
+    ///   键还是老样子，会跟新记的**并存** → 他看到的"重复"一点没少。
+    ///   所以读盘时就把旧的收编到新键下，撞车的合并成一条。
+    private static func migrate(_ list: [WatchEntry]) -> [WatchEntry] {
+        var out: [WatchEntry] = []
+        var seen: [String: Int] = [:]                    // 新键 → 在 out 里的下标
+        for var e in list {
+            if !e.id.hasPrefix("v|"), !e.id.hasPrefix("b|"), let bar = e.id.firstIndex(of: "|") {
+                let url = String(e.id[e.id.index(after: bar)...])
+                if url.hasPrefix("http") { e.id = videoKey(url) }
+            }
+            if let i = seen[e.id] {
+                // 撞车 → 合并：能补的都补上，时间取最近的
+                if out[i].thumb == nil, e.thumb != nil { out[i].thumb = e.thumb }
+                if !out[i].played, e.played { out[i].played = true }
+                if out[i].video.isEmpty, !e.video.isEmpty { out[i].video = e.video }
+                if out[i].poster.isEmpty, !e.poster.isEmpty { out[i].poster = e.poster }
+                if e.at > out[i].at { out[i].at = e.at }
+                if !e.page.isEmpty { out[i].page = e.page }
+                if out[i].title.isEmpty, !e.title.isEmpty { out[i].title = e.title }
+            } else {
+                seen[e.id] = out.count
+                out.append(e)
+            }
+        }
+        return out.sorted { $0.at > $1.at }
     }
 
     private func flush() {
@@ -145,6 +190,30 @@ final class WatchHistory: ObservableObject {
 
     // MARK: - 写入（本功能的入口）
 
+    /// ★ v1.0.228：去重键 —— **不再带页面地址**。
+    ///
+    /// 用户实测「还是会刷出一堆重复」，根因就在旧键 `页面|视频地址`：
+    ///   · 播放器在 `<iframe>` 里的站（聚合站很常见），子 frame 上报时 `location.href`
+    ///     是**子页面地址** —— 跟主页面不同 → 同一个视频被算成两条；
+    ///   · 有些地址带 `?token=...`，每次刷新都不一样 → 每次都当"新的"。
+    /// 新键只认**视频本身**：
+    ///   · 有 src → src **去掉 query / fragment**（token 基本都在 query 里）；
+    ///   · 没有 src（`blob:` 那种页面自制流）→ 用「标题 + 时长 + 尺寸」当指纹。
+    static func key(title: String, v: PageVideo) -> String {
+        if !v.src.isEmpty { return videoKey(v.src) }
+        let t = v.vtitle.isEmpty ? title : v.vtitle
+        return "b|" + t + "|\(v.dur)|\(v.w)x\(v.h)"
+    }
+
+    /// 只有地址时的键（`markPlayed` 也要用 —— 那边拿不到 `PageVideo`）
+    static func videoKey(_ url: String) -> String {
+        var s = url
+        if let i = s.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            s = String(s[s.startIndex..<i])
+        }
+        return "v|" + s
+    }
+
     /// 页面视频清单到了 → 逐条记一笔（已存在的**更新**，不重复新增）。
     ///
     /// - Parameters:
@@ -160,8 +229,8 @@ final class WatchHistory: ObservableObject {
 
         var touched = false
         for v in videos {
-            let vid = v.src.isEmpty ? "blob\(v.i)" : v.src
-            let key = page + "|" + vid
+            let key = Self.key(title: title, v: v)
+            let vt = v.vtitle.isEmpty ? title : v.vtitle     // ★ 视频自己的名字优先
 
             if let i = items.firstIndex(where: { $0.id == key }) {
                 var e = items[i]
@@ -169,13 +238,16 @@ final class WatchHistory: ObservableObject {
                 if v.w > 0 { e.w = v.w; e.h = v.h }
                 if e.video.isEmpty, let u = playable(v) { e.video = u }
                 if e.poster.isEmpty, !v.poster.isEmpty { e.poster = v.poster }
-                if e.title.isEmpty, !title.isEmpty { e.title = title }
+                // ★ v1.0.228：标题和页面**总是**用最新一次上报的 ——
+                //   这样旧记录里那条"站点名"能自愈成 og:title（不然它永远是错的）。
+                if !vt.isEmpty { e.title = vt }
+                if !page.isEmpty { e.page = page }
                 e.at = Date()
                 items[i] = e
                 touched = true
                 if e.thumb == nil { grabThumb(v, for: key) }
             } else {
-                let e = WatchEntry(id: key, title: title, page: page,
+                let e = WatchEntry(id: key, title: vt, page: page,
                                    video: playable(v) ?? v.src,
                                    poster: v.poster, thumb: nil,
                                    dur: v.dur, w: v.w, h: v.h,
@@ -195,7 +267,8 @@ final class WatchHistory: ObservableObject {
     /// ★ 找不到就**什么都不做**（不新增）：播放过的按道理早被页面清单记下了；
     ///   真没记上说明当时开关关着或者页面没上报，那也不该在这儿凭空造一条。
     func markPlayed(page: String, video: String) {
-        guard let i = items.firstIndex(where: { $0.id == page + "|" + video }) else { return }
+        // ★ v1.0.228：键跟 `note` 那边保持一致（只有地址这一种情况）
+        guard let i = items.firstIndex(where: { $0.id == Self.videoKey(video) }) else { return }
         guard !items[i].played else { return }
         items[i].played = true
         items[i].at = Date()
@@ -243,9 +316,10 @@ final class WatchHistory: ObservableObject {
         if let name = saveShot(v.shot) { setThumb(name, for: id, replace: false) }
     }
 
+    /// 这条记录对应的原网页（下载封面图时当 Referer 用）。
+    /// ★ v1.0.228：键里已经不带页面地址了，所以从记录本身取。
     private func pageOf(_ id: String) -> String {
-        guard let bar = id.firstIndex(of: "|") else { return "" }
-        return String(id[id.startIndex..<bar])
+        items.first(where: { $0.id == id })?.page ?? ""
     }
 
     /// `data:image/jpeg;base64,...` → 落盘，返回文件名。
@@ -278,6 +352,74 @@ final class WatchHistory: ObservableObject {
                 WatchHistory.shared.setThumb(name, for: id, replace: true)
             }
         }.resume()
+    }
+
+    // MARK: - ★ v1.0.228 抽帧兜底
+
+    /// 已经试过抽帧的条目 —— 抽不到**不再重试**（免得每次进历史页都重跑一遍慢活）
+    private var thumbTried: Set<String> = []
+    private var filling = false
+
+    /// 给**还没有封面**的条目补图。
+    ///
+    /// ★ 用户实测「多数网站的视频都没有缩略图」→ 明确要求"想想办法尽可能拿到…抽帧图"。
+    /// ★ 为什么做成**懒加载**：抽帧要真的去加载那段视频（走流量、也慢）——
+    ///   每浏览一个页面就抽一次不可接受，等他真去翻历史页时再补才对。
+    /// ★ 一次最多补 `limit` 张、**一条一条串行**：同时开一堆 AVAssetImageGenerator
+    ///   会把网络和 CPU 一起抢光，反而谁都抽不出来。
+    func fillMissingThumbs(limit: Int = 12) {
+        guard Self.isEnabled, !filling else { return }
+        let todo = items.filter {
+            $0.thumb == nil && !$0.video.isEmpty && !thumbTried.contains($0.id)
+        }
+        guard !todo.isEmpty else { return }
+        filling = true
+        let batch = Array(todo.prefix(limit))
+        Task { @MainActor in
+            for e in batch {
+                self.thumbTried.insert(e.id)              // 先记账 —— 失败的也不再重试
+                if let name = await Self.grabFrame(e.video, page: e.page) {
+                    self.setThumb(name, for: e.id, replace: false)
+                }
+            }
+            self.filling = false
+        }
+    }
+
+    /// 用系统播放器抽一帧。
+    ///
+    /// ★ 这件事**不需要**我们的播放器那套（本机代理）—— 直接把地址交给 `AVAssetImageGenerator`。
+    ///   它对**直链 mp4 / ts 最稳**；m3u8 要看那个站认不认我们带的请求头，
+    ///   认不出就失败、**不重试**，反正列表有占位图，不影响任何功能。
+    /// ★ 超时 8 秒：m3u8 抽帧要先加载清单、再下那一小段，慢是正常的，但不能无限等。
+    private static func grabFrame(_ urlString: String, page: String) async -> String? {
+        guard let u = URL(string: urlString), u.scheme?.hasPrefix("http") == true else { return nil }
+        var opt: [String: Any] = [:]
+        if !page.isEmpty { opt["AVURLAssetHTTPHeaderFieldsKey"] = ["Referer": page] }
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: u, options: opt))
+        gen.appliesPreferredTrackTransform = true          // 竖屏的别被转成横的
+        gen.maximumSize = CGSize(width: 480, height: 480)
+        // 容忍 ±5 秒 —— 让它就近取，不必非解到第 3 秒那一帧（能快不少）
+        gen.requestedTimeToleranceBefore = CMTime(seconds: 5, preferredTimescale: 600)
+        gen.requestedTimeToleranceAfter = CMTime(seconds: 5, preferredTimescale: 600)
+
+        let t = CMTime(seconds: 3, preferredTimescale: 600)
+        let cg: CGImage? = await withCheckedContinuation { cont in
+            let once = OnceFlag()                          // continuation 只能 resume 一次
+            gen.generateCGImagesAsynchronously(forTimes: [NSValue(time: t)]) { _, img, _, result, _ in
+                if once.done { return }
+                once.done = true
+                cont.resume(returning: result == .succeeded ? img : nil)
+            }
+            // ★ 超时兜底：8 秒还没回调就自己收掉（否则 m3u8 那种会把这条任务一直吊着）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                if once.done { return }
+                once.done = true
+                cont.resume(returning: nil)
+            }
+        }
+        guard let cg, let d = UIImage(cgImage: cg).jpegData(compressionQuality: 0.7) else { return nil }
+        return storeThumb(d)
     }
 
     /// 把一张图落盘，返回文件名。

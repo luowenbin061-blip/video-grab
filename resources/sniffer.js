@@ -339,6 +339,68 @@
     } catch (e) { return ''; }
   }
 
+  // ★ v1.0.228：封面图**多来源**查找 —— 只认 `video.poster` 命中率太低（多数站根本不用它，
+  //   用户实测「多数网站的视频都没有缩略图」）。
+  //   顺序：① video 自己的 poster → ② 往上 3 层祖先的 background-image
+  //        （很多站的封面是给播放器容器设的背景图）。
+  //   都没找到就返回空串，再由原生侧决定"要不要抽帧"。
+  function findCover(v) {
+    try { if (v.poster) return v.poster; } catch (e) {}
+    try {
+      var p = v.parentElement;
+      for (var k = 0; k < 3 && p; k++, p = p.parentElement) {
+        var bg = '';
+        try { bg = window.getComputedStyle(p).backgroundImage || ''; } catch (e) {}
+        var m = /url\(["']?(.*?)["']?\)/.exec(bg);
+        if (m && m[1] && !/^data:/i.test(m[1])) return m[1];
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  // ★ v1.0.228：页面级封面（og:image / twitter:image）—— 单视频页里它通常就是海报图。
+  //   注意是**兜底**：多视频页会全都挂同一张图，所以只在 video 自己找不到时用。
+  var ogCoverCache = null;
+  function ogCover() {
+    if (ogCoverCache !== null) return ogCoverCache;
+    ogCoverCache = '';
+    try {
+      var sels = ['meta[property="og:image"]', 'meta[name="og:image"]',
+                  'meta[name="twitter:image"]', 'meta[property="twitter:image"]'];
+      for (var i = 0; i < sels.length; i++) {
+        var m = document.querySelector(sels[i]);
+        if (m && m.content) { ogCoverCache = m.content; break; }
+      }
+    } catch (e) {}
+    return ogCoverCache;
+  }
+
+  // ★ v1.0.228：标题 —— 用户实测「大多显示站点名称」，根因是原来只用了 `document.title`
+  //   （有些站的 title 就是站名，真名在 og:title / h1 里）。
+  //   顺序：og:title → 第一个 h1 → document.title。
+  var pageTitleCache = null;
+  function pageTitle() {
+    if (pageTitleCache !== null) return pageTitleCache;
+    var t = '';
+    try {
+      var m = document.querySelector('meta[property="og:title"], meta[name="og:title"]');
+      if (m && m.content) t = (m.content || '').trim();
+    } catch (e) {}
+    if (!t) { try { var h = document.querySelector('h1'); if (h) t = (h.textContent || '').trim(); } catch (e) {} }
+    if (!t) { try { t = (document.title || '').trim(); } catch (e) {} }
+    pageTitleCache = t.slice(0, 140);
+    return pageTitleCache;
+  }
+
+  // ★ v1.0.228：视频**自己**的名字（有的播放器会写在 title / aria-label 上）
+  function videoTitle(v) {
+    try {
+      var t = v.getAttribute('title') || v.getAttribute('aria-label') || '';
+      if (t) return String(t).trim().slice(0, 140);
+    } catch (e) {}
+    return '';
+  }
+
   function scanVideos() {
     var out = [];
     try {
@@ -366,8 +428,10 @@
         //   ① `poster`：页面自己声明的封面图地址（最省事、最准）→ 原生下载它；
         //   ② `shot`：从当前画面上抓的一帧（仅同源抓得到，见 grabShot）。
         //   只有 `src` 为空的那条也不能丢 —— 它就是"没能直接播"的那种，历史里要如实记着。
-        var poster = '';
-        try { poster = v.poster || ''; } catch (e) {}
+        // ★ v1.0.228：封面走**多来源**（见 findCover / ogCover），不再只认 video.poster。
+        //   抓帧（shot）保留：同源时它是"真实画面"，比 og:image 更贴题。
+        var cover = findCover(v);
+        if (!cover) cover = ogCover();
         out.push({
           i: i,
           src: isBlob ? '' : cur,                     // blob 不是"能直接播的地址"
@@ -381,7 +445,8 @@
           h: Math.round(r.height),
           area: Math.round(r.width * r.height / vArea * 100),   // 占屏百分比
           center: (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.25),
-          poster: poster,
+          poster: cover,
+          vtitle: videoTitle(v),
           shot: grabShot(v, cur, i)
         });
       }
@@ -399,8 +464,11 @@
     var a = [];
     for (var i = 0; i < list.length; i++) {
       var v = list[i];
+      // ★ v1.0.228：**封面也算进签名** —— 页面刚加载时 og:image 那个 meta 可能还没解析，
+      //   封面会先空后有；不含进签名的话那次变化不触发重发，就永远拿不到封面了。
       a.push(v.i + '|' + v.src + '|' + (v.playing ? 1 : 0) + '|' + v.dur +
-             '|' + v.w + 'x' + v.h + '|' + (v.muted ? 1 : 0) + '|' + v.area);
+             '|' + v.w + 'x' + v.h + '|' + (v.muted ? 1 : 0) + '|' + v.area +
+             '|' + (v.poster || ''));
     }
     return a.join(';');
   }
@@ -415,6 +483,9 @@
       window.webkit.messageHandlers.vgVideos.postMessage({
         type: 'videos',
         href: location.href,
+        // ★ v1.0.228：页面级标题放这儿（每条视频带一份太浪费带宽）；
+        //   原生侧拿它当"视频名"的兜底（og:title > h1 > title，见 pageTitle）。
+        ptitle: pageTitle(),
         videos: pageVids
       });
     } catch (e) {}

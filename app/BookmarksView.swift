@@ -427,6 +427,9 @@ struct BookmarksView: View {
                 }
             }
             .listStyle(.plain)
+            // ★ v1.0.228：进来就顺手补几张封面（抽帧）——**懒加载**：
+            //   只有他真来翻历史页时才花这份流量和时间（见 fillMissingThumbs）。
+            .onAppear { watch.fillMissingThumbs() }
         }
     }
 
