@@ -57,6 +57,12 @@
   var autoOn = false;
   var booted = false;      // 首扫只做一次
 
+  // ★ v1.0.230：「网页媒体自动播放」策略。这两行由原生在注入时替换成 true/false
+  //   （见 BrowserModel.snifferSource 与 WebAutoplay）。
+  //   默认 false = 一个都不拦，跟以前的行为完全一样。
+  var vgAutoBlockAudio = false;
+  var vgAutoBlockVideo = false;
+
   // ★ 必须用绝对时钟（epoch 毫秒）。之前用 performance.now()（页面加载后
   //   经过的毫秒数），被原生当成 1970 年起点 → 面板时间全显示「01-01 08:00」。
   function nowMs() {
@@ -265,6 +271,115 @@
   } catch (e) {}
 
   // ---------- 5. 从文本里正则捞地址（XHR 响应体 / 页面 HTML） ----------
+  // ---------- 5b. 网页媒体自动播放兜底（★ v1.0.230） ----------
+  //
+  // ★ 为什么系统那层不够：`mediaTypesRequiringUserActionForPlayback` **只拦得住带声音的
+  //   自动播**，而"网页自己就播起来"最常见的形态是**静音自动播**（`<video muted autoplay>`，
+  //   或页面自己设了 muted 再 play）—— WebKit 对静音视频通常是单独放行的。
+  //   用户明确要求「静音自动播也要管住」，所以在这里再拦一道。
+  //
+  // 两层拦：
+  //   ① 换掉 `HTMLMediaElement.prototype.play` —— 页面用 JS 主动播的（最常见）
+  //   ② 监听 play / playing 事件 —— `autoplay` 属性触发的**不走 JS 的 play()**，只能事后摁停
+  //
+  // ★★ 最怕的不是"没拦住"，是"**把用户自己点的播放也拦了**"——那比不做还糟。所以三道保险：
+  //   · 手势时间戳（800ms 短窗）：只覆盖"点了播放按钮、页面**当场**就调 play()"这种，
+  //     同步调用的都能过；★ 窗口刻意开得短 —— 因为**滚动也要摸屏幕**，
+  //     窗口一长，滑到哪儿播到哪儿的"滚动静音自动播"就全放行了（那正是要拦的东西）。
+  //   · **点过哪个 video 就永久放行它**：手势坐标落在某个 `<video>` 框内 → 记成"用户碰过"。
+  //     这样"点一下播放器、它 3 秒后才真正开始播"的站不会被误拦。
+  //   · 有 `navigator.userActivation.isActive` 时以它为准（那是真·浏览器语义；iOS 15.4 起才有，
+  //     低版本自动落到上面两条）。
+  // ★ 拦的时候**模仿系统原生行为**（抛 NotAllowedError）：网页自己那套"自动播被拦"的降级
+  //   （显示播放按钮 / 转静音）会照常走 —— 比我们硬 pause 更合网页的逻辑。
+  // ★ 同一个元素最多拦 3 次（1 秒内的事件算同一次尝试）：页面很执着地反复 play 时，
+  //   再拦就变成"永远播不出来"，那是把功能做坏 —— 放行它。
+  var vgLastGesture = 0;
+  function vgGestured() {
+    try { if (navigator.userActivation && navigator.userActivation.isActive) return true; } catch (e) {}
+    return (Date.now() - vgLastGesture) < 800;
+  }
+  function vgAutoBlocked(el) {
+    try {
+      if (el.__vgUserTouched) return false;      // 用户点过这块画面 → 永不拦
+      var tag = String(el.tagName || '').toLowerCase();
+      if (tag === 'video') return !!vgAutoBlockVideo;
+      if (tag === 'audio') return !!vgAutoBlockAudio;
+    } catch (e) {}
+    return false;
+  }
+  function vgCountBlocked(el) {
+    try {
+      var now = Date.now();
+      if (now - (el.__vgAutoBlockAt || 0) < 1000) return el.__vgAutoBlockN || 1;  // 同一次尝试的第二个事件
+      el.__vgAutoBlockAt = now;
+      var n = (el.__vgAutoBlockN || 0) + 1;
+      el.__vgAutoBlockN = n;
+      return n;
+    } catch (e) { return 1; }
+  }
+  function vgMarkTouched(x, y) {
+    vgLastGesture = Date.now();
+    if (typeof x !== 'number' || typeof y !== 'number') return;
+    try {
+      var list = document.querySelectorAll('video');
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i].getBoundingClientRect();
+        if (x >= r.left - 10 && x <= r.right + 10 && y >= r.top - 10 && y <= r.bottom + 10) {
+          list[i].__vgUserTouched = 1;
+        }
+      }
+    } catch (e) {}
+  }
+  function vgInstallAutoplayGuard() {
+    if (!vgAutoBlockAudio && !vgAutoBlockVideo) return;   // 一个都不拦 → 一个字都不装（默认就是这个）
+    try {
+      var evs = ['pointerdown', 'touchstart', 'mousedown'];
+      for (var i = 0; i < evs.length; i++) {
+        document.addEventListener(evs[i], function (e) {
+          var x = e.clientX, y = e.clientY;
+          if (typeof x !== 'number' || typeof y !== 'number') {
+            try {
+              var t0 = (e.touches && e.touches[0]) || null;
+              if (t0) { x = t0.clientX; y = t0.clientY; }
+            } catch (e2) {}
+          }
+          vgMarkTouched(x, y);
+        }, true);
+      }
+      document.addEventListener('keydown', function () { vgLastGesture = Date.now(); }, true);
+    } catch (e) {}
+    try {
+      var proto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+      var orig = proto && proto.play;
+      if (orig && !proto.__vgPlayHooked) {
+        proto.__vgPlayHooked = 1;
+        proto.play = function () {
+          if (vgAutoBlocked(this) && !vgGestured() && vgCountBlocked(this) <= 3) {
+            var err;
+            try { err = new DOMException('已被「视频抓取」限制：网页媒体自动播放', 'NotAllowedError'); }
+            catch (e) { err = new Error('NotAllowedError'); }
+            try { return Promise.reject(err); } catch (e) { return undefined; }
+          }
+          return orig.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+    try {
+      var evs2 = ['play', 'playing'];
+      for (var k = 0; k < evs2.length; k++) {
+        document.addEventListener(evs2[k], function (e) {
+          var t = e.target;
+          if (!t || !vgAutoBlocked(t)) return;
+          if (vgGestured()) return;
+          if (vgCountBlocked(t) > 3) return;      // 已经放过它了，别跟页面死磕
+          try { t.pause(); } catch (e2) {}
+        }, true);
+      }
+    } catch (e) {}
+  }
+  vgInstallAutoplayGuard();
+
   function scanText(text, src) {
     if (!text || typeof text !== 'string') return;
     var re = /(https?:\\?\/\\?\/[^\s"'\\<>()]{6,400}?\.(?:m3u8|mp4|m4v|mov|flv|mpd)(?:\?[^\s"'\\<>()]{0,300})?)/gi;

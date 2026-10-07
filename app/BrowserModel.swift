@@ -408,12 +408,27 @@ final class BrowserModel: NSObject, ObservableObject {
     ///   ② 抓请求（fetch / XHR / 播放地址）是抓到「一闪而过的 m3u8」的唯一手段，
     ///      它几乎不耗 CPU，不能跟着一起关 —— 关的只是「反复扫页面 + 自动上报」。
     static func snifferSource(autoSniff: Bool) -> String {
-        let s = rawSnifferSource
+        var s = rawSnifferSource
         let line = "var autoOn = false;"
-        guard s.contains(line) else { return s }   // 脚本没这个开关 → 原样注入
-        return s.replacingOccurrences(
-            of: line,
-            with: "var autoOn = " + (autoSniff ? "true" : "false") + ";")
+        if s.contains(line) {   // 脚本没这个开关 → 原样注入（下面同理，逐条独立判断）
+            s = s.replacingOccurrences(
+                of: line,
+                with: "var autoOn = " + (autoSniff ? "true" : "false") + ";")
+        }
+        // ★ v1.0.230：把「网页媒体自动播放」策略也注进去（拦住自动播的那一层，
+        //   见 sniffer.js 的 vgInstallAutoplayGuard）。默认两行都是 false = 不拦。
+        let a = WebAutoplay.current
+        let aLine = "var vgAutoBlockAudio = false;"
+        let vLine = "var vgAutoBlockVideo = false;"
+        if s.contains(aLine) {
+            s = s.replacingOccurrences(of: aLine,
+                                       with: "var vgAutoBlockAudio = \(a.blockAudio ? "true" : "false");")
+        }
+        if s.contains(vLine) {
+            s = s.replacingOccurrences(of: vLine,
+                                       with: "var vgAutoBlockVideo = \(a.blockVideo ? "true" : "false");")
+        }
+        return s
     }
 
     /// cleaner.js 的**原始**内容（只读一次盘）。跟 sniffer.js 一样随身打进 bundle。
@@ -596,8 +611,12 @@ final class BrowserModel: NSObject, ObservableObject {
     private func makeRawWebView() -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.allowsInlineMediaPlayback = true
-        // 自用工具：不要求用户手势就能自动播放，方便页面自己把视频跑起来
-        cfg.mediaTypesRequiringUserActionForPlayback = []
+        // ★ v1.0.230：改成读「网页媒体自动播放」设置（四档）。原来是写死的 []（全部允许）。
+        //   默认值仍是「允许全部」→ 行为跟以前一模一样。
+        //   ★ 系统这一层**只拦得住带声音的自动播** —— 而"网页自己就播起来"最常见的形态是
+        //     静音自动播，那要靠 sniffer.js 里的 `vgInstallAutoplayGuard()` 兜底，两层合起来才管得住。
+        //   ★ 这里只在**建 WebView 时**读一次 → 改完只对新开的页面生效（不擅自重载用户正在看的页）。
+        WebAutoplay.current.apply(to: cfg)
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
 
         let ucc = cfg.userContentController

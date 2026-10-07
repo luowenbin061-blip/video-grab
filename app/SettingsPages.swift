@@ -72,6 +72,8 @@ struct SettingsWebPage: View {
     @AppStorage("lpDebug") private var lpDebug = false
     @AppStorage("desktopUA") private var desktopUA = false
     @AppStorage("noImageMode") private var noImage = false
+    /// ★ v1.0.230：网页媒体自动播放（四档）。这里读它只是为了让**从二级页改完回来这一行能刷新**。
+    @AppStorage(WebAutoplay.key) private var autoplay = WebAutoplay.all.rawValue
 
     @State private var trustedCount = 0
     /// ★ v1.0.225：黑名单里有几条（跟 trustedCount 一个用法）
@@ -85,6 +87,19 @@ struct SettingsWebPage: View {
                     .onChange(of: adClean) { _ in model.applyAdCleanSetting() }
             } footer: {
                 Text("误清了某个网站（页面缺一块、放不出来）→ 关掉它再刷新一次。")
+            }
+
+            // ★ v1.0.230：网页媒体自动播放（四档）。跟上面的「广告清理」是一类 ——
+            //   都是"替用户管住网页自己的行为"。四选一放二级页，跟系统设置的习惯一致。
+            Section {
+                NavigationLink {
+                    SettingsAutoplayPage()
+                } label: {
+                    settingsKVRow("网页媒体自动播放",
+                                  (WebAutoplay(rawValue: autoplay) ?? .all).short)
+                }
+            } footer: {
+                Text("只对「新打开的网页」生效；已经打开的那几个，重载一次也会生效。")
             }
 
             Section {
@@ -159,6 +174,45 @@ struct SettingsWebPage: View {
             trustedCount = TrustedHosts.count
             blockCount = BlockList.count
         }
+    }
+}
+
+// MARK: - 网页媒体自动播放（★ v1.0.230）
+
+/// 四档：允许全部 / 禁止音频 / 禁止视频 / 禁止全部。
+///
+/// ★ 两个"反直觉点"写在页脚，免得用户以为功能坏了：
+///   ① 系统这层是**建网页时**读一次的 → 改了只对**新开的网页**生效（已打开的重载一次也行）；
+///   ② **静音的也算** —— 网页自己播起来最常见的就是静音自动播，那正是要拦的东西。
+struct SettingsAutoplayPage: View {
+    @AppStorage(WebAutoplay.key) private var policy = WebAutoplay.all.rawValue
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(WebAutoplay.allCases) { a in
+                    Button {
+                        policy = a.rawValue
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(a.title)
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            if policy == a.rawValue {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("只对「新打开的网页」生效；已经打开的那几个，重载一次也会生效。\n静音的也算自动播放 —— 网页自己播起来最常见的就是静音那种。")
+            }
+        }
+        .navigationTitle("网页媒体自动播放")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
