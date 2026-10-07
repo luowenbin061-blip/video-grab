@@ -1597,6 +1597,25 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
+    /// 设置里改了「网页媒体自动播放」→ 通知**所有已打开的页面立刻生效**。
+    ///
+    /// ★★ 为什么非得靠这一层（v1.0.234 修的真 bug）：
+    ///   系统那个属性（`mediaTypesRequiringUserActionForPlayback`）是**建 WebView 时读一次的**，
+    ///   之后改不动 —— `wv.configuration` 拿到的是**副本**，改它没用。
+    ///   所以只靠系统那层的话，用户改完设置**必须重开标签**才生效
+    ///   （上一版我在说明里写"重载一次也行"，**那句是错的**，重载不会重建 WebView）。
+    ///   JS 这层改的是变量，一调就立刻生效。
+    func applyAutoplaySetting() {
+        let a = WebAutoplay.current
+        let js = "window.__vgAutoSet ? window.__vgAutoSet("
+            + (a.blockAudio ? "true" : "false") + ", "
+            + (a.blockVideo ? "true" : "false") + ") : 0"
+        for t in tabs {
+            guard let wv = t.webView else { continue }
+            wv.evaluateJavaScript(js) { _, _ in }
+        }
+    }
+
     /// 设置里改了「网页广告清理」→ 通知**所有已经建好的页面**立刻生效，不用刷新。
     /// 关掉时脚本会顺手把隐藏过的元素**原样还原**（见 cleaner.js 的 restoreAll）。
     func applyAdCleanSetting() {

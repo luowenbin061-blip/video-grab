@@ -24,9 +24,13 @@
 
   var MAX_TRY = 3;
   var DELAYS = [0, 600, 1800];                  // 递进间隔：立刻重试大概率还是被拒
-  var MIN_PX = 48;                              // 小于这个尺寸的不算一个"视频"
-  var MIN_RATIO = 0.15;                         // 占视口面积不到 15% 的不算（挡小广告位）
-  var SCAN_TIMES = [0, 800, 1800, 3000, 5000, 8000, 12000];
+  // ★ v1.0.234：阈值放宽（48→32 / 15%→8%）。原来那套真机偏严：
+  //   播放器嵌在 iframe 里时，"占屏面积"是相对 **iframe 自己** 算的，
+  //   小一点的播放器会被误判成"不算一个视频" → 一条都不催。
+  var MIN_PX = 32;
+  var MIN_RATIO = 0.08;
+  // 补扫拉到 20 秒 —— 有的站播放器是后来才塞进来的
+  var SCAN_TIMES = [0, 800, 1800, 3000, 5000, 8000, 12000, 16000, 20000];
 
   var isTop = false;
   try { isTop = (window === window.top); } catch (e) { isTop = false; }
@@ -73,14 +77,20 @@
     try { window.top.postMessage({ __vgAutoPlay: 'count', n: n }, '*'); } catch (e) {}
   }
 
-  function broadcast(total) {
-    if (!isTop) return;
+  /// 把这个 frame 的**直接子 frame** 都通知一遍。
+  /// ★ v1.0.234：不再限制"只有主 frame 能广播" —— 中间层的 frame 也要往下转发，
+  ///   否则**孙 frame**（iframe 里的 iframe）永远收不到"全页总数"，于是不催。
+  function tellKids(msg) {
     try {
       var fs = window.frames;
       for (var i = 0; i < fs.length; i++) {
-        try { fs[i].postMessage({ __vgAutoPlay: 'total', n: total }, '*'); } catch (e) {}
+        try { fs[i].postMessage(msg, '*'); } catch (e) {}
       }
     } catch (e) {}
+  }
+
+  function broadcast(total) {
+    tellKids({ __vgAutoPlay: 'total', n: total });
   }
 
   function noteFrom(e) {
@@ -101,8 +111,14 @@
   } else {
     window.addEventListener('message', function (e) {
       var d = e && e.data;
-      if (!d || d.__vgAutoPlay !== 'total') return;
-      if (typeof d.n === 'number') handleTotal(d.n);
+      if (!d || !d.__vgAutoPlay) return;
+      // ★ 主 frame 主动来问 → 立刻上报（有的子 frame 比主 frame 晚 ready，光等它可能等不到）
+      if (d.__vgAutoPlay === 'hello') { scan(); return; }
+      if (d.__vgAutoPlay !== 'total') return;
+      if (typeof d.n === 'number') {
+        broadcast(d.n);            // ★ 往下转发给孙 frame（不然它们收不到总数）
+        handleTotal(d.n);
+      }
     }, false);
   }
 
@@ -112,6 +128,13 @@
     //   （子 frame 可能比我们晚才上报）。重复催播由 handleTotal 里的 done 挡。
     var mine = visibleVideos().length;
     if (isTop) {
+      // ★ v1.0.234：还没收到任何子 frame 上报、但页面上确实有 iframe → 主动去问一遍。
+      //   不然会因为"子 frame 比我们晚 ready"而一直算不出正确总数。
+      try {
+        if (others.length === 0 && window.frames.length > 0) {
+          tellKids({ __vgAutoPlay: 'hello' });
+        }
+      } catch (e) {}
       var total = mine;
       for (var i = 0; i < others.length; i++) total += others[i];
       if (total !== lastTotal) {

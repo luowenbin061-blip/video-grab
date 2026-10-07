@@ -332,7 +332,13 @@
     } catch (e) {}
   }
   function vgInstallAutoplayGuard() {
-    if (!vgAutoBlockAudio && !vgAutoBlockVideo) return;   // 一个都不拦 → 一个字都不装（默认就是这个）
+    // ★★ v1.0.234：**无条件安装**。
+    //   原来这里是"两档都不拦就一个字都不装"（零开销），但那造成一个真 bug：
+    //   **改了设置必须重开标签才生效** —— 因为系统那个属性
+    //   （mediaTypesRequiringUserActionForPlayback）是**建 WebView 时读一次的**，
+    //   之后改不动（wv.configuration 拿到的是副本）。
+    //   现在改成"总是装、内部按开关空转"：hook 里第一句就判开关，两档都关时
+    //   直接转原函数 = 等于没装；而原生一调 __vgAutoSet 就**立刻生效**。
     try {
       var evs = ['pointerdown', 'touchstart', 'mousedown'];
       for (var i = 0; i < evs.length; i++) {
@@ -379,6 +385,15 @@
     } catch (e) {}
   }
   vgInstallAutoplayGuard();
+
+  // ★ v1.0.234：运行时改「网页媒体自动播放」这两档。
+  //   原生改完设置会对**每个标签**调它 → 已经打开的页面立刻生效，不用重开标签。
+  //   （系统那层改不动，原因见 vgInstallAutoplayGuard 顶上的说明。）
+  window.__vgAutoSet = function (a, b) {
+    vgAutoBlockAudio = !!a;
+    vgAutoBlockVideo = !!b;
+    return [vgAutoBlockAudio, vgAutoBlockVideo];
+  };
 
   function scanText(text, src) {
     if (!text || typeof text !== 'string') return;

@@ -93,13 +93,13 @@ struct SettingsWebPage: View {
             //   都是"替用户管住网页自己的行为"。四选一放二级页，跟系统设置的习惯一致。
             Section {
                 NavigationLink {
-                    SettingsAutoplayPage()
+                    SettingsAutoplayPage(model: model)
                 } label: {
                     settingsKVRow("网页媒体自动播放",
                                   (WebAutoplay(rawValue: autoplay) ?? .all).short)
                 }
             } footer: {
-                Text("只对「新打开的网页」生效；已经打开的那几个，重载一次也会生效。")
+                Text("改完立刻生效，不用重开标签。")
             }
 
             Section {
@@ -209,6 +209,10 @@ struct SettingsWebPage: View {
 ///   ① 系统这层是**建网页时**读一次的 → 改了只对**新开的网页**生效（已打开的重载一次也行）；
 ///   ② **静音的也算** —— 网页自己播起来最常见的就是静音自动播，那正是要拦的东西。
 struct SettingsAutoplayPage: View {
+    /// ★ v1.0.234：改完要**立刻通知所有已打开的页面** —— 理由见
+    ///   `BrowserModel.applyAutoplaySetting()`（系统那层改不动，只能靠 JS 那层）。
+    @ObservedObject var model: BrowserModel
+
     @AppStorage(WebAutoplay.key) private var policy = WebAutoplay.all.rawValue
 
     var body: some View {
@@ -232,11 +236,12 @@ struct SettingsAutoplayPage: View {
                     .buttonStyle(.plain)
                 }
             } footer: {
-                Text("只对「新打开的网页」生效；已经打开的那几个，重载一次也会生效。\n静音的也算自动播放 —— 网页自己播起来最常见的就是静音那种。")
+                Text("改完立刻生效，不用重开标签。\n静音的也算自动播放 —— 网页自己播起来最常见的就是静音那种。")
             }
         }
         .navigationTitle("网页媒体自动播放")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: policy) { _ in model.applyAutoplaySetting() }
     }
 }
 
