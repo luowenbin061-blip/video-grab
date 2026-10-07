@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         自动播放网页视频
 // @match        *://*/*
-// @description  整页只有一个可见视频时，帮你把它播起来
+// @description  整页只有一个可见视频时帮你播起来（催不动就替你点一下播放按钮）
 // ==/UserScript==
 //
 // ★ 这是「用户脚本」体系里的**第一个内置脚本**（用户 2026-10-07 要的功能）。
@@ -155,6 +155,103 @@
     var v = vs[0];
     if (!v.paused) { done = true; return; }     // 页面自己已经播起来了 → 不插手
     tryPlay(v);
+
+    // ★★ v1.0.235：催不动就**帮你点一下播放按钮**。
+    //   为什么必须补这一步：有一类播放器（很常见）是"**点按钮才开始加载视频**"——
+    //   在它加载之前调 play()，Promise 会**一直挂着**（不报错也不播），
+    //   所以光靠 play() 这类站永远起不来。用户实测反馈的就是这种：
+    //   "页面自带播放按钮的视频，还是得我手动点一下"。
+    //   ★ 时机：先给 play() 一点时间（1.2 秒），没起来再点；再等 2 秒还没有就最后点一次收手。
+    setTimeout(function () {
+      if (done) return;
+      if (!v.paused) { done = true; return; }
+      tapPlay(v);
+    }, 1200);
+    setTimeout(function () {
+      if (done) return;
+      if (!v.paused) { done = true; return; }
+      tapPlay(v);
+      done = true;      // ★ 收手：绝不再多点（反复点最容易点到广告）
+    }, 3600);
+  }
+
+  // ── ⑥ "帮你点一下播放按钮" ──
+  //   两条路：① 先找**看起来就是播放按钮**的元素（常见类名 / 中文标题）；
+  //          ② 找不到就点视频中心最上层的那个元素（播放遮罩通常就盖在中心）。
+  //   ★ 安全线：链接 / iframe / 往上三层里有 <a> 的，一律**不点**（那可能是广告）。
+  //   ★ 全程最多 2 次（`tapped`）——点到广告比不播更糟。
+
+  var tapped = 0;
+  var PLAY_SEL = [
+    '.vjs-big-play-button', '.dplay-icon', '.dplayer-play-icon', '.xgplayer-play',
+    '.prism-play-btn', '.player-play', '.play-btn', '.play-button', '.big-play',
+    '[class*="bigplay"]', '[class*="play-btn"]', '[class*="playbutton"]',
+    '[aria-label*="播放"]', '[title*="播放"]'
+  ];
+
+  function tapPlay(v) {
+    if (tapped >= 2) return;
+    tapped++;
+    try {
+      var r = v.getBoundingClientRect();
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      var btn = findPlayButton(v, r);
+      if (btn) { tap(btn, cx, cy); return; }
+      var el = null;
+      try { el = document.elementFromPoint(cx, cy); } catch (e2) {}
+      if (!el || !safeToTap(el, v)) return;
+      tap(el, cx, cy);
+    } catch (e) {}
+  }
+
+  function findPlayButton(v, r) {
+    for (var i = 0; i < PLAY_SEL.length; i++) {
+      var list = null;
+      try { list = document.querySelectorAll(PLAY_SEL[i]); } catch (e) { continue; }
+      for (var j = 0; j < list.length; j++) {
+        var e = list[j], b = null;
+        try { b = e.getBoundingClientRect(); } catch (e2) { continue; }
+        if (!b || b.width < 8 || b.height < 8) continue;
+        // 必须在**这个视频的框里** —— 页面别处的按钮不算
+        if (b.left >= r.left - 4 && b.right <= r.right + 4 &&
+            b.top >= r.top - 4 && b.bottom <= r.bottom + 4) return e;
+      }
+    }
+    return null;
+  }
+
+  function safeToTap(el, v) {
+    try {
+      if (el === v) return true;                 // 就是视频本身 → 安全
+      var t = String(el.tagName || '').toLowerCase();
+      if (t === 'a' || t === 'iframe') return false;
+      var p = el.parentElement, k = 0;
+      for (; p && k < 3; k++, p = p.parentElement) {
+        if (String(p.tagName || '').toLowerCase() === 'a') return false;
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /// 派发一整套"手指点上去"的事件。
+  /// ★ 光调 `el.click()` 不够 —— 很多播放器监听的是 pointer / touch 系列。
+  function tap(el, x, y) {
+    var base = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+    var kinds = ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mouseup', 'click'];
+    for (var i = 0; i < kinds.length; i++) {
+      var ev = null;
+      try {
+        if (kinds[i].indexOf('touch') === 0) {
+          ev = new TouchEvent(kinds[i], { bubbles: true, cancelable: true });
+        } else if (kinds[i].indexOf('pointer') === 0) {
+          ev = new PointerEvent(kinds[i], base);
+        } else {
+          ev = new MouseEvent(kinds[i], base);
+        }
+      } catch (e) { ev = null; }
+      if (ev) { try { el.dispatchEvent(ev); } catch (e2) {} }
+    }
+    try { el.click(); } catch (e3) {}
   }
 
   // ── ⑤ 催播：先直接来；被拒就先静音播（iOS 上静音自动播是放行的） ──
