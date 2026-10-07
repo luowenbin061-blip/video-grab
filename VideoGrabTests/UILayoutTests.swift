@@ -36,8 +36,11 @@ final class UILayoutTests: XCTestCase {
                         "bookmarks", "mark", "settings", "toolbox"])
 
         // 混进不认识的 key 和空白项 → 丢掉不认识的、留下认识的
-        XCTAssertEqual(UILayout.parse("sniff, ,bogus,copy", UILayout.barDefault),
-                       ["sniff", "copy", "back", "forward", "menu", "downloads"])
+        // ★ 注意池子要用对：`sniff` / `copy` 是**功能卡片**的 key，
+        //   拿 `barDefault` 去解析它们会被当成"不认识的"丢掉（我第一版就写错了这里）。
+        XCTAssertEqual(UILayout.parse("sniff, ,bogus,copy", UILayout.toolDefault),
+                       ["sniff", "copy", "bookmarks", "mark", "settings", "toolbox",
+                        "share", "tabs"])
 
         // 重复 → 只留第一次
         XCTAssertEqual(UILayout.parse("copy,copy,share", UILayout.toolDefault),
@@ -45,7 +48,7 @@ final class UILayoutTests: XCTestCase {
                         "tabs", "sniff"])
 
         // 前后空格要吃干净
-        XCTAssertEqual(Array(UILayout.parse(" sniff , copy ", UILayout.barDefault).prefix(2)),
+        XCTAssertEqual(Array(UILayout.parse(" sniff , copy ", UILayout.toolDefault).prefix(2)),
                        ["sniff", "copy"])
     }
 
