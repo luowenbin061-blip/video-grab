@@ -164,6 +164,17 @@ struct SettingsWebPage: View {
                 Text("加进去的网站不再加载，也不会被跳转过去。")
             }
 
+            // ★ v1.0.231：「底部功能类设置」——功能卡片 / 底栏的顺序自己拖。
+            //   放这一页是用户指定的（我提过一句：它其实是"界面布局"，
+            //   跟同页的广告清理 / 证书 / 黑名单不是一类；哪天觉得翻着别扭，一句话就搬走）。
+            Section {
+                NavigationLink {
+                    SettingsBottomBarPage()
+                } label: {
+                    Text("底部功能类设置")
+                }
+            }
+
             if let note {
                 Section { Text(note).font(.system(size: 13)) }
             }

@@ -374,6 +374,10 @@ struct ContentView: View {
     @State private var showShare = false
     @State private var showPiPAsk = false
     @State private var showMenu = false        // 底部功能卡片是否展开
+    // ★ v1.0.231：功能卡片 / 底栏的**顺序**（「设置 → 网页设置 → 底部功能类设置」里拖）。
+    //   @AppStorage 是 ObservableObject-backed：设置页改完，这里会自己刷新。
+    @AppStorage(UILayout.toolKey) private var toolOrderRaw = UILayout.toolDefaultRaw
+    @AppStorage(UILayout.barKey) private var barOrderRaw = UILayout.barDefaultRaw
     // 「说明」现在挂在设置页里，外面不再单独弹 —— 所以 showHelp 这个状态去掉了
     @State private var showBookmarks = false
     @State private var showSettings = false
@@ -1098,25 +1102,48 @@ struct ContentView: View {
     // 「≡」是那张功能卡片的入口 —— 功能不常驻页面，点开才出现。
     // 底栏只放「浏览时随时要用」的几个动作。
 
+    /// 底栏 / 功能卡片的顺序（设置页拖完立刻生效）
+    private var barKeys: [String] { UILayout.parse(barOrderRaw, UILayout.barDefault) }
+    private var toolKeys: [String] { UILayout.parse(toolOrderRaw, UILayout.toolDefault) }
+
     private var bottomBar: some View {
         HStack(spacing: 0) {
+            // ★ v1.0.231：顺序由「设置 → 网页设置 → 底部功能类设置」决定
+            //   （默认 后退 · 前进 · 功能键 · 下载页 · 刷新）。
+            //   这里是**唯一**出底栏按钮的地方 —— 拖动排序只换顺序，动作一个字没动。
+            ForEach(barKeys, id: \.self) { k in
+                barButtonFor(k)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 5)
+        .background(Color(.secondarySystemBackground))
+    }
+
+    /// 底栏某一位该出哪个按钮（`UILayout.barDefault` 里的 key → 具体按钮）
+    @ViewBuilder
+    private func barButtonFor(_ key: String) -> some View {
+        switch key {
+        case "back":
             barButton("chevron.left", "后退", enabled: model.canGoBack) { model.goBack() }
+        case "forward":
             barButton("chevron.right", "前进", enabled: model.canGoForward) { model.goForward() }
+        case "menu":
             // ★ 中间这颗是主入口 —— 图标放大到 24pt（原来 19pt，用户嫌小）
             barButton("line.3.horizontal", "功能", size: 24, active: showMenu) { showMenu.toggle() }
+        case "downloads":
             barButton("arrow.down.circle", "下载管理", badge: downloads.activeCount) {
                 showDownloads = true
             }
+        default:
             // 加载中变「停止」（对齐 Safari：同一个位置，✕ 停下）
+            // ★ 这两态是**同一个按钮**，排序时算一个对象，不能拆成两位。
             if model.isLoading {
                 barButton("xmark", "停止") { model.stop() }
             } else {
                 barButton("arrow.clockwise", "刷新") { model.reload() }
             }
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 5)
-        .background(Color(.secondarySystemBackground))
     }
 
     /// 底栏按钮：五等分、44pt 高（够手指点）
@@ -1166,22 +1193,10 @@ struct ContentView: View {
             //   8 格正好 2×4 对称。以后要加新功能：**开第二页**（左右滑动 + 页点），
             //   不再往这两行里塞（塞了又回到参差不齐）。
             HStack(spacing: 0) {
-                menuCell("clock.arrow.circlepath", "收藏/历史") { showBookmarks = true }
-                menuCell("bookmark", "收藏网址") { toggleBookmark() }
-                menuCell("gearshape", "设置") { showSettings = true }
-                menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
+                ForEach(Array(toolKeys.prefix(UILayout.toolColumns)), id: \.self) { menuCellFor($0) }
             }
             HStack(spacing: 0) {
-                menuCell("link", "复制URL") { copyCurrentURL() }
-                // ★ v1.0.119：系统分享面板（发给微信 / 存到别处）
-                menuCell("square.and.arrow.up", "分享") { shareCurrentPage() }
-                // 徽标改成一直都显示 —— 只有一个标签时也让你知道开着一个
-                // （点开就是 Safari 式网格：缩略图 + ✕ + 底部新建/完成）
-                menuCell("square.on.square", "标签页",
-                         badge: model.tabCount) { showTabs = true }
-                // 这里原来是「刷新」——底栏已经有一个了，换成嗅探结果的入口
-                menuCell("antenna.radiowaves.left.and.right", "嗅探结果",
-                         badge: model.items.count) { showPanel = true }
+                ForEach(Array(toolKeys.dropFirst(UILayout.toolColumns)), id: \.self) { menuCellFor($0) }
             }
 
             Divider().padding(.horizontal, 10)
@@ -1212,6 +1227,37 @@ struct ContentView: View {
                 .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.15), radius: 18, y: 6)
+    }
+
+    /// 功能卡片某一格出什么（`UILayout.toolDefault` 的 key → 具体格子）。
+    /// ★ v1.0.231：顺序由「底部功能类设置」决定 —— 这里只做「key → 格子」的映射，
+    ///   每格的图标 / 文案 / 动作跟排序前**一模一样**。
+    @ViewBuilder
+    private func menuCellFor(_ key: String) -> some View {
+        switch key {
+        case "bookmarks":
+            menuCell("clock.arrow.circlepath", "收藏/历史") { showBookmarks = true }
+        case "mark":
+            menuCell("bookmark", "收藏网址") { toggleBookmark() }
+        case "settings":
+            menuCell("gearshape", "设置") { showSettings = true }
+        case "toolbox":
+            menuCell("wrench.and.screwdriver", "工具箱") { showToolbox = true }
+        case "copy":
+            menuCell("link", "复制URL") { copyCurrentURL() }
+        case "share":
+            // ★ v1.0.119：系统分享面板（发给微信 / 存到别处）
+            menuCell("square.and.arrow.up", "分享") { shareCurrentPage() }
+        case "tabs":
+            // 徽标改成一直都显示 —— 只有一个标签时也让你知道开着一个
+            // （点开就是 Safari 式网格：缩略图 + ✕ + 底部新建/完成）
+            menuCell("square.on.square", "标签页",
+                     badge: model.tabCount) { showTabs = true }
+        default:
+            // 这里原来是「刷新」——底栏已经有一个了，换成嗅探结果的入口
+            menuCell("antenna.radiowaves.left.and.right", "嗅探结果",
+                     badge: model.items.count) { showPanel = true }
+        }
     }
 
     /// 卡片里的一格。
