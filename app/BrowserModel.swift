@@ -452,6 +452,75 @@ final class BrowserModel: NSObject, ObservableObject {
         return s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
     }
 
+    /// 把一条用户脚本包成「先判 `@match`、不匹配就整段不执行」。
+    ///
+    /// ★ 为什么匹配要在 **JS 侧**做：原生注入是**建 WebView 时一次性的**，
+    ///   而同一个 WebView 会跳到不同站点 —— 只有页面自己知道当前在哪。
+    ///   规则口径跟 Swift 侧 `UserScriptMatch` 一套（scheme / host / path 三段，
+    ///   只认 `*` 通配，query 和 hash 不参与），两边靠同一批用例守住。
+    static func wrapUserScript(_ code: String, matches: [String]) -> String {
+        let list = (matches.isEmpty ? ["*://*/*"] : matches)
+            .map { "\"" + $0.replacingOccurrences(of: "\\", with: "\\\\")
+                            .replacingOccurrences(of: "\"", with: "\\\"") + "\"" }
+            .joined(separator: ",")
+        return """
+        (function () {
+          var M = [\(list)];
+          if (!M.length) { M = ['*://*/*']; }   // 空规则 = 全部（上面已经替过一次，这里再兜一道 —— 空数组会静默不跑，很难查）
+          var sc = String(location.protocol || '').replace(/:$/, '').toLowerCase();
+          var ho = String(location.hostname || '').toLowerCase();
+          var pa = String(location.pathname || '/') || '/';
+          function g(p, t) {
+            var pi = 0, ti = 0, st = -1, mk = 0;
+            while (ti < t.length) {
+              if (pi < p.length && p.charAt(pi) === t.charAt(ti)) { pi++; ti++; }
+              else if (pi < p.length && p.charAt(pi) === '*') { st = pi; mk = ti; pi++; }
+              else if (st >= 0) { pi = st + 1; mk++; ti = mk; }
+              else { return false; }
+            }
+            while (pi < p.length && p.charAt(pi) === '*') { pi++; }
+            return pi === p.length;
+          }
+          function hit(p) {
+            var i = p.indexOf('://');
+            if (i < 0) { return false; }
+            var ps = p.slice(0, i).toLowerCase();
+            if (ps !== '*' && ps !== sc) { return false; }
+            var rest = p.slice(i + 3);
+            var j = rest.indexOf('/');
+            var ph = (j < 0 ? rest : rest.slice(0, j)).toLowerCase();
+            var pp = (j < 0 ? '/*' : rest.slice(j));
+            if (ph !== '*') {
+              if (ph.indexOf('*.') === 0) {
+                var b = ph.slice(2);
+                if (ho !== b && ho.slice(-(b.length + 1)) !== ('.' + b)) { return false; }
+              } else if (ph !== ho) { return false; }
+            }
+            return g(pp, pa);
+          }
+          var ok = false;
+          for (var k = 0; k < M.length; k++) { if (hit(M[k])) { ok = true; break; } }
+          if (!ok) { return; }
+          try {
+        \(code)
+          } catch (e) {}
+        })();
+        """
+    }
+
+    /// 内置的「自动播放网页视频」跟「网页媒体自动播放」四档的**关系**：
+    /// 用户在四档里明确选了「禁止视频自动播放」→ **他的选择优先**，催播脚本整段不干活。
+    /// （其余三档都允许催播 —— 包括"禁止音频"：那种情况下脚本会先静音播起来。）
+    static func applyUserScriptPolicy(_ src: String, scriptId: String) -> String {
+        guard scriptId == "builtin.userscript-autoplay" else { return src }
+        let line = "var VG_AUTOPLAY_BLOCKED = false;"
+        guard src.contains(line) else { return src }
+        let blocked = WebAutoplay.current.blockVideo
+        return src.replacingOccurrences(of: line,
+                                        with: "var VG_AUTOPLAY_BLOCKED = "
+                                              + (blocked ? "true" : "false") + ";")
+    }
+
     /// 建一个「裸」的 WebView（不登记成标签）。
     /// 配置跟单窗口时代完全一致 —— 嗅探脚本、消息通道、查找开关、UA 一个都不能少。
     // MARK: - 启动 / 重启恢复
@@ -647,6 +716,21 @@ final class BrowserModel: NSObject, ObservableObject {
         // 诊断回传走**单独一条通道**（不能并进 vgSniff —— 那边的处理函数会把
         // 每条消息都当嗅探结果喂给 ingest，混进来会污染列表）。
         ucc.add(self, contentWorld: world, name: "vgClean")
+
+        // ★ v1.0.233 用户脚本：**逐条独立注入**。
+        //   为什么不拼成一条：用户粘进来的脚本可能有语法错 —— 拼成一条的话一错全挂
+        //   （连别的脚本都跑不了）。逐条各自编译执行，互不牵连。
+        //   ★ 开关只影响"下次加载注不注入"：已经打开的页面要**重载**才会生效
+        //     （`WKUserContentController` 只有"全部移除"，没有单独移除某一条）。
+        for item in UserScriptStore.shared.enabledSources {
+            let src = Self.applyUserScriptPolicy(
+                Self.wrapUserScript(item.code, matches: item.script.matches),
+                scriptId: item.script.id)
+            ucc.addUserScript(WKUserScript(source: src,
+                                           injectionTime: .atDocumentStart,
+                                           forMainFrameOnly: false,   // 跟我们的脚本一样覆盖 iframe
+                                           in: world))
+        }
 
         // ★ v1.0.214 页面视频清单：走**第三条通道**。
         //   为什么不并进 vgSniff —— ① 那边的处理会把每条消息都当嗅探结果喂给 ingest，

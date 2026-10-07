@@ -146,6 +146,10 @@ targets:
       # ★ v1.0.231：底部顺序的解析与重排（纯逻辑，只 import Foundation）——
       #   "拖到谁头上就落在谁的位置""脏数据要收敛成完整顺序"这类，必须跑起来才算数。
       - path: app/UILayout.swift
+      # ★ v1.0.233：用户脚本的 @match 匹配与油猴头部解析（纯逻辑，只 import Foundation）——
+      #   "*.a.com 该不该匹配 a.com""子域后缀会不会被 b.a.com.evil.cn 骗过去"这类，
+      #   光看代码看不出对错，必须跑。
+      - path: app/UserScript.swift
       - path: VideoGrabTests
     settings:
       base:
