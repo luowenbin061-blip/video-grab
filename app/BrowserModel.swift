@@ -410,14 +410,13 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 待确认地址，**重定向链自然只保留最后一跳**，不会把中间那些地址也记进历史。
     private var pendingVisit: [ObjectIdentifier: String] = [:]
 
-    /// ★ v1.0.238：**「已阻止弹出式窗口」这句提示的节流**。
-    ///
-    /// 用户选的是「已阻止」→ **拦掉 + 轻提示一句**。但脏站会连着弹好几次，
-    /// 每次都提示就成刷屏了 → 同一次页面加载里**只提示一次**
-    /// （每次 `didCommit` 清零，见 `webView(_:didCommit:)`）。
-    var popupBlockedNoticed = false
-
     // MARK: - ★ v1.0.241 网页开弹窗 → 问"怎么打开"
+
+    /// ★★ v1.0.242：**同一次页面加载里已经问过几次**（防刷屏；`didCommit` 时清零）。
+    ///
+    /// ★ 这是"**防刷屏**"，**不是"阻止网页弹窗"** —— 用户 2026-10-09 明确要求把"阻止"
+    ///   去掉。所以到上限之后是**静默忽略**，绝不许写回成"拦掉 + 提示一句"。
+    var popupAskCount = 0
 
     /// 界面要显示的那个询问（nil = 不显示）。**由 SwiftUI 的 `.alert` 呈现**，见 `ContentView`。
     ///
@@ -432,13 +431,6 @@ final class BrowserModel: NSObject, ObservableObject {
     private var pendingPopupWebView: WKWebView?
     private var pendingPopupRequest: URLRequest?
     private var pendingPopupURL: URL?
-
-    /// ★ "该问还是该拦"这件事的**超时令牌**（见 `decidePopup`）。
-    ///   网页侧标记最多等 0.35 秒 —— 到点还没回话就按"问"处理，**绝不静默**。
-    private var popupToken: UUID?
-
-    /// （"正在弹别的窗"这件事由现成的 `dialogBusy` 管，不另立标志 ——
-    ///   `createWebViewWith` 里不做拦截判断，整段交给主线程的 `askPopup`。）
 
     /// sniffer.js 的**原始**内容（只读一次盘）
     private static let rawSnifferSource: String = {
@@ -2484,9 +2476,8 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     nonisolated func webView(_ wv: WKWebView, didCommit n: WKNavigation!) {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
-            // ★ v1.0.238：换页了 → 「已阻止弹出窗口」那句提示的节流重置
-            //   （同一个页面里脏站会连着弹好几次，只提示第一句就够）
-            self.popupBlockedNoticed = false
+            // ★ v1.0.242：换页了 → "这一页已经问过几次弹窗"的额度归零（每页各算各的）
+            self.popupAskCount = 0
             if let u = wv.url?.absoluteString, !u.isEmpty {
                 t.address = u
                 if t === self.currentTab { self.address = u }
@@ -2660,6 +2651,12 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     private func askPopup(_ wv: WKWebView, url: URL, req: URLRequest) {
         // 已经有一个在问 → 后面来的自己吞掉（不刷屏，也避免一次点击开出一串标签）
         guard popupAsk == nil else { return }
+        // ★★ v1.0.242：**同一次页面加载最多问 3 次**。脏站会连环弹广告，问到第 4 个
+        //   基本可以确定不是你要的了 → 静默忽略（不提示，免得又变成"刷屏"）。
+        //   ★ 这是"防刷屏"，**不是"阻止网页弹窗"** —— 用户明确要求把"阻止"去掉，
+        //     所以别把它写回成"拦掉 + 提示"。
+        guard popupAskCount < 3 else { return }
+        popupAskCount += 1
         pendingPopupWebView = wv
         pendingPopupRequest = req
         pendingPopupURL = url
@@ -2697,61 +2694,15 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    /// ★★ v1.0.240：**这个弹窗该问他，还是该拦掉？**
-    ///
-    /// 判据 = **页面被用户碰过没有**（网页侧的 `__vgTouched`，见 sniffer.js）：
-    ///   · 碰过（他点了卡片 / 按钮）→ **弹菜单**，哪怕这个弹窗是几秒之后才弹的；
-    ///   · 没碰过（一进来就自己弹）→ 教科书式的弹窗广告 → **拦掉 + 提示一句**。
-    ///
-    /// ★ 为什么不用 `navigationType`：实测**手点视频卡片时 WebKit 也不给**
-    ///   `.linkActivated`（`window.open` 天生没这个标记）→ 照它判会把手点的正常跳转
-    ///   一起拦掉，用户看到的就是"点了进不去"（v1.0.238 实错、用户 2026-10-09 反馈）。
-    ///
-    /// ★ **读不到网页侧标记（`null`）时按"碰过"处理** —— 宁可多问一次，
-    ///   也不能让他点了进不去。这条是拿用户实测痛点换来的，**别改回去**。
-    @MainActor
-    private func decidePopup(_ wv: WKWebView, url: URL, req: URLRequest) {
-        // ★★ v1.0.241：**0.35 秒兜底**。读网页侧标记是异步的 —— 万一它不回话
-        //   （页面正在导航 / 脚本被别的东西顶掉 / 其它原因），原来就是"什么都不发生"，
-        //   用户看到的是"点了没反应"。现在到点就按"用户碰过"处理 → **该弹菜单就弹菜单**。
-        //   **这一块的第一原则是"绝不静默"**，别把这条兜底删掉。
-        let token = UUID()
-        popupToken = token
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard self.popupToken == token else { return }   // 已经有结论了
-            self.popupToken = nil
-            self.askPopup(wv, url: url, req: req)
-        }
-        wv.evaluateJavaScript("window.__vgReady ? !!window.__vgTouched : null") { raw, _ in
-            // ★ 先转成 Bool 再进 Task：`Any?` 不是 Sendable，
-            //   直接带进并发闭包会触发捕获检查（工程里栽过同类）。
-            let touched = (raw as? Bool) ?? true
-            Task { @MainActor in
-                guard self.popupToken == token else { return }   // 兜底那条已经处理过了
-                self.popupToken = nil
-                if touched {
-                    self.askPopup(wv, url: url, req: req)
-                } else {
-                    self.noticePopupBlocked(wv)
-                }
-            }
-        }
-    }
-
-    /// 网页**自己**弹了个窗、而且用户**没碰过**这个页面（多半是广告）→ 拦掉 + 提示一句。
-    ///
-    /// 同一次页面加载**只提示一句** —— 脏站是会连环弹的，每弹一次提示一次就成刷屏了
-    /// （每次 `didCommit` 重置这个标志）。
-    @MainActor
-    private func noticePopupBlocked(_ wv: WKWebView) {
-        guard tab(for: wv) === currentTab else { return }   // 后台标签的弹窗不打扰你
-        guard !popupBlockedNoticed else { return }
-        popupBlockedNoticed = true
-        // ★ v1.0.240：文案里点明"是网页自己弹的" —— 用户实测时说"我不知道你为什么要阻止"
-        //   正是因为他不知道拦的是**网页自动弹的**（他以为是他自己点的被拦了）。
-        showToast("已阻止网页自动弹出的窗口")
-    }
+    // ★★ v1.0.242：原来这里有 `decidePopup`（判"该问还是该拦"）和 `noticePopupBlocked`
+    //   （拦掉 + 提示「已阻止…」）。**两个都删了**，因为：
+    //     ① 那个判据（网页侧的"这个页面被碰过没有"）**在 iframe 里传不出来** ——
+    //        聚合站的视频卡片正好常在 iframe 里，于是"手点"也被判成"没碰过" →
+    //        弹窗被拦 → 用户只看到「已阻止…」、点了进不去（2026-10-09 第二次实测，白烧一版）；
+    //     ② 用户明确要求"**关掉这个阻止弹窗**"。
+    //   → 现在**所有网页弹窗一律弹菜单**（见 `createWebViewWith` → `askPopup`）：
+    //     要不要打开由他自己定（选"取消"就等于不打开，"阻止"这件事交给他）。
+    //     防刷屏改在 `askPopup` 里做（同一次页面加载最多问 3 次），**不再有"阻止"这个行为**。
 
     /// ★ v1.0.236：把这个标签"还没等到结果的那次访问"撤掉 ——
     ///   历史里刚记的那一笔（见 `onVisitBegan`）不该留在一个没打开的页面上。
@@ -2980,16 +2931,20 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             }
             return nil
         }
-        // ★★ v1.0.240：**判据换掉了** —— v1.0.238 用 `navigationType == .linkActivated`
-        //   区分"手点弹窗 / 自动弹窗"，**实测不成立**：手点视频卡片时 WebKit 也不给这个
-        //   标记（`window.open` 天生没有），于是正常跳转被拦、用户看到「已阻止」+ 点了进不去。
-        //   现在改用浏览器通行的那条：**页面被用户碰过 → 问他；没碰过就自己弹 → 拦掉**
-        //   （判据在网页侧，见 sniffer.js 的 `__vgTouched`，跨 frame 会广播到顶层）。
+        // ★★ v1.0.242：**不问任何东西，直接弹菜单**。
+        //   走过的弯路（都实测翻过车，别再回去）：
+        //     · v1.0.238 拿 `navigationType == .linkActivated` 判"手点" → 手点视频卡片时
+        //       WebKit **根本不给**这个标记 → 正常跳转被拦；
+        //     · v1.0.240 改用网页侧的"这个页面被碰过没有" → 那个标记**在 iframe 里传不出来**
+        //       （视频卡片正好常在 iframe 里）→ 照样被判成"没碰过" → 照样拦。
+        //   → 结论：**在原生侧没法可靠区分"手点弹窗"和"广告弹窗"，别再造判据了。**
+        //     一律问用户：要不要开由他定，选"取消"就等于不打开（"阻止"交给他）。
+        //     脏站连环弹的刷屏由 `askPopup` 里的**次数上限**挡，不靠"阻止"。
         //   传整个 `action.request`（不是只传 URL）：选"当前窗口加载"时要**原样重发**，
         //   原 request 自带 Referer / UA，自己拼会被防盗链的站拒掉。
         let req = action.request
         Task { @MainActor in
-            self.decidePopup(wv, url: url, req: req)
+            self.askPopup(wv, url: url, req: req)
         }
         return nil
     }

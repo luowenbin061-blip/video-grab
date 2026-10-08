@@ -57,43 +57,14 @@
   var autoOn = false;
   var booted = false;      // 首扫只做一次
 
-  // ★★ v1.0.240：**"这个页面被用户碰过没有"** —— 原生判「这个弹窗该问还是该拦」就靠它。
-  //
-  // 为什么需要它：点视频卡片时，网页是用 `window.open` 开详情页的（有些站还会先播几秒预览
-  // 再开窗）。而 WebKit 给这种弹窗的 `navigationType` **不是** `.linkActivated`
-  // —— 实测：**手点卡片也判成"没有用户手势"**。拿它当判据就把正常跳转也拦掉，
-  // 用户看到的是「已阻止弹出式窗口」+ 点了进不去（v1.0.238 实错一次）。
-  //
-  // 现在的判据换成浏览器通行的那条：
-  //   · **用户碰过这个页面** → 哪怕延迟几秒才弹窗，也**弹菜单让他选**；
-  //   · **一进来就自己弹**（用户什么都没碰）→ 教科书式的弹窗广告 → **直接拦掉**。
-  //
-  // ★ 为什么要有 `__vgReady`：原生靠 `evaluateJavaScript` 读，脚本没装 / 老页面会读到
-  //   `undefined`。有了这个哨兵，原生能区分"确实没碰过"和"读不到"——
-  //   读不到时按"碰过"处理（宁可多问一次，也不能让人点了进不去）。
-  // ★ 跨 frame：卡片常在 iframe 里，而原生读的是**主 frame**的变量 ——
-  //   所以子 frame 被碰时要往顶层广播一声。
-  window.__vgReady = true;
-  window.__vgTouched = false;
-
-  function vgMarkTouched() {
-    if (window.__vgTouched) return;
-    window.__vgTouched = true;
-    try {
-      if (window !== window.top) window.top.postMessage({ __vgTouch: 1 }, '*');
-    } catch (e) {}
-  }
-  try {
-    var vgTouchEvents = ['pointerdown', 'touchstart', 'mousedown', 'click'];
-    for (var vgTi = 0; vgTi < vgTouchEvents.length; vgTi++) {
-      // capture + passive：只是"记一笔"，绝不影响页面自己的点击/滚动
-      document.addEventListener(vgTouchEvents[vgTi], vgMarkTouched,
-                                { capture: true, passive: true });
-    }
-    window.addEventListener('message', function (e) {
-      try { if (e.data && e.data.__vgTouch) window.__vgTouched = true; } catch (err) {}
-    }, false);
-  } catch (e) {}
+  // ★★ v1.0.242：这里原来有一段「这个页面被用户碰过没有」（`__vgTouched` +
+  //   子 frame 往顶层广播），给原生判"这个弹窗该问还是该拦"用。**整段删掉了**：
+  //   · 那个判据**在 iframe 里传不出来** —— 聚合站的视频卡片正好常在 iframe 里，
+  //     于是"手点"也被判成"没碰过" → 弹窗被拦掉 → 用户只看到「已阻止…」、
+  //     点了进不去（2026-10-09 第二次实测，白烧一版）；
+  //   · 而且用户明确要求**关掉"阻止"这个行为**。
+  //   → 现在判据搬到原生侧（同一次页面加载最多问 3 次，见 `BrowserModel.askPopup`），
+  //     网页侧不再需要记任何东西。
 
   // ★ v1.0.230：「网页媒体自动播放」策略。这两行由原生在注入时替换成 true/false
   //   （见 BrowserModel.snifferSource 与 WebAutoplay）。
