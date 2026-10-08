@@ -376,6 +376,48 @@ final class BookmarkStore: ObservableObject {
         save()
     }
 
+    // MARK: - ★ v1.0.236 「这次访问还没等到结果」
+
+    /// 还没确认的访问：`url → 这次是不是**新插入**的一条`。
+    ///
+    /// 只有"新插入的"才允许撤掉 —— 之前就访问过的老记录，不能因为这次失败就整条删掉
+    /// （那等于抹掉他真正看过的那一次）。
+    private var pendingVisit: [String: Bool] = [:]
+
+    /// 页面**内容开始到达**时先记一笔（等加载结果再定去留）。
+    ///
+    /// 为什么不等"加载完成"：那会**整类漏掉**两种页 ——
+    /// ① 永远加载不完的（长轮询 / 流媒体 / 广告挂住，视频站常见）；
+    /// ② 前端路由的站内换页（压根不触发"加载完成"）。
+    func beginVisit(url: String, title: String) {
+        guard Self.usable(url) else { return }
+        let wasNew = !history.contains { $0.url == url }
+        record(url: url, title: title)
+        pendingVisit[url] = wasNew
+    }
+
+    /// 加载成功 → 这一笔留着，并把标题更新成**最终**标题
+    /// （开始加载时标题常常还是空的、或者还是上一页的）。
+    func confirmVisit(url: String, title: String) {
+        guard pendingVisit.removeValue(forKey: url) != nil else { return }
+        guard Self.usable(url) else { return }
+        if !title.isEmpty,
+           let i = history.firstIndex(where: { $0.url == url }),
+           history[i].title != title {
+            history[i].title = title
+            save()
+        }
+    }
+
+    /// 加载失败 / 被取消 → 撤掉这一笔。
+    /// ★ 只撤"这次新插入的"；老记录留着（他以前真的看过那一页）。
+    func dropVisit(url: String) {
+        guard let wasNew = pendingVisit.removeValue(forKey: url), wasNew else { return }
+        guard history.contains(where: { $0.url == url }) else { return }
+        history.removeAll { $0.url == url }
+        save()
+    }
+
     func removeHistory(url: String) {
         history.removeAll { $0.url == url }
         save()

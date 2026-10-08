@@ -57,6 +57,32 @@ struct ToolboxView: View {
     @AppStorage("desktopUA") private var desktopUA = false
     @AppStorage("noImageMode") private var noImage = false
 
+    // ★ v1.0.236：广告清理**只免掉当前这个站** —— 发现清理把页面弄坏了时当场用。
+    //   放工具箱是因为它跟「桌面版网站 / 无图模式」是同一类：**对当前这一页生效**的开关。
+
+    /// 当前这个站在不在「不清理广告」的名单里
+    private var cleanSkipped: Bool {
+        guard let u = model.currentURL, let h = URL(string: u)?.host else { return false }
+        return SiteRules.has(h, .adCleanSkip)
+    }
+
+    /// 当场把当前站加进 / 移出「不清理广告」名单。
+    /// ★ 加进去**必须刷新一次页面才真正生效** —— 清理脚本是页面加载时注入的，
+    ///   已经跑过的那一轮收不回来（页面上被藏掉的那块不会自己回来）。所以提示里明说。
+    private func toggleCleanSkip() {
+        guard let u = model.currentURL, let h = URL(string: u)?.host, !h.isEmpty else {
+            model.showToast("这一页还没有网址")
+            return
+        }
+        if SiteRules.has(h, .adCleanSkip) {
+            SiteRules.remove(h, from: .adCleanSkip)
+            model.showToast("已恢复：这个站继续清理广告 —— 刷新一次生效")
+        } else {
+            SiteRules.add(h, to: .adCleanSkip)
+            model.showToast("已记住 \(SiteRules.normalize(h))：不再清理广告 —— 刷新一次生效")
+        }
+    }
+
     var body: some View {
         NavigationView {
             ScrollView {
@@ -76,6 +102,10 @@ struct ToolboxView: View {
                     cell("book.closed.fill", "导入书签", .purple) {
                         showBookmarkPicker = true
                     }
+                    // ★ v1.0.236：清理把这一页弄坏了 → 当场把这个站免掉。
+                    //   开着时是绿的（跟「桌面版 / 无图模式」一个读法）。
+                    cell("shield.slash", "本站不清理广告",
+                         cleanSkipped ? .green : .gray) { toggleCleanSkip() }
 
                     // ★ v1.0.119 新增四格
                     // 说明：桌面模式 / 无图模式都是「开关」——副标题直接写当前状态，

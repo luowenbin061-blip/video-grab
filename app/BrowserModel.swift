@@ -391,6 +391,25 @@ final class BrowserModel: NSObject, ObservableObject {
     /// address 变，监听它的话每切一次窗口就虚增一次「访问次数」。
     var onPageFinished: ((String, String) -> Void)?
 
+    /// ★ v1.0.236：**内容开始到达**时回调（比「加载完成」早得多）。
+    ///   历史改挂这里 —— 原来挂 `didFinish` 会**整类漏掉**两种页：
+    ///   ① 永远加载不完的（长轮询 / 流媒体 / 广告挂住，视频站常见）；
+    ///   ② 前端路由站内换页（压根不触发 `didFinish`）。
+    ///   代价：会把"没成功打开"的也记进去 → 用 `onVisitFailed` 撤回（**只撤这次新插入的那条**，
+    ///   老记录不能因为这次失败就被删）。
+    ///   ★ 后台标签也记 —— 否则"我明明打开过"会缺一块。
+    var onVisitBegan: ((String, String) -> Void)?
+
+    /// ★ v1.0.236：这次导航失败 / 被取消 → 把 `onVisitBegan` 记的那一笔撤掉
+    var onVisitFailed: ((String) -> Void)?
+
+    /// ★ v1.0.236：每个标签"这次导航"还没等到结果的地址。
+    ///
+    /// 为什么需要它：同一个标签的导航是**串行**的 —— 新的开始，就意味着上一个
+    /// 要么已经完成、要么被替换掉了（重定向就是这么一串）。所以每个标签只留一个
+    /// 待确认地址，**重定向链自然只保留最后一跳**，不会把中间那些地址也记进历史。
+    private var pendingVisit: [ObjectIdentifier: String] = [:]
+
     /// sniffer.js 的**原始**内容（只读一次盘）
     private static let rawSnifferSource: String = {
         guard let url = Bundle.main.url(forResource: "sniffer", withExtension: "js"),
@@ -445,11 +464,25 @@ final class BrowserModel: NSObject, ObservableObject {
     /// ★ 跟 sniffer 同一个手法：把脚本里那一行 `var MODE = 'on';` 换成当前的开关值。
     ///   这样**新开的标签在注入时就带上正确的值**，老标签由
     ///   `applyAdCleanSetting()` 在运行时用 `__vgCleanSet` 通知。
-    static func cleanerSource(on: Bool) -> String {
-        let s = rawCleanerSource
+    ///
+    /// ★★ v1.0.236：再填一份 **`SKIP`（这个站不清理的域名清单）** —— 见 `SiteRules`。
+    ///   为什么走"注入"而不是"运行时通知"：清理是在 `DOMContentLoaded` 前后才开跑的，
+    ///   导航回调再 `__vgCleanSet` 时间是够的、但**没有注入稳**；而且
+    ///   `DOCUMENT START` 注入的脚本**每次导航都会重新执行** —— 跳站后天然重新判一次，
+    ///   不用我们盯着导航事件去补。
+    static func cleanerSource(on: Bool, skipHosts: [String] = []) -> String {
+        var s = rawCleanerSource
         let line = "var MODE = 'on';"
-        guard s.contains(line) else { return s }   // 脚本没这行 → 原样注入
-        return s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
+        if s.contains(line) {
+            s = s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
+        }
+        let skip = "var SKIP = [];"
+        if s.contains(skip) {
+            // 域名是 `SiteRules.normalize` 洗过的（只有字母数字点和减号）→ 不会破坏 JSON
+            let json = skipHosts.map { "\"" + $0 + "\"" }.joined(separator: ",")
+            s = s.replacingOccurrences(of: skip, with: "var SKIP = [\(json)];")
+        }
+        return s
     }
 
     /// 把一条用户脚本包成「先判 `@match`、不匹配就整段不执行」。
@@ -708,7 +741,8 @@ final class BrowserModel: NSObject, ObservableObject {
         //   而广告清理必须任何时候都在跑 —— 合成一个的话，关掉自动嗅探就把清理也关了。
         //   注入时机/世界/frame 范围都跟 sniffer 一致（documentStart、page world、
         //   覆盖 iframe）——documentStart 是为了让"点击防护"能抢在页面自己的脚本前面装好。
-        let cleanScript = WKUserScript(source: Self.cleanerSource(on: AdClean.isOn),
+        let cleanScript = WKUserScript(source: Self.cleanerSource(on: AdClean.isOn,
+                                                                 skipHosts: SiteRules.all(.adCleanSkip)),
                                        injectionTime: .atDocumentStart,
                                        forMainFrameOnly: false,
                                        in: world)
@@ -737,6 +771,10 @@ final class BrowserModel: NSObject, ObservableObject {
         //   混进来会污染下载列表；② 它受「自动嗅探」开关控制，而那个开关**默认是关的**，
         //   这个功能必须任何时候都在（打开有视频的页面就出现按钮）。
         ucc.add(self, contentWorld: world, name: "vgVideos")
+        // ★ v1.0.236：**站内换页**（前端路由）单独一条通道 ——
+        //   这类跳转原生侧一个导航回调都不会触发，历史会整类漏记（见 sniffer.js 的 startNavWatch）。
+        //   不并进 vgSniff：那边每来一条都会当嗅探结果处理，混进来会污染列表。
+        ucc.add(self, contentWorld: world, name: "vgNav")
 
         // ★ v1.0.119 无图模式：在网络层把图片请求拦掉（真省流量）。
         //   注意只能拿到**已经编译好**的规则 —— 编译是异步的，启动时已经预热过了
@@ -886,8 +924,13 @@ final class BrowserModel: NSObject, ObservableObject {
         wv.uiDelegate = nil
         t.observations.forEach { $0.invalidate() }
         t.observations = []
-        wv.configuration.userContentController
-            .removeScriptMessageHandler(forName: "vgSniff", contentWorld: .page)
+        // ★ v1.0.236：四个通道**都要摘**。原来只摘了 vgSniff —— 另外三个同样**强引用** self，
+        //   只摘一个等于"环只断了四分之一"（虽然真正断环靠下面的 `t.webView = nil`，
+        //   但这一步不该不对称：哪天 WebView 被别处多留一会儿，漏的就是它）。
+        let cc = wv.configuration.userContentController
+        for nm in ["vgSniff", "vgClean", "vgVideos", "vgNav"] {
+            cc.removeScriptMessageHandler(forName: nm, contentWorld: .page)
+        }
         byWebView[ObjectIdentifier(wv)] = nil
         t.webView = nil
         t.isLoading = false
@@ -2158,6 +2201,19 @@ extension BrowserModel: WKScriptMessageHandler {
                                            didReceive message: WKScriptMessage) {
         // ★ v1.0.209：广告清理的诊断回传走另一条通道 —— 直接记档、**不进嗅探那套流程**
         //   （不然它会被当成嗅探结果喂给 ingest，把下载列表搞脏）。
+        // ★ v1.0.236：站内换页（前端路由）→ 记一条浏览历史。
+        //   它不是导航事件，是页面自己报上来的（这类跳转不触发任何原生回调）。
+        //   报上来就算"记好了"，直接确认 —— 路由换页没有"加载失败"这一说，内容已经换完了。
+        if message.name == "vgNav" {
+            guard let d = message.body as? [String: Any],
+                  let u = d["url"] as? String, !u.isEmpty else { return }
+            let ti = (d["title"] as? String) ?? ""
+            Task { @MainActor in
+                self.onVisitBegan?(u, ti)
+                self.onPageFinished?(u, ti)
+            }
+            return
+        }
         if message.name == "vgClean" {
             AdClean.record(message.body)
             return
@@ -2273,6 +2329,16 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     nonisolated func webView(_ wv: WKWebView,
                              decidePolicyFor action: WKNavigationAction,
                              decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        // ★ v1.0.236：**我们自己重新发起的那一次，直接放行**（别再问一遍）。
+        //   用户选了"在本页打开"之后，我们是 cancel 掉原导航、再自己 load 一次的
+        //   （见 `loadInPlace`）—— 那次会**再进这个回调**，靠这个标记认出来。
+        if let a = allowOnce, let u = action.request.url?.absoluteString,
+           u == a, Date().timeIntervalSince(allowOnceAt) < 6 {
+            allowOnce = nil
+            decisionHandler(.allow)
+            return
+        }
+
         // ★ v1.0.225：网页黑名单 —— **只拦主文档**（子资源不拦：那是广告拦截的活，别越界）。
         //   放在最前面：被拉黑的站，连"下载"那条路也不该走通。
         //   `targetFrame == nil` 的那种（`target="_blank"`）单独在 createWebViewWith 里管。
@@ -2282,6 +2348,32 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             decisionHandler(.cancel)
             Task { @MainActor in
                 self.showBlocked(wv, url: u, rule: rule)
+            }
+            return
+        }
+        // ★★ v1.0.236：**手点链接时问一句「在本页还是新标签」**。
+        //
+        // 触发要三件事同时成立，缺一不可：
+        //   ① `navigationType == .linkActivated` —— **只认"手点"**。脚本跳转 / 重定向 / 表单提交
+        //      都不问（那些要么是页面自己的行为，要么会连弹好几次，问了没法用）。
+        //   ② 主文档（`targetFrame?.isMainFrame`）—— iframe 里的跳转不是"你打开了一页"。
+        //   ③ **跨站**（`SiteRules.sameSite` 判）—— 同一个站里的翻页不打扰他，
+        //      否则列表页点进详情、后退、再点下一个，每个链接都要按一次确定。
+        // 另外：这个站要是之前勾过"以后都用新标签"，就直接开新标签、也不再问。
+        if Self.askOnLink,
+           action.navigationType == .linkActivated,
+           action.targetFrame?.isMainFrame == true,
+           let u = action.request.url,
+           let cur = wv.url?.absoluteString,
+           !SiteRules.sameSite(cur, u.absoluteString) {
+            if let h = u.host, SiteRules.has(h, .openInNewTab) {
+                decisionHandler(.cancel)
+                Task { @MainActor in _ = self.newTab(load: u.absoluteString) }
+                return
+            }
+            decisionHandler(.cancel)
+            Task { @MainActor in
+                self.askHowToOpen(wv, url: u, req: action.request)
             }
             return
         }
@@ -2389,6 +2481,17 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 if t === self.currentTab { self.address = u }
             }
             self.clearLoadError(t)      // 内容开始到达 → 确实打开了
+            // ★ v1.0.236：历史从这一刻就记（"开始加载就记"）——
+            //   地址此时一定已经是新的，而且比 didFinish 早得多：
+            //   永远加载不完的页（长轮询 / 流媒体）也能记上，不再整类漏。
+            //   ★ 先把同一个标签上一条"没等到结果"的撤掉：标签内导航是串行的，
+            //     新的开始 ⇒ 上一条要么已完成要么被替换 —— 重定向链因此只留最后一跳。
+            let vkey = ObjectIdentifier(wv)
+            if let old = self.pendingVisit[vkey], old != t.address {
+                self.onVisitFailed?(old)
+            }
+            self.pendingVisit[vkey] = t.address
+            self.onVisitBegan?(t.address, t.title)
             t.canGoBack = wv.canGoBack
             t.canGoForward = wv.canGoForward
             if t === self.currentTab {
@@ -2475,6 +2578,11 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             t.crashCount = 0     // ★ v1.0.86：这一页正常活下来了 → 崩溃计数清零
 
             self.loadTimeoutTask?.cancel()
+            // ★ v1.0.236：**所有标签**都要"确认"这次访问（历史那一笔留着不撤）。
+            //   原来这一句在下面的 `if t === currentTab` 里 —— 那会让后台标签的
+            //   待确认记录一直挂着，等它下次导航时被当成"上次没成的"撤掉，等于白记。
+            self.pendingVisit[ObjectIdentifier(wv)] = nil
+            self.onPageFinished?(t.address, t.title)
             if t === self.currentTab {
                 self.isLoading = false
                 self.pageTitle = t.title
@@ -2485,8 +2593,6 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
                 self.canGoBack = t.canGoBack
                 self.canGoForward = t.canGoForward
                 self.refreshTabs()
-                // 历史只记「你正在看的这一页」—— 后台标签加载完成不算你访问过
-                self.onPageFinished?(t.address, t.title)
             }
             // ★ v1.0.104：这里原来会「加载完补扫一次」（上面那条注释说得对：
             //   有些地址是 DOM 造好之后才有的）。但那是**自动**扫，跟默认关矛盾 ——
@@ -2523,9 +2629,92 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         return false
     }
 
+    /// ★ v1.0.236：设置里的「点链接时问一句：在本页还是新标签」（**默认开**）。
+    ///   默认开的理由：这就是他要的功能；嫌烦的人在设置里关掉即可。
+    static var askOnLink: Bool {
+        let k = "askOpenTarget"
+        let d = UserDefaults.standard
+        return d.object(forKey: k) == nil ? true : d.bool(forKey: k)
+    }
+
+    /// 上面那个开关的 UserDefaults 键（设置页的 @AppStorage 绑同一个）
+    static let askOnLinkKey = "askOpenTarget"
+
+    /// ★ v1.0.236：**放行一次**的标记（见 `decidePolicyFor` 开头）。
+    private var allowOnce: String?
+    private var allowOnceAt = Date.distantPast
+
+    /// 问一句"这个链接怎么打开"。**手点跨站链接**时才会走到这儿。
+    @MainActor
+    private func askHowToOpen(_ wv: WKWebView, url: URL, req: URLRequest) {
+        let host = url.host ?? url.absoluteString
+        // 弹不出来（界面还没挂好）/ 正在弹别的窗 → **直接在本页打开**。
+        // 保守处理：不能因为"弹窗没弹出来"就变成"点了没反应"。
+        guard let vc = dialogHost(for: wv), !dialogBusy else {
+            loadInPlace(wv, req: req)
+            return
+        }
+        let a = UIAlertController(title: "这个链接怎么打开？", message: host,
+                                  preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: "在本页打开", style: .default) { _ in
+            Task { @MainActor in
+                self.dialogBusy = false
+                self.loadInPlace(wv, req: req)
+            }
+        })
+        a.addAction(UIAlertAction(title: "在新标签打开", style: .default) { _ in
+            Task { @MainActor in
+                self.dialogBusy = false
+                _ = self.newTab(load: url.absoluteString)
+            }
+        })
+        a.addAction(UIAlertAction(title: "以后都用新标签", style: .default) { _ in
+            Task { @MainActor in
+                self.dialogBusy = false
+                SiteRules.add(host, to: .openInNewTab)
+                _ = self.newTab(load: url.absoluteString)
+                self.showToast("已记住：\(SiteRules.normalize(host)) 以后都用新标签")
+            }
+        })
+        a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            Task { @MainActor in self.dialogBusy = false }
+        })
+        dialogBusy = true
+        vc.present(a, animated: true) {
+            Task { @MainActor in
+                if vc.presentedViewController !== a { self.dialogBusy = false }
+            }
+        }
+    }
+
+    /// 「在本页打开」—— 把刚才被取消的那次导航**原样重新发起**。
+    ///
+    /// ★ 必须复用 `action.request`（它自带 Referer / UA）：自己拼一个 `URLRequest(url:)`
+    ///   是没有 Referer 的，有些站会直接拒、或者跳回首页。
+    /// ★ 用 `allowOnce` 标记这一次 —— 否则重新发起时又会命中拦截、再弹一次（死循环）。
+    @MainActor
+    private func loadInPlace(_ wv: WKWebView, req: URLRequest) {
+        allowOnce = req.url?.absoluteString
+        allowOnceAt = Date()
+        wv.load(req)
+    }
+
+    /// ★ v1.0.236：把这个标签"还没等到结果的那次访问"撤掉 ——
+    ///   历史里刚记的那一笔（见 `onVisitBegan`）不该留在一个没打开的页面上。
+    private func dropPendingVisit(_ wv: WKWebView) {
+        let key = ObjectIdentifier(wv)
+        guard let url = pendingVisit.removeValue(forKey: key) else { return }
+        onVisitFailed?(url)
+    }
+
     nonisolated func webView(_ wv: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            // ★ v1.0.236：这一页没打开成 → 撤掉刚记的那一笔。
+            //   **"被取消"不撤** —— 那多半是他又点了别的、或被新导航打断，
+            //   下一条的 didCommit 已经接管（pending 已换成新的），
+            //   在这儿无脑撤会把新那条也一起撤掉。
+            if !Self.isCancelled(e) { self.dropPendingVisit(wv) }
             self.handleLoadFailure(t, error: e)
         }
     }
@@ -2533,6 +2722,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     nonisolated func webView(_ wv: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            if !Self.isCancelled(e) { self.dropPendingVisit(wv) }
             self.handleLoadFailure(t, error: e)
         }
     }

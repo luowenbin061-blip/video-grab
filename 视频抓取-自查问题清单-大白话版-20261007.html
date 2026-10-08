@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab 自查问题清单 · 大白话版</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1c1f23; --sub:#6a7280; --line:#e4e7eb;
+    --red:#c62828; --redbg:#fdeded; --org:#c85a00; --orgbg:#fff5e8;
+    --blu:#3f6296; --blubg:#eef3fa; --grn:#2e7d32; --grnbg:#eaf6eb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.85 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:30px 18px 70px}
+  .wrap{max-width:920px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 6px}
+  .meta{color:var(--sub);font-size:13.5px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:16px 0}
+  h2{font-size:18px;margin:0 0 14px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 4px}
+  h3:first-of-type{margin-top:6px}
+  p{margin:8px 0}
+  .plain{background:#fbfcfd;border-left:4px solid #cfd6de;border-radius:0 8px 8px 0;
+    padding:10px 14px;margin:10px 0}
+  .plain b{color:#111}
+  .why{color:#414852;font-size:15px;margin:6px 0}
+  .ev{color:var(--sub);font-size:13px;margin:6px 0}
+  .ev code,code{background:#f2f4f7;border:1px solid #e5e8ec;border-radius:4px;
+    padding:0 5px;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  .badge{display:inline-block;font-size:12px;font-weight:700;border-radius:6px;padding:2px 8px;margin-right:8px}
+  .b-red{background:var(--redbg);color:var(--red)}
+  .b-org{background:var(--orgbg);color:var(--org)}
+  .b-blu{background:var(--blubg);color:var(--blu)}
+  .item{border-left:4px solid var(--line);padding-left:16px;margin:20px 0}
+  .item.red{border-color:var(--red)} .item.org{border-color:var(--org)} .item.blu{border-color:var(--blu)}
+  ul{margin:8px 0;padding-left:22px} li{margin:6px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#f2f4f7;font-weight:600}
+  .new{display:inline-block;font-size:11.5px;font-weight:700;color:#8a5a00;background:#fff3d6;
+    border-radius:5px;padding:1px 7px;margin-left:6px;vertical-align:1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>VideoGrab 自查问题清单 · 大白话版</h1>
+  <div class="meta">
+    对象：<b>当前最新版 v1.0.235</b>（真机 iOS 16.6）·
+    这次是我<b>自己读代码查的</b>（不是再问 AI）·
+    每条都在代码里指到了具体位置 · 2026-10-07 深夜
+  </div>
+
+  <div class="card">
+    <h2>先说结论</h2>
+    <p>
+      查到 <b>11 个真问题</b>。其中<b>最要紧的是 3 个</b>：
+    </p>
+    <ul>
+      <li><b>「备份」其实少备了三样东西，还骗你说成功了</b> —— 换机重装后标签页、视频历史、首页快捷格子全没了。</li>
+      <li><b>暂停/取消下载后，有个每秒响一次的闹钟忘了关</b>，还一直拽着那个任务不放 —— 用得越多越费电、越卡。</li>
+      <li><b>本机播放服务会"假死"</b> —— 一边下一边播的时候容易堆住，而且它自己查不出来，只能重启 App。</li>
+    </ul>
+    <p class="ev">
+      标注 <span class="new">本轮新发现</span> 的两条，是之前问 AI 时<b>没有任何一家提到</b>的（因为它们没看到这部分代码）。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>一、会让你「丢东西」的</h2>
+
+    <div class="item red">
+      <h3><span class="badge b-red">最要紧</span>1. 备份少备三样，却提示「已恢复成功」<span class="new">本轮新发现</span></h3>
+      <div class="plain">
+        <b>你看到的：</b>设置里点「导出备份」→ 换手机 / 重装 → 点「恢复」→ 它说
+        「已恢复 3 个数据文件、N 项设置」。你以为万无一失。<br>
+        <b>实际情况：</b>你的<b>标签页、视频历史、首页那几个快捷格子</b>——<b>一样都没备进去</b>。真丢了你也不知道，因为它不会报错。
+      </div>
+      <p class="why">
+        <b>为什么：</b>它拿着一张"要打包哪些文件"的单子去下载目录里找，但单子上写的位置和东西实际放的位置<b>不是一个地方</b>：
+      </p>
+      <table>
+        <tr><th>它去找</th><th>东西实际在</th><th>结果</th></tr>
+        <tr><td>根目录下的 <code>tabs.json</code></td><td><code>Tabs/tabs.json</code>（多一层文件夹）</td><td>找不到 → 静默跳过</td></tr>
+        <tr><td>根目录下的 <code>shortcuts.json</code></td><td><code>home/shortcuts.json</code></td><td>找不到 → 静默跳过</td></tr>
+        <tr><td><b>单子上压根没写</b>视频历史</td><td><code>watch_history.json</code></td><td>从来不备</td></tr>
+      </table>
+      <p class="ev">
+        证据：<code>DataBackup.swift:26</code>（单子）与 <code>:82</code>（<code>try? … else { continue }</code> 读不到就跳过，不报错）；
+        <code>TabStore.swift:155</code>、<code>HomeShortcuts.swift:97</code>（真实路径）。
+      </p>
+      <p class="ev"><b>修起来：</b>小改 —— 把单子上的路径改对、把视频历史加进去、读不到就<b>明确告诉你</b>「这几样没备上」。</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>二、会让 App「越用越沉」的</h2>
+
+    <div class="item red">
+      <h3><span class="badge b-red">要紧</span>2. 暂停 / 取消下载后，有个"每秒响一次的闹钟"忘了关<span class="new">本轮新发现</span></h3>
+      <div class="plain">
+        <b>你看到的：</b>下过一堆东西、又暂停/取消/删掉了很多任务之后，App 开始<b>费电、发热、变卡</b>，内存也回不去。<br>
+        <b>实际情况：</b>App 里有个「每秒醒一次、看看内存用了多少」的小闹钟（用来记录"下载时内存峰值"）。
+        它<b>只在任务正常跑完时才会被关掉</b>；你要是**中途暂停或取消**，它就<b>一直响下去</b>——
+        而且它<b>还牢牢抓着那个任务不放</b>，等于那个任务也永远删不干净。
+      </div>
+      <p class="why">
+        <b>为什么：</b>管"关闹钟"的那句代码，只在一个地方被调用（"某个阶段正常结束"时）；
+        而"暂停""取消"这两条路都没叫它。这个任务类也没有"自我清理"的收尾动作。
+      </p>
+      <p class="ev">
+        证据：<code>DownloadJob.swift:134-148</code>（闹钟里 <code>let target = self</code> 强引用自己）、
+        <code>:120-121</code>（只有阶段结束才关）、<code>:338</code>（暂停不管）、<code>:376</code>（取消不管）、以及这个类<b>没有 deinit</b>。
+      </p>
+      <p class="ev"><b>修起来：</b>很小 —— 暂停和取消时各补一句"关闹钟"。属于"改两行，省很多电"。</p>
+    </div>
+
+    <div class="item org">
+      <h3><span class="badge b-org">中等</span>3. 图片列表没有上限，「清空列表」还清不掉它</h3>
+      <div class="plain">
+        <b>你看到的：</b>逛图多的站（图库、瀑布流）之后，<b>内存涨上去下不来</b>；
+        更怪的是——你点了「清空列表」，回头再进图片那一栏，<b>老图又自己冒出来了</b>。
+      </div>
+      <p class="why">
+        <b>为什么：</b>视频列表有「最多 500 条」的保护，<b>图片列表没有</b>。
+        而"清空"这个动作<b>漏清了一样东西</b>——每个标签自己私藏的那份图片备份。
+        下次页面一上报，它就把这份私藏又合并回来。
+      </p>
+      <p class="ev">
+        证据：<code>BrowserModel.swift:1939-1941</code>（视频有截断）vs <code>:1956</code>（图片直接赋值，无截断）；
+        <code>:1660-1666</code>（清空时只清标签里的"视频/分组"，没清它的"图片/图片分组"）。
+      </p>
+    </div>
+
+    <div class="item org">
+      <h3><span class="badge b-org">中等</span>4. 好几个"记事本"只往里写、从不往外撕</h3>
+      <div class="plain">
+        <b>你看到的：</b>用得越久，内存慢慢往上涨（不剧烈，但一直在涨）。<br>
+        <b>实际情况：</b>有四五样东西是"只增不减"的：清晰度候选、画中画状态、每个任务的详细日志、缩略图重试记录、
+        以及播放代理里那张"每个视频的请求头"表。
+      </div>
+      <p class="why">
+        <b>为什么：</b>这些都用「以地址为键的字典」存，用完<b>没人删</b>。
+        其中播放代理那张表还存着 Cookie/Referer，会一直留在内存里。
+      </p>
+      <p class="ev">
+        证据：<code>BrowserModel.swift:2044-2050</code>（4 个字典）、<code>DownloadJob.swift</code> 的
+        <code>notes</code> 只 append、<code>MediaProxy.swift:47-53</code>（静态表无上限无超时）。
+      </p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>三、会让「播放 / 网页卡住」的</h2>
+
+    <div class="item red">
+      <h3><span class="badge b-red">要紧</span>5. 本机播放服务会"假死"——堆住了自己也查不出来</h3>
+      <div class="plain">
+        <b>你看到的：</b>一边下东西一边播（尤其"同时下载数"设成不限），播着播着<b>就转圈/播不出来</b>；
+        更糟的是<b>之后所有视频都播不了，只能把 App 杀掉重开</b>。<br>
+        <b>实际情况：</b>App 里有个自己写的"小服务器"，播放视频时所有数据都要从它这儿过。
+        它<b>来一条请求就开工一条、不设上限</b>，而且每一条都可能<b>干等上游 35 秒</b>（连着失败重试的话，一条能等上百秒）。
+        请求一多，工位全被占满 → 新来的只能排队 → 就是"卡住"。
+      </div>
+      <p class="why">
+        <b>更要命的是第二半：</b>这个服务器有个"体检"动作，但它<b>只是敲一下门、听有没有人应声</b>，
+        并不问一句"你还能干活吗"。所以<b>它明明已经卡死了，体检报告还是"健康"</b> → 系统不去重启它 → 永远好不了。
+      </p>
+      <p class="ev">
+        证据：<code>LocalHTTPServer.swift:40</code>（并发队列不设上限）、<code>:372</code>（每连接一个任务）、
+        <code>MediaProxy.swift:324-332</code>（同步等 35 秒）、<code>LocalHTTPServer.swift:132-151</code>（体检只做 TCP 连接）。
+      </p>
+      <p class="ev"><b>修起来：</b>中等 —— 给工位设个上限（比如最多同时 16 条）+ 把体检改成"真的发一句 HTTP 问话"。</p>
+    </div>
+
+    <div class="item red">
+      <h3><span class="badge b-red">要紧</span>6. 同一个视频"刷新地址"只会做一次，刷新完再失效就不管了</h3>
+      <div class="plain">
+        <b>你看到的：</b>看长时间的视频，播到一半<b>突然播不动</b>，退出去重进又能播一会儿。<br>
+        <b>实际情况：</b>这类站的视频地址<b>是短命的</b>（几分钟就作废）。App 发现地址失效会"回原页面重新问一遍"，
+        但<b>只肯问一次</b>——第二次失效它就<b>直接放弃</b>，把 403 错误甩给播放器，得干等 5 分钟才肯再问。
+      </div>
+      <p class="why">
+        <b>为什么：</b>判断"要不要重新问一遍"的那句话里，多了一个条件：
+        "必须是<b>原始地址</b>才重新问"。可第二次用的是<b>上次问回来的新地址</b>，条件不成立，就跳过了。
+      </p>
+      <p class="ev">
+        证据：<code>MediaProxy.swift:225-231</code>（那句 <code>effective.absoluteString == up.absoluteString</code>）、
+        <code>:87-92</code>（新地址缓存 5 分钟）。
+      </p>
+      <p class="ev"><b>修起来：</b>小改 —— 把条件从"必须是原始地址"改成"这一跳还没重试过"。</p>
+    </div>
+
+    <div class="item org">
+      <h3><span class="badge b-org">中等</span>7. 上报视频清单时「先记账、后发货」</h3>
+      <div class="plain">
+        <b>你看到的：</b>偶尔碰到某个页面：左上角的<b>「窗口」按钮就是不出来</b>，视频历史里也没有这一页 ——
+        而且<b>刷新一下又好了</b>。<br>
+        <b>实际情况：</b>页面把"这页有哪些视频"报给 App 时，是<b>先把"我已经报过了"记在本子上，再去送信</b>。
+        万一那次送信失败（页面太复杂、一次要送的太多），本子上已经记成"报过了" →
+        <b>只要视频没变化，它就再也不会重发</b>。
+      </div>
+      <p class="ev">
+        证据：<code>sniffer.js:641-653</code>（<code>vidSig = sig;</code> 在 <code>postMessage</code> 之前，且发送被 <code>try{}catch{}</code> 吞掉）。
+      </p>
+      <p class="ev"><b>修起来：</b>很小 —— 把"记账"挪到送信成功之后。</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>四、特定操作下会出的错</h2>
+
+    <div class="item blu">
+      <h3><span class="badge b-blu">中等</span>8. 暂停后马上点继续，状态可能显示反</h3>
+      <div class="plain">
+        <b>你看到的：</b>点了暂停、马上点继续，结果界面上写着"已暂停"，可它其实在下 —— 或者反过来，重启后还是错的。
+      </div>
+      <p class="why">
+        <b>为什么：</b>老的下载任务还没停干净，新的就已经开工了；老的那个收尾时"把'暂停'的牌子又立了回去"，
+        把新的状态盖掉了。
+      </p>
+      <p class="ev">证据：<code>DownloadJob.swift:338-345</code>（暂停立刻松手）、<code>:359-374</code>（继续只检查"手空了没"）、<code>:1059-1065</code>（旧任务收尾时又置 <code>paused = true</code>）。</p>
+    </div>
+
+    <div class="item blu">
+      <h3><span class="badge b-blu">中等</span>9. 导入视频失败时，界面一声不吭</h3>
+      <div class="plain">
+        <b>你看到的：</b>从相册/文件里选了个视频，点确定 —— <b>什么都没发生</b>。<br>
+        <b>实际情况：</b>失败的原因（iCloud 还没下载完、文件被系统回收、空间不够）<b>被悄悄咽掉了</b>，
+        也没有"一条都没导进来"的提示。
+      </div>
+      <p class="ev">证据：<code>Importer.swift:40-42</code>（catch 里只有一句注释）、<code>ContentView.swift:61</code>（空的就默默返回）。</p>
+    </div>
+
+    <div class="item blu">
+      <h3><span class="badge b-blu">中等</span>10. 几个"存档"读坏了就当空的，然后一次写回把旧的覆盖没</h3>
+      <div class="plain">
+        <b>你看到的：</b>某次之后，<b>压缩队列空了 / 续看进度全没了 / 首页快捷格子不见了</b>，而且再也回不来。<br>
+        <b>实际情况：</b>这些存档如果读到一半坏了（比如上次被系统杀掉、文件写了一半），代码<b>不报错、当空的处理</b>；
+        接着任何一次保存动作，就用"空的"把原来那份盖掉了 —— 数据彻底没了。
+      </div>
+      <p class="ev">证据：<code>CompressQueue.swift:465-467</code>、<code>WatchProgress.swift:69-73</code>、<code>HomeShortcuts.swift:231-232</code>（都是 <code>else { return [] }</code> 之后无条件写回）。</p>
+    </div>
+
+    <div class="item blu">
+      <h3><span class="badge b-blu">轻微</span>11. 几处小毛病（知道就行）</h3>
+      <ul>
+        <li><b>播放器「重试」是原样重来</b>：不换地址、不重置"已经兜底过一次"的标记，失败后点重试可能又是同一条坏地址，然后又要转 60 秒圈。</li>
+        <li><b>画中画"开机梯子"关不干净</b>：正在启动画中画的那几秒里你把它关了，它过一会儿可能<b>自己又冒出来</b>。</li>
+        <li><b>任务记录写盘失败不吭声</b>：磁盘满导致记录没写进去，重启后下载列表"凭空清空"，全程无提示。</li>
+        <li><b>标签休眠时只摘了三个消息通道里的一个</b>（另外两个没摘）—— 影响很小，但属于没做干净。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>五、如果只修三件事，我先修这三件</h2>
+    <table>
+      <tr><th>优先级</th><th>修什么</th><th>为什么先修它</th><th>工作量</th></tr>
+      <tr>
+        <td><b>1</b></td>
+        <td><b>备份路径改对</b>（+ 加进视频历史 + 读不到要报错）</td>
+        <td>这是唯一一条<b>会真丢你的数据</b>，而且你现在还以为它好使</td>
+        <td>小</td>
+      </tr>
+      <tr>
+        <td><b>2</b></td>
+        <td><b>暂停/取消时关掉那个"每秒闹钟"</b></td>
+        <td>两行代码，直接解决"越用越费电、越用越卡"</td>
+        <td>很小</td>
+      </tr>
+      <tr>
+        <td><b>3</b></td>
+        <td><b>播放代理：刷新条件放宽 + 体检改成真问话</b></td>
+        <td>这两条正是"播着播着断了、而且回不来"的根子</td>
+        <td>小</td>
+      </tr>
+    </table>
+    <p class="ev">
+      其余 8 条（并发上限、图片列表上限、字典清理、暂停竞态、导入提示…）可以排后面，
+      它们要么影响慢、要么只在特定操作下出现，不急。
+    </p>
+    <p class="ev">
+      <b>另外说明：</b>这次<b>代码一行没改</b>，全是只读排查。你说动手我再改。
+    </p>
+  </div>
+
+  <p class="ev" style="text-align:center;margin-top:26px">
+    核对方式：每条都在 <code>app/*.swift</code> 或 <code>resources/*.js</code> 里指到了文件与行号；
+    不确定的地方已经写明"不确定"，没有编。
+  </p>
+
+</div>
+</body>
+</html>

@@ -150,6 +150,10 @@ targets:
       #   "*.a.com 该不该匹配 a.com""子域后缀会不会被 b.a.com.evil.cn 骗过去"这类，
       #   光看代码看不出对错，必须跑。
       - path: app/UserScript.swift
+      # ★ v1.0.236：按站点记的名单（纯逻辑，只 import Foundation）——
+      #   归一化 / 子域命中 / "跨站"判据这三件事，错一条的后果都是"该弹的不弹、不该弹的狂弹"，
+      #   或者"加 a.com 把 nota.com 也免了"。这种必须跑起来才算数。
+      - path: app/SiteRules.swift
       - path: VideoGrabTests
     settings:
       base:

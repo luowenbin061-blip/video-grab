@@ -76,6 +76,17 @@ struct SettingsWebPage: View {
     @AppStorage(WebAutoplay.key) private var autoplay = WebAutoplay.all.rawValue
 
     @State private var trustedCount = 0
+    /// ★ v1.0.236：两条"按网站记"的名单各有几条（跟 trustedCount 一个用法）
+    @State private var newTabCount = 0
+    @State private var skipCleanCount = 0
+
+    /// ★ v1.0.236：「点链接时问一句」的开关（**默认开**，见 `BrowserModel.askOnLink`）。
+    ///   为什么不用 `@AppStorage`：它的默认值表达不了"**没设过 = 真**"这层意思
+    ///   （要用 `object(forKey:) == nil` 判），所以走一个手写 Binding。
+    private var askToggle: Binding<Bool> {
+        Binding(get: { BrowserModel.askOnLink },
+                set: { UserDefaults.standard.set($0, forKey: BrowserModel.askOnLinkKey) })
+    }
     /// ★ v1.0.225：黑名单里有几条（跟 trustedCount 一个用法）
     @State private var blockCount = 0
     @State private var note: String?
@@ -177,6 +188,29 @@ struct SettingsWebPage: View {
                 Text("让 JS 脚本替你改网页行为。可以自己导入（油猴那套写法）。")
             }
 
+            // ★ v1.0.236：**按网站单独设置** —— 两条新需求的名单都在这儿管。
+            //   ① 点链接问一句 + 它的"总用新标签"名单（只在**跨站**时弹，站内翻页不打扰）
+            //   ② 广告清理的豁免名单（某些页面被误伤了 → 加进来，以后不再清理它）
+            Section {
+                Toggle("点链接时问一句", isOn: askToggle)
+                NavigationLink {
+                    SettingsSiteRulesPage(kind: .openInNewTab)
+                } label: {
+                    settingsKVRow("总用新标签打开的网站",
+                                  newTabCount == 0 ? "未设置" : "\(newTabCount) 个")
+                }
+                NavigationLink {
+                    SettingsSiteRulesPage(kind: .adCleanSkip)
+                } label: {
+                    settingsKVRow("不清理广告的网站",
+                                  skipCleanCount == 0 ? "未设置" : "\(skipCleanCount) 个")
+                }
+            } header: {
+                Text("按网站单独设置")
+            } footer: {
+                Text("「点链接时问一句」只在跳到**别的站**时弹 —— 同一个站里翻页不打扰你。")
+            }
+
             // ★ v1.0.231：「底部功能类设置」——功能卡片 / 底栏的顺序自己拖。
             //   放这一页是用户指定的（我提过一句：它其实是"界面布局"，
             //   跟同页的广告清理 / 证书 / 黑名单不是一类；哪天觉得翻着别扭，一句话就搬走）。
@@ -197,6 +231,9 @@ struct SettingsWebPage: View {
         .onAppear {
             trustedCount = TrustedHosts.count
             blockCount = BlockList.count
+            // ★ v1.0.236：两条"按网站记"的名单（跟上面两个一个用法）
+            newTabCount = SiteRules.count(.openInNewTab)
+            skipCleanCount = SiteRules.count(.adCleanSkip)
         }
     }
 }

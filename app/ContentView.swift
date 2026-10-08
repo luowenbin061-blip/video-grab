@@ -713,11 +713,21 @@ struct ContentView: View {
             downloads.preparePiP()
             // ★ v1.0.160：把压缩队列的三根线接上（小窗 / 收编出口 / 别人要不要小窗）
             downloads.wireCompressQueue()
-            // 历史只记「真的加载完成的、你正在看的」那一页
-            // （同一地址由 store 合并，不会把列表刷成一堆重复项；
-            //   about:blank 之类由 store 自己挡掉）
+            // ★ v1.0.236：浏览历史改成「**开始加载就记 → 成功才留 → 失败就撤**」三件套。
+            //
+            // 原来只在"加载完成 + 你正在看的那个标签"时才记，导致整类漏记：
+            //   ① 后台标签加载完成不算（我明明打开过）；② 永远加载不完的页永远等不到完成；
+            //   ③ 前端路由的站内换页压根不触发完成事件。
+            // 代价是会把"没打开成"的也先记进去 → 所以配了 `onVisitFailed` 撤回。
+            // （同一地址由 store 合并，不会把列表刷成一堆重复项；about:blank 之类由 store 挡掉。）
+            model.onVisitBegan = { url, title in
+                store.beginVisit(url: url, title: title)
+            }
+            model.onVisitFailed = { url in
+                store.dropVisit(url: url)
+            }
             model.onPageFinished = { url, title in
-                store.record(url: url, title: title)
+                store.confirmVisit(url: url, title: title)
             }
             // 系统长按菜单里的「Download」被点 → 真正开始下载。
             // 请求上下文复用嗅探结果同一条（防盗链站的分片要带 Referer/Cookie）。

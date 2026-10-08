@@ -651,6 +651,53 @@
       });
     } catch (e) {}
   }
+  // ★★ v1.0.236：**站内换页（前端路由）上报**。
+  //
+  // 为什么单独要这一条：React / Vue 这类站的"翻页"是 JS 改地址 + 换内容，
+  // **原生侧一个导航回调都不会触发** —— 历史里就整类漏掉，用户在站里点了
+  // 十几个视频，历史里只剩"进入站点"那一条。
+  //
+  // ★ 只装在**顶层页面**：iframe 里的路由不是"你访问了一页"。
+  var navWatchOn = false, navLastAt = 0, navLastUrl = '';
+  function reportNav() {
+    try {
+      var u = location.href || '';
+      if (!u || u === navLastUrl) return;
+      var now = nowMs();
+      if (now - navLastAt < 300) return;    // 节流：一次路由跳转常连发好几个事件
+      navLastAt = now;
+      navLastUrl = u;
+      window.webkit.messageHandlers.vgNav.postMessage({
+        url: u,
+        title: (document.title || '')
+      });
+    } catch (e) {}
+  }
+  function startNavWatch() {
+    if (navWatchOn) return;
+    var isTop = false;
+    try { isTop = (window.top === window.self); } catch (e) { isTop = false; }
+    if (!isTop) return;
+    navWatchOn = true;
+    try {
+      var ps = history.pushState;
+      history.pushState = function () {
+        var r = ps.apply(this, arguments);
+        setTimeout(reportNav, 0);
+        return r;
+      };
+      var rs = history.replaceState;
+      history.replaceState = function () {
+        var r = rs.apply(this, arguments);
+        setTimeout(reportNav, 0);
+        return r;
+      };
+      window.addEventListener('popstate', function () { setTimeout(reportNav, 0); }, false);
+      window.addEventListener('hashchange', function () { setTimeout(reportNav, 0); }, false);
+      navLastUrl = location.href || '';       // 记下起点，别把"进来这一下"当成路由跳转
+    } catch (e) {}
+  }
+
   // 节流：400ms 内的多次变化合并成一次（跨进程 postMessage 不免费）
   function reportVideos(force) {
     if (force) { scanVideos(); flushVideos(true); return; }
@@ -1268,4 +1315,8 @@
   } else {
     startVideos();
   }
+
+  // ★ v1.0.236：站内换页上报（同样**无条件**启动，跟 autoOn 开关无关）。
+  //   必须在 DOM ready 之前就挂上 pushState —— 有些站一进来就 replaceState 一次。
+  startNavWatch();
 })();

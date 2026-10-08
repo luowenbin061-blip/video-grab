@@ -30,8 +30,32 @@
   if (window.__vgCleanerInstalled) return;
   window.__vgCleanerInstalled = true;
 
-  // ★ 注入时由原生替换这一行（同 sniffer.js 的 autoOn 手法）：'on' / 'off'
+  // ★ 注入时由原生替换这两行（同 sniffer.js 的 autoOn 手法）
   var MODE = 'on';
+  // ★ v1.0.236：**这个站"不清理"的域名清单**（注入时由原生填，见 SiteRules）。
+  //   空数组 = 谁都不豁免（默认）。
+  var SKIP = [];
+
+  // 当前域名在不在豁免名单里（**本域或它的子域**都算）。
+  // ★ 判据跟原生侧 `SiteRules.hit` 完全一致：必须比到 "." + 规则，
+  //   否则 `nota.com` 会被 `a.com` 误命中（两个完全不同的站）。
+  function vgHostSkipped() {
+    if (!SKIP || !SKIP.length) return false;
+    var h = (location.hostname || '').toLowerCase();
+    if (!h) return false;
+    for (var i = 0; i < SKIP.length; i++) {
+      var r = String(SKIP[i] || '').toLowerCase();
+      if (!r) continue;
+      if (h === r) return true;
+      if (h.length > r.length && h.slice(-(r.length + 1)) === '.' + r) return true;
+    }
+    return false;
+  }
+
+  // ★★ 命中豁免 → **整个脚本一个字都不干**。
+  //   必须放在最前面：先装了 MutationObserver / 起了定时器再退出，会留下残骸，
+  //   而且"清理已执行过"这件事**退不回来**（页面缺的那一块不会自己回来）。
+  if (vgHostSkipped()) return;
 
   var ATTR = 'data-vg-blk';       // 打过这个标记 = 已被我们处理过
   var MAX_HIDE = 40;              // 单页最多隐藏几个（防某条判据失灵时雪崩）

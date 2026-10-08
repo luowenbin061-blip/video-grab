@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoGrab 代码评审 · 逐条核实报告（主评审 DeepSeek）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1c1f23; --sub:#5b636e; --line:#e3e6ea;
+    --p0:#c62828; --p0bg:#fdecec; --p1:#e06c00; --p1bg:#fff4e5; --p2:#4a6fa5; --p2bg:#eef3fa;
+    --ok:#2e7d32; --okbg:#eaf5eb; --no:#8a8f98; --nobg:#f0f1f3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    padding:28px 18px 60px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 6px}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin:16px 0}
+  h2{font-size:18px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:16px 0 6px}
+  p{margin:8px 0}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  code{background:#f3f4f6;border:1px solid #e6e8ec;border-radius:4px;
+    padding:1px 5px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#25292e}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f2f4f7;font-weight:600;white-space:nowrap}
+  .tag{display:inline-block;font-size:12px;font-weight:700;border-radius:5px;padding:1px 7px;margin-right:6px}
+  .t-p0{background:var(--p0bg);color:var(--p0)}
+  .t-p1{background:var(--p1bg);color:var(--p1)}
+  .t-p2{background:var(--p2bg);color:var(--p2)}
+  .t-ok{background:var(--okbg);color:var(--ok)}
+  .t-no{background:var(--nobg);color:var(--no)}
+  .item{border-left:4px solid var(--line);padding:2px 0 2px 14px;margin:16px 0}
+  .item.p0{border-color:var(--p0)} .item.p1{border-color:var(--p1)} .item.p2{border-color:var(--p2)}
+  .who{color:var(--sub);font-size:13px}
+  .quote{background:#f8f9fb;border-left:3px solid #ccd2da;padding:8px 12px;margin:8px 0;
+    color:#3a4049;font-size:14px;border-radius:0 6px 6px 0}
+  .big{font-size:16px}
+  .k{font-weight:600}
+  hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>VideoGrab 代码评审 · 逐条核实报告</h1>
+  <div class="meta">
+    <b>主评审：DeepSeek</b>（另两家部分产出作交叉验证）·
+    版本 <code>v1.0.235</code>（ipa 11.7 MB / <code>app/</code> 27351 行 Swift + 注入 JS）·
+    评审材料：项目简报（含核心代码片段，非全量源码）·
+    核实时间 2026-10-07 晚 ·
+    <b>所有结论都对过源码，附文件与机制</b>
+  </div>
+
+  <div class="card">
+    <h2>一句话结论</h2>
+    <p class="big">
+      <b>共识别出 16 条真问题</b>（其中 <b>2 条 P0</b>，都是"播放会中途挂掉且不自愈"这类），
+      另有 <b>15 条被推翻</b> —— 它们说的那些"没做"，源码里其实都做了。
+    </p>
+    <p>
+      最值钱的一条是<b>两家独立命中同一条</b>：<code>freshAddress</code> 命中刷新后的地址后，
+      若那个地址也过期，代码会<b>永久跳过刷新</b>（一行布尔条件写错），
+      表现就是"播着播着突然 403，再也回不来"。这条以前从没意识到。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>一、评审来源与通道现状（要先知道的事）</h2>
+    <p>
+      本来打算问五家、横向对比。<b>实际只有 DeepSeek 一家是稳定的</b>，所以这份报告
+      <b>以 DeepSeek 为主体</b>，豆包与 MiMo 的产出作为交叉验证（三家重合的点可信度最高）。
+    </p>
+    <table>
+      <tr><th>通道</th><th>结果</th><th>产出</th><th>说明</th></tr>
+      <tr>
+        <td><b>DeepSeek</b></td>
+        <td><span class="tag t-ok">有效 · 主评审</span></td>
+        <td>14759 字节</td>
+        <td>一次成功。质量最高：条条带"依据 + 触发条件"，还主动标注了自己不确定的地方</td>
+      </tr>
+      <tr>
+        <td><b>豆包</b></td>
+        <td><span class="tag t-ok">有效 · 交叉验证</span></td>
+        <td>32462 字节</td>
+        <td><b>第一轮失败</b>（把整份简报复读了一遍、没做分析）；换精简材料后正常，分析扎实</td>
+      </tr>
+      <tr>
+        <td><b>MiMo</b></td>
+        <td><span class="tag t-ok">有效 · 交叉验证</span></td>
+        <td>18781 字节</td>
+        <td>提了几个别家没提的点（URLSession 连接池竞争、data: 内联密钥），输出末尾被自身长度截断</td>
+      </tr>
+      <tr>
+        <td><b>千问</b></td>
+        <td><span class="tag t-no">不可用</span></td>
+        <td>58 字节 / 超时</td>
+        <td>4 次尝试全部失败：1 次只回占位话（「正在理解你的需求」），3 次浏览器标签被关 / 超时</td>
+      </tr>
+      <tr>
+        <td><b>MiniMax</b></td>
+        <td><span class="tag t-no">不可用</span></td>
+        <td>0 字节</td>
+        <td>5 次尝试全部失败：都卡在「等响应元素」这一步；日志显示它其实已在生成，是适配器取不到</td>
+      </tr>
+    </table>
+    <p class="who">
+      两个附带事实：① 这台机器的桥接<b>只注册了</b> <code>qwen / minimax / doubao / mimo / deepseek</code>
+      五个通道，Gemini / ChatGPT / Claude / Kimi / 智谱<b>都不存在</b>，无法补位；
+      ② 过程中调试用的 Chrome 被关掉过一次，之后所有通道都报「浏览器已被关闭」——
+      这也是后面几次失败的原因之一。
+      结论：<b>这条多 AI 并行的路暂时不可靠，以后这类评审直接找 DeepSeek 单跑即可。</b>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>二、成立的问题（按危险程度排）</h2>
+    <p class="who">每条都标注了：谁提的 · 依据（文件与机制）· 触发条件 · 怎么修。</p>
+
+    <div class="item p0">
+      <h3><span class="tag t-p0">P0</span>1. 端口漂移之后，已经发出去的代理地址全部作废</h3>
+      <p class="who">提出者：<b>DeepSeek、豆包、MiMo 三家独立命中</b></p>
+      <p><span class="k">依据：</span>
+        <code>MediaProxy.proxyString</code> 把端口写死在 URL 里
+        （<code>http://127.0.0.1:&lt;port&gt;/__vgproxy/…</code>）；
+        而 <code>LocalHTTPServer.start()</code> 在<b>普通模式</b>下端口尝试顺序是
+        <code>[0, 18080, 18081…]</code> —— <b>首选 0，也就是让系统随机分配</b>。
+        <code>ensureAlive()</code> 一旦判定服务坏了，会 <code>closeListener()</code> + <code>start()</code>，
+        很可能绑到<b>另一个随机端口</b>。
+      </p>
+      <p><span class="k">触发：</span>播放 HLS 期间本机服务被判定为坏 → 重开 → 换端口。</p>
+      <p><span class="k">后果：</span>AVPlayer 手里那份清单里的<b>每一行都是旧端口地址</b>，
+        后续所有分片/钥匙请求全部 connection refused。
+        <code>PlayTarget.fallback</code> 是在<b>创建播放器那一刻</b>决定的快照，
+        播放<b>中途</b>端口变了它不会切换 —— 必须用户手动重新点播放。
+        （这正是你之前实测到的 <code>-1004 无法连接服务器</code> 的成因。）
+      </p>
+      <p><span class="k">修法：</span>
+        ① 普通模式也<b>优先固定端口</b>（18080 起），只在被占用时才退到随机；
+        ② 记录"当前端口代次"，端口变化时<b>通知正在播放的 PlayerBox 重新取地址</b>；
+        ③ 更好但改动更大：让代理地址不带端口 —— 做不到，端口是必须的，所以回到 ①②。
+      </p>
+    </div>
+
+    <div class="item p0">
+      <h3><span class="tag t-p0">P0</span>2. 刷新过的地址再失效，就<b>永远不再刷新</b>（一行条件写错）</h3>
+      <p class="who">提出者：<b>三家独立命中</b>（DeepSeek / 豆包 / MiMo）</p>
+      <p><span class="k">依据：</span><code>MediaProxy.handle</code> 里的刷新分支条件是</p>
+      <div class="quote">
+        if let code = got.resp?.statusCode, code == 401 || code == 403,<br>
+        &nbsp;&nbsp;&nbsp;effective.absoluteString == up.absoluteString, &nbsp;<span class="who">// ★ 只有"用的是原地址"才刷新</span><br>
+        &nbsp;&nbsp;&nbsp;let fresh = refresh(parent: key, up: up) { … }
+      </div>
+      <p>而 <code>freshAddress()</code> 有 <b>300 秒 TTL</b>。于是：</p>
+      <ul>
+        <li>第一次 403 → 用的是原地址 → 触发刷新 → 把新地址记进 <code>refreshed</code>；</li>
+        <li>接下来同一个分片再请求 → <code>effective</code> = <b>刷新后的地址</b>（≠ 原地址）；</li>
+        <li>这个地址若也 403 → <b>条件不成立 → 跳过刷新 → 直接把 403 甩给播放器</b>；</li>
+        <li>要等满 5 分钟缓存过期，才会重新走一次刷新。</li>
+      </ul>
+      <p><span class="k">触发：</span>站点签发的分片地址有效期短于 5 分钟（实测这类站确实短）。</p>
+      <p><span class="k">修法：</span>把条件从"必须是原地址"改成
+        <b>"403 且这一跳还没重试过"</b>（给 refreshed 地址也允许再刷新一次，并加次数上限避免死循环）。
+      </p>
+    </div>
+
+    <div class="item p1">
+      <h3><span class="tag t-p1">P1</span>3. 自检只做 TCP 连接 —— 会误判"服务还活着"</h3>
+      <p class="who">提出者：DeepSeek、豆包、MiMo</p>
+      <p><span class="k">依据：</span><code>ensureAlive()</code> 的健康检查是
+        <code>canReachSelf()</code>，它<b>只做一次 TCP connect，不看 HTTP 响应</b>。
+        TCP 握手由内核完成 —— 哪怕 accept 循环卡死、serve 线程全被占住、HTTP 层完全不响应，
+        <b>connect() 照样成功</b>。
+      </p>
+      <p><span class="k">后果：</span>自检说"健康" → 不重开 → 播放持续失败且<b>永不自愈</b>（只能重启 App）。</p>
+      <p><span class="k">修法：</span>改成发一个真实 HTTP 请求（例如 <code>GET /__vghealth</code>）并校验响应；
+        或记录"最近一次成功处理请求的时间"，超时即视为不健康。</p>
+      <p class="who">附：MiMo 说这还会"消耗 accept backlog 引发重启风暴" —— 这条<b>不成立</b>（见推翻表第 14 条）。</p>
+    </div>
+
+    <div class="item p1">
+      <h3><span class="tag t-p1">P1</span>4. 刷新时只按「路径」找同一行 —— CDN 换域名就配错</h3>
+      <p class="who">提出者：DeepSeek、豆包、MiMo</p>
+      <p><span class="k">依据：</span><code>refresh()</code> 里
+        <code>candidates.first(where: { $0.path == want })</code>，
+        只比 <b>path</b>，不看 host、不看 query；<code>refreshed</code> 的键也是
+        <code>key + "|" + path</code>。同一份清单里若同时存在 <code>cdn1/xx/seg.ts</code> 与
+        <code>cdn2/xx/seg.ts</code>（路径完全相同、域名不同），就会<b>命中错的那条</b>。
+      </p>
+      <p><span class="k">触发：</span>站点在清单里列了多 CDN 镜像，或刷新后整条路径变了。</p>
+      <p><span class="k">修法：</span>匹配时把 host 也纳入比较；路径变化时退回"整份清单重新取一次并按顺序对位"。</p>
+    </div>
+
+    <div class="item p1">
+      <h3><span class="tag t-p1">P1</span>5. <code>data:</code> 内联密钥会被错误改写成代理地址</h3>
+      <p class="who">提出者：MiMo（提到规则）· 我核实后确认代码确实如此</p>
+      <p><span class="k">依据：</span><code>rewritePlaylist</code> 把每个 URI 交给
+        <code>proxyString(for:)</code>，而<b>它没有 scheme 校验</b>
+        （校验只在 <code>wrap()</code> 里有，<code>handle()</code> 里也没有）。
+        HLS 规范允许密钥写成 <code>URI="data:…;base64,…"</code>。
+      </p>
+      <p><span class="k">后果：</span>内联密钥被换成 <code>http://127.0.0.1…?u=data%3A…</code> →
+        本机服务取不到 → 解密失败、黑屏。</p>
+      <p><span class="k">修法：</span>在 <code>proxyString</code> 加 scheme 白名单（<b>只代理 http/https</b>），
+        其余原样返回。一行的事。</p>
+    </div>
+
+    <div class="item p1">
+      <h3><span class="tag t-p1">P1</span>6. 本机服务是「无上限并发 + 每连接同步阻塞最多 35 秒」</h3>
+      <p class="who">提出者：DeepSeek、豆包（豆包列为它心目中的第一优先）</p>
+      <p><span class="k">依据：</span><code>queue</code> 是
+        <code>DispatchQueue(attributes: .concurrent)</code>（不设闸门），每个连接 <code>queue.async { serve }</code>，
+        而 <code>serve</code> 里的 <code>MediaProxy.fetch</code> 用
+        <code>sem.wait(timeout: .now() + 35)</code> <b>同步阻塞</b>。
+      </p>
+      <p><span class="k">触发：</span>HLS 一个清单几十上百个分片并发请求 ＋ 局域网共享 ＋ 下载并发设"不限"。</p>
+      <p><span class="k">后果：</span>阻塞任务占满线程池与 fd，新连接排队；播放卡顿、超时。</p>
+      <p><span class="k">修法：</span>给 serve 加并发闸门（信号量 16~32 条），超出的排队而不是无限开。</p>
+    </div>
+
+    <div class="item p1">
+      <h3><span class="tag t-p1">P1</span>7. 播放代理与下载<b>共用同一个 URLSession</b></h3>
+      <p class="who">提出者：MiMo（只有它提到）</p>
+      <p><span class="k">依据：</span><code>MediaProxy.fetch</code> 用 <code>URLSession.shared</code>，
+        而 <code>Downloader</code> 的分片下载、<code>WatchHistory</code> 的封面下载、
+        <code>ThumbLoader</code> 也都用 <code>URLSession.shared</code>。
+        <code>URLSession.shared</code> 对同一 host 的并发连接默认只有 <b>6 条</b>。
+      </p>
+      <p><span class="k">后果：</span>一边下载一边播放同一个站时，播放的分片请求要跟下载抢那 6 个槽位，
+        <b>排队 → 卡顿/超时</b>。并发下载设"不限"时最明显。</p>
+      <p><span class="k">修法：</span>给播放代理单独建一个 <code>URLSession</code>（自己的连接池），与下载分开。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>8. 代理的静态表永不清理</h3>
+      <p class="who">提出者：DeepSeek、豆包</p>
+      <p><span class="k">依据：</span><code>table</code>（请求头）与 <code>playlists</code>（父清单地址）
+        <b>没有上限、没有 TTL</b>；只有 <code>refreshed</code> 有 300 秒 TTL。
+        注意：<b>写入是加锁的、读取也加了锁</b>（所以"并发字典崩溃"那条不成立）。</p>
+      <p><span class="k">后果：</span>长时间使用内存持续增长，且 <b>Cookie/Referer 一直留在内存里</b>。</p>
+      <p><span class="k">修法：</span>给两张表加容量上限（如 64 条）+ LRU 淘汰；或按时长清理。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>9. 分片是「整块读进内存再转发」</h3>
+      <p class="who">提出者：DeepSeek、豆包</p>
+      <p><span class="k">依据：</span><code>MediaProxy.fetch</code> 用 <code>dataTask</code> 收完整 body，
+        塞进 <code>Reply.body</code>（全量 <code>Data</code>）再一次性写 socket。</p>
+      <p><span class="k">后果：</span>高码率视频 + 多分片并发时内存冲高（iOS 会先给内存警告，严重则被杀）。</p>
+      <p><span class="k">修法：</span>改成流式转发（边读边写）。<b>改动较大，可以排在后面。</b></p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>10. <code>acceptLoop</code> 无锁读 <code>running</code> / <code>listenGen</code></h3>
+      <p class="who">提出者：DeepSeek、豆包、MiMo</p>
+      <p><span class="k">依据：</span>这两个变量在锁内<b>写</b>，但 accept 循环里<b>无锁读</b>。</p>
+      <p><span class="k">后果：</span>形式上是数据竞争；实际有 <code>myGen != listenGen</code> 的二次校验兜底，
+        最坏是"旧循环多转一圈"，<b>风险低</b>（不是"必崩"）。</p>
+      <p><span class="k">修法：</span>读也走同一把锁，或换成原子量。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>11. 代理路由用的是「子串查找」而不是「前缀判断」</h3>
+      <p class="who">提出者：DeepSeek</p>
+      <p><span class="k">依据：</span><code>rawPath.range(of: prefix)</code> —— 只要路径<b>中间</b>出现
+        <code>__vgproxy/</code> 也会命中。</p>
+      <p><span class="k">后果：</span>极罕见（要有站点文件名恰好含这段），但确实是逻辑不严。</p>
+      <p><span class="k">修法：</span>改成判断前缀位置（<code>hasPrefix("/" + prefix)</code> 或校验 index）。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>12. 清单开头若有 BOM / 空白，可能被当成"不是清单"</h3>
+      <p class="who">提出者：MiMo</p>
+      <p><span class="k">依据：</span>识别清单的两个条件是
+        <code>data.starts(with: [0x23,0x45,0x58,0x54])</code>（即 <code>#EXT</code>）或
+        Content-Type 含 <code>mpegurl</code>。带 BOM 的清单两边都不满足。</p>
+      <p><span class="k">后果：</span>低概率（多数站 CT 正确），一旦发生会把清单当分片转发 → 播放失败。</p>
+      <p><span class="k">修法：</span>改成"解码成文本后 <code>trim</code> 再判断是否以 <code>#EXTM3U</code> 开头"。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>13. 上游 200 + HTML 错误页，会被当成分片转发</h3>
+      <p class="who">提出者：三家都提（一致）</p>
+      <p><span class="k">依据：</span>非清单分支不校验内容类型，
+        <code>text/html</code> 会被原样带上 <code>Content-Type</code> 发给播放器。</p>
+      <p><span class="k">后果：</span>AVPlayer 拿 HTML 当媒体解码 → 报一个看不懂的解码错误（
+        你之前截图那类"播放器起不来"的一部分可能就是它）。</p>
+      <p><span class="k">修法：</span>内容类型是 <code>text/html</code>、或 body 以 <code>&lt;</code> 开头 →
+        直接返回 502 + 一句人话。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>14. 视频历史：地址去掉 query 会误合并；时长折半分桶也会误合并</h3>
+      <p class="who">提出者：DeepSeek</p>
+      <p><span class="k">依据：</span><code>videoKey</code> 把 <code>?</code> 之后全部丢掉 →
+        <code>/play?url=A</code> 与 <code>/play?url=B</code> 变成同一条；
+        <code>mergeKey</code> 用 <code>String(dur / 2)</code> → 时长 100 与 101 落进同一个桶。</p>
+      <p><span class="k">后果：</span>这两种都是<b>你已知并接受的取舍</b>（"宁可留一条重复，也不误并"），
+        但 DeepSeek 给出的触发场景（聚合站用 query 传真实地址）值得知道。</p>
+      <p><span class="k">修法：</span>若要更准：去 query 时只剔掉已知的签名参数（token/t/sign），保留其余；
+        合并时再加一条"分辨率必须一致"。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>15. 没有监听网络变化（Wi-Fi ↔ 蜂窝）</h3>
+      <p class="who">提出者：豆包（只有它提到）</p>
+      <p><span class="k">依据：</span>全项目<b>没有</b> <code>NWPathMonitor</code> 之类的监听（已 grep 确认）。</p>
+      <p><span class="k">后果：</span>切网后 <code>refreshed</code> 里缓存的地址可能整批失效，却仍被优先使用；
+        上游请求会在旧网络栈上耗到超时。</p>
+      <p><span class="k">修法：</span>加一个网络变化监听，变化时<b>清空 <code>refreshed</code></b>（很便宜）。</p>
+    </div>
+
+    <div class="item p2">
+      <h3><span class="tag t-p2">P2</span>16. 标签休眠时只摘了三个消息通道中的一个</h3>
+      <p class="who">提出者：MiMo 提到"handler 强引用"，我核实后发现真问题在别处</p>
+      <p><span class="k">依据：</span>建 WebView 时注册了三个
+        （<code>vgSniff</code> / <code>vgClean</code> / <code>vgVideos</code>），
+        但 <code>sleep()</code> 里<b>只 remove 了 <code>vgSniff</code></b>。</p>
+      <p><span class="k">后果：</span>影响很小（真正的环靠 <code>t.webView = nil</code> 断开，
+        而 BrowserModel 本来就是 App 级对象不该释放），属于<b>代码不一致</b>，不是泄漏。</p>
+      <p><span class="k">修法：</span>三处一起摘，保持对称（顺手的事）。</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>三、被推翻的结论（AI 说有、核实后不成立）</h2>
+    <p class="who">
+      这一节的用处和上一节一样大：<b>它们说的"这儿没做"，源码里其实都做了</b>。
+      原因也一致 —— 它们在只看到片段的情况下，按"通用最佳实践"推断"这里大概没处理"。
+    </p>
+    <table>
+      <tr><th>AI 的主张</th><th>核实结果</th><th>证据</th></tr>
+      <tr>
+        <td>MediaProxy 读静态字典没加锁 → 并发崩溃</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>headers()</code> / <code>freshAddress()</code> / <code>rememberFresh()</code> <b>全部</b> <code>lock.lock()</code>；简报里为了精简只贴了 <code>register</code> 的加锁</td>
+      </tr>
+      <tr>
+        <td>NSLock 非递归，可能自锁死</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td>没有任何"持锁时再进 <code>register</code>"的路径；豆包也<b>独立排除了死锁</b>（"无跨锁依赖，不会死锁"）</td>
+      </tr>
+      <tr>
+        <td><code>refreshed</code> 没有过期检查</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>freshAddress</code> 里 <code>Date().timeIntervalSince(hit.at) &lt; 300</code>；写入时还会顺手清过期项</td>
+      </tr>
+      <tr>
+        <td>只改写非 <code>#</code> 行 → <code>#EXT-X-KEY</code>/<code>MAP</code> 的 URI 漏改</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>rewriteURIAttrs</code> 的判据是<b>"这一行里含 <code>URI="</code>"</b>，与标签名无关 → KEY / MAP / MEDIA / I-FRAME-STREAM-INF / PART 全覆盖</td>
+      </tr>
+      <tr>
+        <td>相对路径是手写拼接，遇到 <code>../</code>、<code>//host</code> 会错</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>URL(string: line, relativeTo: baseURL)?.absoluteURL</code> —— 标准解析</td>
+      </tr>
+      <tr>
+        <td>HEAD 未处理 / Content-Length 不对 / 416 不合法</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>if isHead { return }</code>（不发 body）；<code>Content-Length: body.count</code>；文件路径的 416 带 <code>Content-Range: bytes */总长</code></td>
+      </tr>
+      <tr>
+        <td>gzip 没解压，会把压缩内容当分片转发</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>Reply</code> <b>不转发 Content-Encoding</b>，且 Content-Length 按<b>解压后</b>的 body 重算 → 就算上游是 gzip 也是自洽的</td>
+      </tr>
+      <tr>
+        <td>处理完就 close，未声明 <code>Connection: close</code></td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td>每一处响应头都带 <code>Connection: close</code>（grep 到 10+ 处）</td>
+      </tr>
+      <tr>
+        <td>局域网模式下 <code>__vgproxy</code> 可能被当免费代理</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>MediaProxy.handle</code> 的调用点在<b>口令校验之后</b>，代码注释就写着"局域网访客不许拿它当开放代理"；且 <code>enableLAN</code> 会强制生成口令</td>
+      </tr>
+      <tr>
+        <td>进度/历史里存的是代理 URL → 重启后续看必失效</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>WatchProgress</code> 存的是「键 → 秒数」（键是 <code>lp</code>/<code>preview</code>/任务 id）；<code>WatchHistory</code> 存的是 JS 上报的<b>原始上游地址</b></td>
+      </tr>
+      <tr>
+        <td>黑名单缓存改了不生效，要重启</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td>有 <code>invalidateCache()</code>，设置页改动与备份恢复处都调了</td>
+      </tr>
+      <tr>
+        <td>ucc 强引用 handler 造成永久泄漏（要把 handler 改成弱代理）</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>sleep()</code> 里移除 handler ＋ <code>t.webView = nil</code> ＋ 清 <code>byWebView</code>，环断得干净（残留的"只摘一个"见成立表第 16 条，属轻微）</td>
+      </tr>
+      <tr>
+        <td>自检连接会占满 backlog → 引发"重启风暴"</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td>backlog 32，且自检的连接会被 accept 立刻收走（<code>recv</code> 返回 0 就关闭），不会堆积（但"假阳性"那条成立，见成立表第 3 条）</td>
+      </tr>
+      <tr>
+        <td>socket write 的返回值没检查，断了也不知道</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td><code>writeAll</code> 检查了 <code>n &gt; 0</code> 与 <code>EINTR</code>，返回 Bool</td>
+      </tr>
+      <tr>
+        <td><code>#EXT-X-BYTERANGE</code> 会被改写破坏</td>
+        <td><span class="tag t-no">推翻</span></td>
+        <td>该标签里<b>没有 URI</b>（形如 <code>#EXT-X-BYTERANGE:长度@偏移</code>），改写不碰它；Range 本来就是透传的</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>四、三家的「只能改 3 处」对比</h2>
+    <table>
+      <tr><th>#</th><th>DeepSeek</th><th>豆包</th><th>MiMo</th></tr>
+      <tr>
+        <td>1</td>
+        <td><b>端口固定 + 健康检查改成真 HTTP 请求</b><br><span class="who">"播放链路最致命的"</span></td>
+        <td><b>给并发队列加闸门</b>（16~32）＋ 顺手修无锁读</td>
+        <td><span class="who">（输出被截断，未给出明确三条）</span></td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><b>静态表加锁 + 上限 + TTL + 换更强的键</b></td>
+        <td><b>分片改流式转发</b> ＋ 拒绝 HTML 冒充媒体</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><b>给 serve 加背压</b>（有界并发）</td>
+        <td><b>端口漂移自动回退 ＋ 支持多次刷新</b></td>
+        <td></td>
+      </tr>
+    </table>
+    <p>
+      <b>三家独立重合的就一条：端口漂移（＋它的孪生兄弟：自检不可靠）。</b>
+      这跟我的判断一致 —— 这是唯一"会让播放中途挂且不自愈"的结构性问题。
+      豆包强调的"并发闸门"我也认同（它把 fd 耗尽列为第一优先）。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>五、我的结论与建议</h2>
+    <h3>建议分两批修</h3>
+    <table>
+      <tr><th>批次</th><th>内容</th><th>为什么</th></tr>
+      <tr>
+        <td><b>第一批（P0，小改大收益）</b></td>
+        <td>
+          1. 普通模式<b>优先固定端口</b>（18080 起）；<br>
+          2. 自检改成<b>真 HTTP 请求</b>；<br>
+          3. 刷新条件改成<b>"未重试过就刷新"</b>（修二次 403 死路）；<br>
+          4. <code>proxyString</code> 加 <b>scheme 白名单</b>；<br>
+          5. 网络变化时<b>清空 refreshed</b>。
+        </td>
+        <td>全是几行到几十行的改动，不动架构，直接消灭两条 P0 + 一条 P1</td>
+      </tr>
+      <tr>
+        <td><b>第二批（结构，要设计）</b></td>
+        <td>
+          6. serve 加<b>并发闸门</b>；<br>
+          7. 播放代理<b>独立 URLSession</b>；<br>
+          8. 静态表加<b>上限 + TTL</b>；<br>
+          9. 刷新时<b>同时比对 host</b>；<br>
+          10. 拒绝 <code>text/html</code> 冒充分片。
+        </td>
+        <td>要动到并发与连接管理，改完必须真机压测（多标签 + 边下边播 + 局域网同时开）</td>
+      </tr>
+    </table>
+    <h3>不打算动的</h3>
+    <ul>
+      <li><b>分片流式转发</b>（豆包的第 2 条）：收益是内存峰值，代价是把整个代理层从"同步取回"改成流式，
+        会牵动 <code>Reply</code> 结构和 socket 写出路径 —— <b>风险大于收益，先记着</b>。</li>
+      <li><b>视频历史的两个"误合并"</b>：那是当初为满足你"宁可留一条重复也不要误并"刻意设的保守判据，
+        不改。</li>
+      <li>局域网明文 HTTP、page world 注入页面 JS、用户脚本空 <code>@match</code> 兜底成全网 —— 
+        <b>都是明知并接受的取舍</b>。</li>
+    </ul>
+    <h3>一句话</h3>
+    <p>
+      这轮最有价值的产出不是"发现了多少 bug"，而是<b>把两条真 P0 从"偶发、说不清"变成了"能指到那一行"</b>：
+      一条是端口漂移（你之前实测的 <code>-1004</code> 就是它），一条是刷新条件的布尔写错。
+      另外 15 条推翻的也说明一件事 —— <b>AI 评审必须逐条对源码核，直接照做会白改。</b>
+    </p>
+  </div>
+
+  <p class="who" style="text-align:center;margin-top:26px">
+    核实方法：每条主张都在 <code>app/*.swift</code> 与 <code>resources/*.js</code> 里找到对应实现或反例，
+    附文件与机制；不确定的标注为不确定。
+  </p>
+
+</div>
+</body>
+</html>
