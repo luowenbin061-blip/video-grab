@@ -2679,16 +2679,46 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    /// ★ v1.0.238：网页**自己**弹了个窗、**没有用户手势**（多半是广告）→ 拦掉 + 提示一句。
+    /// ★★ v1.0.240：**这个弹窗该问他，还是该拦掉？**
     ///
-    /// 这是用户选的处理方式（原话"已阻止"）。同一次页面加载**只提示一句** ——
-    /// 脏站是会连环弹的，每弹一次提示一次就成刷屏了（`didCommit` 时重置这个标志）。
+    /// 判据 = **页面被用户碰过没有**（网页侧的 `__vgTouched`，见 sniffer.js）：
+    ///   · 碰过（他点了卡片 / 按钮）→ **弹菜单**，哪怕这个弹窗是几秒之后才弹的；
+    ///   · 没碰过（一进来就自己弹）→ 教科书式的弹窗广告 → **拦掉 + 提示一句**。
+    ///
+    /// ★ 为什么不用 `navigationType`：实测**手点视频卡片时 WebKit 也不给**
+    ///   `.linkActivated`（`window.open` 天生没这个标记）→ 照它判会把手点的正常跳转
+    ///   一起拦掉，用户看到的就是"点了进不去"（v1.0.238 实错、用户 2026-10-09 反馈）。
+    ///
+    /// ★ **读不到网页侧标记（`null`）时按"碰过"处理** —— 宁可多问一次，
+    ///   也不能让他点了进不去。这条是拿用户实测痛点换来的，**别改回去**。
+    @MainActor
+    private func decidePopup(_ wv: WKWebView, url: URL, req: URLRequest) {
+        wv.evaluateJavaScript("window.__vgReady ? !!window.__vgTouched : null") { raw, _ in
+            // ★ 先转成 Bool 再进 Task：`Any?` 不是 Sendable，
+            //   直接带进并发闭包会触发捕获检查（工程里栽过同类）。
+            let touched = (raw as? Bool) ?? true
+            Task { @MainActor in
+                if touched {
+                    self.askPopup(wv, url: url, req: req)
+                } else {
+                    self.noticePopupBlocked(wv)
+                }
+            }
+        }
+    }
+
+    /// 网页**自己**弹了个窗、而且用户**没碰过**这个页面（多半是广告）→ 拦掉 + 提示一句。
+    ///
+    /// 同一次页面加载**只提示一句** —— 脏站是会连环弹的，每弹一次提示一次就成刷屏了
+    /// （每次 `didCommit` 重置这个标志）。
     @MainActor
     private func noticePopupBlocked(_ wv: WKWebView) {
         guard tab(for: wv) === currentTab else { return }   // 后台标签的弹窗不打扰你
         guard !popupBlockedNoticed else { return }
         popupBlockedNoticed = true
-        showToast("已阻止弹出式窗口")
+        // ★ v1.0.240：文案里点明"是网页自己弹的" —— 用户实测时说"我不知道你为什么要阻止"
+        //   正是因为他不知道拦的是**网页自动弹的**（他以为是他自己点的被拦了）。
+        showToast("已阻止网页自动弹出的窗口")
     }
 
     /// ★ v1.0.236：把这个标签"还没等到结果的那次访问"撤掉 ——
@@ -2918,17 +2948,16 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             }
             return nil
         }
-        // ★★ v1.0.238：**有手势 → 问他怎么开；没手势 → 拦掉 + 提示。**
+        // ★★ v1.0.240：**判据换掉了** —— v1.0.238 用 `navigationType == .linkActivated`
+        //   区分"手点弹窗 / 自动弹窗"，**实测不成立**：手点视频卡片时 WebKit 也不给这个
+        //   标记（`window.open` 天生没有），于是正常跳转被拦、用户看到「已阻止」+ 点了进不去。
+        //   现在改用浏览器通行的那条：**页面被用户碰过 → 问他；没碰过就自己弹 → 拦掉**
+        //   （判据在网页侧，见 sniffer.js 的 `__vgTouched`，跨 frame 会广播到顶层）。
         //   传整个 `action.request`（不是只传 URL）：选"当前窗口加载"时要**原样重发**，
         //   原 request 自带 Referer / UA，自己拼会被防盗链的站拒掉。
-        let byTap = action.navigationType == .linkActivated
         let req = action.request
         Task { @MainActor in
-            if byTap {
-                self.askPopup(wv, url: url, req: req)
-            } else {
-                self.noticePopupBlocked(wv)
-            }
+            self.decidePopup(wv, url: url, req: req)
         }
         return nil
     }
