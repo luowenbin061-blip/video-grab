@@ -417,6 +417,26 @@ final class BrowserModel: NSObject, ObservableObject {
     /// （每次 `didCommit` 清零，见 `webView(_:didCommit:)`）。
     var popupBlockedNoticed = false
 
+    // MARK: - ★ v1.0.241 网页开弹窗 → 问"怎么打开"
+
+    /// 界面要显示的那个询问（nil = 不显示）。**由 SwiftUI 的 `.alert` 呈现**，见 `ContentView`。
+    ///
+    /// ★ 为什么不做成 UIAlertController：老写法在这个 App 里**弹不出来** ——
+    ///   顶层控制器上已有我们自己的 sheet（设置 / 嗅探面板 / 下载页…）时 `present`
+    ///   会静默失败，而失败后 action 回调永不执行 → `dialogBusy` 永久锁死 →
+    ///   这个菜单从做出来到 v1.0.240 **一次都没显示过**。细节见 `askPopup` 的注释。
+    @Published var popupAsk: PopupAskInfo?
+
+    /// 等用户选的时候，把"这一次的现场"留住（选完要用）。
+    /// ★ 不用 weak：菜单显示期间**必须**保证这个 WebView 还在（就几秒，代价可忽略）。
+    private var pendingPopupWebView: WKWebView?
+    private var pendingPopupRequest: URLRequest?
+    private var pendingPopupURL: URL?
+
+    /// ★ "该问还是该拦"这件事的**超时令牌**（见 `decidePopup`）。
+    ///   网页侧标记最多等 0.35 秒 —— 到点还没回话就按"问"处理，**绝不静默**。
+    private var popupToken: UUID?
+
     /// （"正在弹别的窗"这件事由现成的 `dialogBusy` 管，不另立标志 ——
     ///   `createWebViewWith` 里不做拦截判断，整段交给主线程的 `askPopup`。）
 
@@ -2620,62 +2640,60 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         return false
     }
 
-    /// ★★ v1.0.238：**问一句"这个弹出窗口怎么打开"** —— 照用户给的截图重做。
+    /// ★★ v1.0.241：**问一句"这个弹出窗口怎么打开"**。
     ///
-    /// 触发时机跟旧版（v1.0.236 的 `askHowToOpen`）**完全不同**：
-    ///   旧版 = 「**你手点**了一个跨站链接」（已撤掉）；
-    ///   新版 = 「**网页自己开了一个弹窗**」（`target="_blank"` / `window.open`）——
-    ///   见 `createWebViewWith`。
-    /// 所以你手点普通链接**不弹这个**；只有网页真的要弹窗时才出现。
-    /// ★ 也正因为如此，**不需要站点名单** —— 不开弹窗的站天然看不到它。
+    /// 触发：**网页自己开了一个弹窗**（`target="_blank"` / `window.open`），见 `createWebViewWith`。
+    /// 所以手点普通链接**不走这儿**；也**不需要站点名单** —— 不开弹窗的站天然看不到它。
     ///
-    /// 三个选项照截图：当前窗口加载 / 新窗口打开 / 后台窗口打开。
+    /// ══ 为什么从 UIAlertController 改成 SwiftUI 弹层（v1.0.241，用户实测反馈）══
+    ///   老写法是「找宿主控制器 → `present(UIAlertController)`」，**在这个 App 里根本弹不出来**：
+    ///     · `dialogHost()` 的条件是"必须是当前标签 **且** 没在弹别的"；
+    ///     · 顶层控制器上已经有我们自己的 sheet（设置 / 嗅探面板 / 下载页 / 分享都是 sheet），
+    ///       这时 `present` 会**静默失败**；
+    ///     · 一旦失败，那个 `UIAlertController` 里几个 action 的回调**永远不会执行** →
+    ///       `dialogBusy` 永久卡在 `true` → **之后所有弹窗都走静默分支**（悄悄开个后台标签）。
+    ///   结果：这个菜单从做出来（v1.0.237）到 v1.0.240，**一次都没显示过**
+    ///   —— 用户只看到过 toast（「已阻止…」），从没见过菜单。
+    ///   → 现在改成**发一个状态出去**（`popupAsk`），由界面用 SwiftUI 的 `.alert` 显示
+    ///      （见 `ContentView`）。这条路不依赖 UIKit 的 present 链路，界面在就一定能弹。
     @MainActor
     private func askPopup(_ wv: WKWebView, url: URL, req: URLRequest) {
-        // ① 界面还没挂好（拿不到宿主）→ 问不了。**至少给它开个后台标签** ——
-        //    网页要开窗我们却什么都不做，表现就是"点了没反应"，那是更糟的错。
-        guard let vc = dialogHost(for: wv) else {
-            _ = newTab(load: url.absoluteString, background: true)
-            return
-        }
-        // ② 正在问别的弹窗（多半是同一个广告的连环弹）→ **丢掉**，
-        //    否则一次点击能刷出一堆标签。
-        guard !dialogBusy else { return }
+        // 已经有一个在问 → 后面来的自己吞掉（不刷屏，也避免一次点击开出一串标签）
+        guard popupAsk == nil else { return }
+        pendingPopupWebView = wv
+        pendingPopupRequest = req
+        pendingPopupURL = url
+        popupAsk = PopupAskInfo(url: url.absoluteString)
+    }
 
-        let a = UIAlertController(title: "当前网页触发了弹出式窗口",
-                                  message: url.absoluteString,
-                                  preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: "当前窗口加载", style: .default) { _ in
-            Task { @MainActor in
-                self.dialogBusy = false
-                // ★ 复用原 request（自带 Referer / UA）：自己拼 `URLRequest(url:)`
-                //   是没有 Referer 的，有些站会直接拒、或者跳回首页。
-                // ★ 这条路跟 `decidePolicyFor` 无关（弹窗走的是 createWebViewWith），
-                //   所以不需要任何"放行一次"的标记。
-                wv.load(req)
-            }
-        })
-        a.addAction(UIAlertAction(title: "新窗口打开", style: .default) { _ in
-            Task { @MainActor in
-                self.dialogBusy = false
-                _ = self.newTab(load: url.absoluteString)
-            }
-        })
-        a.addAction(UIAlertAction(title: "后台窗口打开", style: .default) { _ in
-            Task { @MainActor in
-                self.dialogBusy = false
-                _ = self.newTab(load: url.absoluteString, background: true)
-                self.showToast("已在后台打开")
-            }
-        })
-        a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
-            Task { @MainActor in self.dialogBusy = false }
-        })
-        dialogBusy = true
-        vc.present(a, animated: true) {
-            Task { @MainActor in
-                if vc.presentedViewController !== a { self.dialogBusy = false }
-            }
+    /// 用户在菜单上选了哪一个（由 `ContentView` 的弹层调回来）。
+    ///
+    /// ★ 幂等：弹层那边（点按钮 / 点取消 / `isPresented` 回落）可能**重复调**，
+    ///   所以一进来就把现场清空 —— 第二次调用什么都不做。
+    @MainActor
+    func answerPopup(_ a: PopupAnswer) {
+        let wv = pendingPopupWebView
+        let req = pendingPopupRequest
+        let url = pendingPopupURL
+        pendingPopupWebView = nil
+        pendingPopupRequest = nil
+        pendingPopupURL = nil
+        popupAsk = nil
+        guard let wv, let url else { return }
+        switch a {
+        case .inPlace:
+            // ★ 复用原 request（自带 Referer / UA）：自己拼 `URLRequest(url:)` 是没有
+            //   Referer 的，有些站会直接拒、或者跳回首页。实在没有才退回裸地址。
+            // ★ 这条路跟 `decidePolicyFor` 无关（弹窗走的是 `createWebViewWith`），
+            //   所以不需要任何"放行一次"的标记。
+            wv.load(req ?? URLRequest(url: url))
+        case .newTab:
+            _ = newTab(load: url.absoluteString)
+        case .background:
+            _ = newTab(load: url.absoluteString, background: true)
+            showToast("已在后台打开")
+        case .cancel:
+            break
         }
     }
 
@@ -2693,11 +2711,25 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     ///   也不能让他点了进不去。这条是拿用户实测痛点换来的，**别改回去**。
     @MainActor
     private func decidePopup(_ wv: WKWebView, url: URL, req: URLRequest) {
+        // ★★ v1.0.241：**0.35 秒兜底**。读网页侧标记是异步的 —— 万一它不回话
+        //   （页面正在导航 / 脚本被别的东西顶掉 / 其它原因），原来就是"什么都不发生"，
+        //   用户看到的是"点了没反应"。现在到点就按"用户碰过"处理 → **该弹菜单就弹菜单**。
+        //   **这一块的第一原则是"绝不静默"**，别把这条兜底删掉。
+        let token = UUID()
+        popupToken = token
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard self.popupToken == token else { return }   // 已经有结论了
+            self.popupToken = nil
+            self.askPopup(wv, url: url, req: req)
+        }
         wv.evaluateJavaScript("window.__vgReady ? !!window.__vgTouched : null") { raw, _ in
             // ★ 先转成 Bool 再进 Task：`Any?` 不是 Sendable，
             //   直接带进并发闭包会触发捕获检查（工程里栽过同类）。
             let touched = (raw as? Bool) ?? true
             Task { @MainActor in
+                guard self.popupToken == token else { return }   // 兜底那条已经处理过了
+                self.popupToken = nil
                 if touched {
                     self.askPopup(wv, url: url, req: req)
                 } else {

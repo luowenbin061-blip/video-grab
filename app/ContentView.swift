@@ -613,6 +613,23 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.18), value: showMenu)
         // （旧版这里是「下载这个视频？」的确认条 —— 已由长按菜单取代，见 LongPressMenuView）
+        // ★★ v1.0.241：**网页开了弹窗 → 问"怎么打开"**。
+        //   为什么挂在这儿、为什么用 SwiftUI 的 `.alert` 而不是 UIKit 的 UIAlertController：
+        //   老写法要"找宿主控制器 present"，而顶层控制器上已经有我们自己的 sheet
+        //   （设置 / 嗅探面板 / 下载页 / 分享都是 sheet）时会**静默失败**，
+        //   连带着 `dialogBusy` 被永久锁死 → 那个菜单**从来没显示过**（用户实测反馈）。
+        //   SwiftUI 的 `.alert` 走另一条路：界面在，就一定能显示。
+        .alert("当前网页触发了弹出式窗口",
+               isPresented: Binding(get: { model.popupAsk != nil },
+                                    set: { if !$0 { model.answerPopup(.cancel) } }),
+               presenting: model.popupAsk) { _ in
+            Button("当前窗口加载") { model.answerPopup(.inPlace) }
+            Button("新窗口打开") { model.answerPopup(.newTab) }
+            Button("后台窗口打开") { model.answerPopup(.background) }
+            Button("取消", role: .cancel) { model.answerPopup(.cancel) }
+        } message: { info in
+            Text(info.url)
+        }
         .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
             Button("取消", role: .cancel) {}
             Button("好的") { downloads.pip.start() }
