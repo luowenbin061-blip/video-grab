@@ -57,29 +57,30 @@ struct ToolboxView: View {
     @AppStorage("desktopUA") private var desktopUA = false
     @AppStorage("noImageMode") private var noImage = false
 
-    // ★ v1.0.236：广告清理**只免掉当前这个站** —— 发现清理把页面弄坏了时当场用。
-    //   放工具箱是因为它跟「桌面版网站 / 无图模式」是同一类：**对当前这一页生效**的开关。
+    // ★ v1.0.238：广告清理是**名单制**（只清名单里的站）——
+    //   这里是"把当前站加进 / 移出名单"的快捷入口。
+    //   放工具箱是因为它跟「桌面版网站 / 无图模式」是同一类：**对当前这一页生效**的操作。
 
-    /// 当前这个站在不在「不清理广告」的名单里
-    private var cleanSkipped: Bool {
+    /// 当前这个站在不在「清理广告」的名单里
+    private var cleanListed: Bool {
         guard let u = model.currentURL, let h = URL(string: u)?.host else { return false }
-        return SiteRules.has(h, .adCleanSkip)
+        return SiteRules.has(h, .adCleanOn)
     }
 
-    /// 当场把当前站加进 / 移出「不清理广告」名单。
+    /// 当场把当前站加进 / 移出「清理广告」名单。
     /// ★ 加进去**必须刷新一次页面才真正生效** —— 清理脚本是页面加载时注入的，
-    ///   已经跑过的那一轮收不回来（页面上被藏掉的那块不会自己回来）。所以提示里明说。
-    private func toggleCleanSkip() {
+    ///   已经打开的那个页面得重载才会带上新名单。所以提示里明说。
+    private func toggleCleanListed() {
         guard let u = model.currentURL, let h = URL(string: u)?.host, !h.isEmpty else {
             model.showToast("这一页还没有网址")
             return
         }
-        if SiteRules.has(h, .adCleanSkip) {
-            SiteRules.remove(h, from: .adCleanSkip)
-            model.showToast("已恢复：这个站继续清理广告 —— 刷新一次生效")
+        if SiteRules.has(h, .adCleanOn) {
+            SiteRules.remove(h, from: .adCleanOn)
+            model.showToast("已移出：这个站不再清理广告 —— 刷新一次生效")
         } else {
-            SiteRules.add(h, to: .adCleanSkip)
-            model.showToast("已记住 \(SiteRules.normalize(h))：不再清理广告 —— 刷新一次生效")
+            SiteRules.add(h, to: .adCleanOn)
+            model.showToast("已记住 \(SiteRules.normalize(h))：这个站清理广告 —— 刷新一次生效")
         }
     }
 
@@ -102,10 +103,11 @@ struct ToolboxView: View {
                     cell("book.closed.fill", "导入书签", .purple) {
                         showBookmarkPicker = true
                     }
-                    // ★ v1.0.236：清理把这一页弄坏了 → 当场把这个站免掉。
-                    //   开着时是绿的（跟「桌面版 / 无图模式」一个读法）。
-                    cell("shield.slash", "本站不清理广告",
-                         cleanSkipped ? .green : .gray) { toggleCleanSkip() }
+                    // ★ v1.0.238：清单制 —— 点一下把当前站加进「清理广告」名单
+                    //   （以前是反向的"本站不清理广告"）。在名单里时是绿的
+                    //   （跟「桌面版 / 无图模式」一个读法）。
+                    cell("shield.lefthalf.filled", "本站清理广告",
+                         cleanListed ? .green : .gray) { toggleCleanListed() }
 
                     // ★ v1.0.119 新增四格
                     // 说明：桌面模式 / 无图模式都是「开关」——副标题直接写当前状态，

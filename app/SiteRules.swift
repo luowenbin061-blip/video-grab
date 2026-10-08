@@ -1,40 +1,42 @@
 import Foundation
 
-/// ★ v1.0.236：**按站点记的"特殊待遇"名单** —— 两条需求的存储与口径共用这一处。
+/// ★ v1.0.238：**按站点记的名单**。
 ///
-/// 现在两组：
-///   · `openInNewTab` —— 「这个站以后都用新标签打开」（点链接弹窗时勾"别再问我"）
-///   · `adCleanSkip`  —— 「这个站不清理广告」（页面被误伤时当场关掉）
+/// 现在只有一组：**「要清理广告的网站」**。
+///
+/// ══ 语义反转（用户 2026-10-09 拍板）══
+///   · 以前（v1.0.236）是「**默认全都清理** + 按站豁免」—— 用户实测后判定**弊端太大**
+///     （清理会误伤页面，还可能吞掉正常点击）；
+///   · 现在改成「**默认一个都不清理 + 只有名单里的站才清理**」。
+///   · 同时撤掉了 `.openInNewTab`（点链接弹窗里勾"以后都用新标签"）——
+///     连同"手点跨站链接问一句"那套行为一起撤了，见 `BrowserModel.createWebViewWith`。
 ///
 /// ══ 三条口径（跟 `BlockList` 保持一致，**别各写一套**）══
 ///   · **按域名记，不按具体页面** —— 页面地址带一堆参数（`?id=123&t=xxx`），
-///     按页面记永远记不全，豁免也会莫名其妙失效。
+///     按页面记永远记不全，名单也会莫名其妙失效。
 ///   · 归一化：转小写 → 去协议 / 去路径 → **去开头的 `www.` / `m.` / `wap.`** → 去端口。
-///     去掉那几个前缀是为了**"跨站"判据**：`www.a.com` 和 `m.a.com` 必须算**同一个站**。
+///     去掉那几个前缀是因为 `www.a.com` / `m.a.com` 本来就是同一个站的不同入口。
 ///   · 命中 = 本域 **或子域**，但必须写成 `hasSuffix("." + rule)` ——
 ///     裸 `hasSuffix(rule)` 会让 `nota.com` 误中 `a.com`（那是两个完全不同的站）。
 ///     ★ 这个坑「网页黑名单」栽过一次，见 `BlockList.hit` 的注释。
 enum SiteRules {
 
-    /// 两组名单（key 同时是 UserDefaults 键的后缀）
+    /// 名单（key 同时是 UserDefaults 键）
     enum Kind: String, CaseIterable, Identifiable {
-        case openInNewTab     // 这个站以后都用新标签打开
-        case adCleanSkip      // 这个站不清理广告
+        case adCleanOn      // 这个站要清理广告
 
         var id: String { rawValue }
 
         var key: String {
             switch self {
-            case .openInNewTab: return "vgOpenInNewTab"
-            case .adCleanSkip:  return "vgAdCleanSkip"
+            case .adCleanOn: return "vgAdCleanOn"
             }
         }
 
         /// 界面上的叫法（设置页标题与提示语共用这一份）
         var title: String {
             switch self {
-            case .openInNewTab: return "总用新标签打开的网站"
-            case .adCleanSkip:  return "不清理广告的网站"
+            case .adCleanOn: return "清理广告的网站"
             }
         }
     }
@@ -124,17 +126,20 @@ enum SiteRules {
 
     static func forgetAll(_ k: Kind) { store([], k) }
 
-    // MARK: - "跨站"判据（点链接弹窗要用）
+    // MARK: - 清理旧键（v1.0.238 一次性）
 
-    /// 两个地址算不算**同一个站**。
+    /// 把 v1.0.236~237 那套反转前的键**清掉**。
     ///
-    /// 判据：归一化后**相同** 或 **互为子域**。
-    /// 归一化已经去掉了 `www.` / `m.` / `wap.`，所以 `www.a.com` ↔ `m.a.com` 会算同站。
-    /// ★ 读不出来（空串）时返回 true —— **宁可少弹一次，也别因为解析不出域名就打扰他**。
-    static func sameSite(_ a: String, _ b: String) -> Bool {
-        let x = normalize(a), y = normalize(b)
-        if x.isEmpty || y.isEmpty { return true }
-        if x == y { return true }
-        return x.hasSuffix("." + y) || y.hasSuffix("." + x)
+    /// ★ 为什么不是"迁移"：老键 `vgAdCleanSkip` 存的是「**不**清理广告的站」，
+    ///   新口径是「**要**清理广告的站」—— 语义正好相反，**没有正确的映射**
+    ///   （把老名单直接搬过来 = 把"以前不能碰的站"变成"现在要清理的站"，正好搞反）。
+    ///   所以老数据一律丢弃，让用户在新名单里重新挑。
+    static func purgeLegacyKeys() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: "vgAdCleanSkip")
+        d.removeObject(forKey: "vgOpenInNewTab")
+        d.removeObject(forKey: "adClean")        // 广告清理的老总开关（已废）
+        d.removeObject(forKey: "askOpenTarget")  // "点链接时问一句"的老开关（已废）
+        invalidateCache()
     }
 }

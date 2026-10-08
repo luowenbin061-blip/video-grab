@@ -410,23 +410,15 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 待确认地址，**重定向链自然只保留最后一跳**，不会把中间那些地址也记进历史。
     private var pendingVisit: [ObjectIdentifier: String] = [:]
 
-    /// ★ v1.0.236：设置里的「点链接时问一句：在本页还是新标签」（**默认开**）。
-    ///   两个都标 `nonisolated` —— 它们要在 `decidePolicyFor`（**nonisolated 的同步回调**）
-    ///   里读，而 `BrowserModel` 整体是 `@MainActor` 隔离的（不标就直接编译失败，run #236 栽过）。
-    nonisolated static let askOnLinkKey = "askOpenTarget"
-
-    nonisolated static var askOnLink: Bool {
-        let d = UserDefaults.standard
-        return d.object(forKey: askOnLinkKey) == nil ? true : d.bool(forKey: askOnLinkKey)
-    }
-
-    /// ★ v1.0.236：**放行一次**的标记（见 `decidePolicyFor` 开头）。
+    /// ★ v1.0.238：**「已阻止弹出式窗口」这句提示的节流**。
     ///
-    /// `nonisolated(unsafe)`：`decidePolicyFor` 是同步回调、必须当场读写这两个值，
-    /// 而属性在 `@MainActor` 类里。它俩只在主线程与这个回调之间碰，
-    /// 最坏结果是"多问一次 / 少问一次"，不值得为它上锁。
-    nonisolated(unsafe) private var allowOnce: String?
-    nonisolated(unsafe) private var allowOnceAt = Date.distantPast
+    /// 用户选的是「已阻止」→ **拦掉 + 轻提示一句**。但脏站会连着弹好几次，
+    /// 每次都提示就成刷屏了 → 同一次页面加载里**只提示一次**
+    /// （每次 `didCommit` 清零，见 `webView(_:didCommit:)`）。
+    var popupBlockedNoticed = false
+
+    /// （"正在弹别的窗"这件事由现成的 `dialogBusy` 管，不另立标志 ——
+    ///   `createWebViewWith` 里不做拦截判断，整段交给主线程的 `askPopup`。）
 
     /// sniffer.js 的**原始**内容（只读一次盘）
     private static let rawSnifferSource: String = {
@@ -479,26 +471,20 @@ final class BrowserModel: NSObject, ObservableObject {
 
     /// 网页广告清理脚本的注入源。
     ///
-    /// ★ 跟 sniffer 同一个手法：把脚本里那一行 `var MODE = 'on';` 换成当前的开关值。
-    ///   这样**新开的标签在注入时就带上正确的值**，老标签由
-    ///   `applyAdCleanSetting()` 在运行时用 `__vgCleanSet` 通知。
-    ///
-    /// ★★ v1.0.236：再填一份 **`SKIP`（这个站不清理的域名清单）** —— 见 `SiteRules`。
+    /// ★★ v1.0.238：填一份 **`ONLY`（要清理的域名清单）** —— 见 `SiteRules`。
     ///   为什么走"注入"而不是"运行时通知"：清理是在 `DOMContentLoaded` 前后才开跑的，
-    ///   导航回调再 `__vgCleanSet` 时间是够的、但**没有注入稳**；而且
-    ///   `DOCUMENT START` 注入的脚本**每次导航都会重新执行** —— 跳站后天然重新判一次，
-    ///   不用我们盯着导航事件去补。
-    static func cleanerSource(on: Bool, skipHosts: [String] = []) -> String {
+    ///   导航回调再通知时间是够的、但**没有注入稳**；而且 `DOCUMENT START` 注入的脚本
+    ///   **每次导航都会重新执行** —— 跳站后天然重新判一次，不用盯着导航事件去补。
+    ///   （代价：改名单要**刷新页面**才生效，设置页里写明了。）
+    ///
+    /// ★ 名单为空 → **连脚本都不注入**（见 `makeRawWebView`）—— 那样连解析都省了。
+    static func cleanerSource(hosts: [String]) -> String {
         var s = rawCleanerSource
-        let line = "var MODE = 'on';"
+        let line = "var ONLY = [];"
         if s.contains(line) {
-            s = s.replacingOccurrences(of: line, with: "var MODE = '\(on ? "on" : "off")';")
-        }
-        let skip = "var SKIP = [];"
-        if s.contains(skip) {
             // 域名是 `SiteRules.normalize` 洗过的（只有字母数字点和减号）→ 不会破坏 JSON
-            let json = skipHosts.map { "\"" + $0 + "\"" }.joined(separator: ",")
-            s = s.replacingOccurrences(of: skip, with: "var SKIP = [\(json)];")
+            let json = hosts.map { "\"" + $0 + "\"" }.joined(separator: ",")
+            s = s.replacingOccurrences(of: line, with: "var ONLY = [\(json)];")
         }
         return s
     }
@@ -754,17 +740,23 @@ final class BrowserModel: NSObject, ObservableObject {
         // 靠 WKScriptMessage.webView 认领是哪个标签（见 didReceive）。
         ucc.add(self, contentWorld: world, name: "vgSniff")
 
-        // ★ v1.0.209 网页广告清理：**独立脚本 + 独立开关**。
+        // ★ v1.0.209 网页广告清理：**独立脚本**。
         //   为什么不并进 sniffer.js：sniffer 的定时器只在「后台自动嗅探」开着时才跑，
-        //   而广告清理必须任何时候都在跑 —— 合成一个的话，关掉自动嗅探就把清理也关了。
+        //   而广告清理是"打开页面就要管"的 —— 合成一个的话，关掉自动嗅探就把清理也关了。
         //   注入时机/世界/frame 范围都跟 sniffer 一致（documentStart、page world、
         //   覆盖 iframe）——documentStart 是为了让"点击防护"能抢在页面自己的脚本前面装好。
-        let cleanScript = WKUserScript(source: Self.cleanerSource(on: AdClean.isOn,
-                                                                 skipHosts: SiteRules.all(.adCleanSkip)),
-                                       injectionTime: .atDocumentStart,
-                                       forMainFrameOnly: false,
-                                       in: world)
-        ucc.addUserScript(cleanScript)
+        //
+        // ★★ v1.0.238：**只对名单里的站清理**；名单为空就**连脚本都不注入**
+        //   （少解析 14KB，也少一整套 Observer / 定时器 / 全局 click 监听）。
+        //   注意：名单在这里是**建 WebView 时的快照** —— 改完名单要刷新页面才生效。
+        let cleanHosts = SiteRules.all(.adCleanOn)
+        if !cleanHosts.isEmpty {
+            let cleanScript = WKUserScript(source: Self.cleanerSource(hosts: cleanHosts),
+                                           injectionTime: .atDocumentStart,
+                                           forMainFrameOnly: false,
+                                           in: world)
+            ucc.addUserScript(cleanScript)
+        }
         // 诊断回传走**单独一条通道**（不能并进 vgSniff —— 那边的处理函数会把
         // 每条消息都当嗅探结果喂给 ingest，混进来会污染列表）。
         ucc.add(self, contentWorld: world, name: "vgClean")
@@ -1078,14 +1070,26 @@ final class BrowserModel: NSObject, ObservableObject {
 
     // MARK: - 标签操作
 
-    /// 新建一个标签（放进**当前组**，顺带切过去）
+    /// 新建一个标签（放进**当前组**，切过去并加载）。
+    ///
+    /// ★ v1.0.238 加了 `background`：**后台打开** —— 建档案 + 记地址，但**不切过去、
+    ///   也不建 WebView**（网页弹窗菜单里的"后台窗口打开"用它）。
+    ///   ★ 为什么后台标签不立刻加载：同时"活着"的 WebView 只有 `TabLimits.maxLive` 个（3），
+    ///     硬塞进去会把**你正在看的这一页**挤成休眠 → 切回去得重载，那更烦。
+    ///     现在这样是"先记账、点过去时再加载"（`activate()` 会照档案里的地址拉起来）。
     @discardableResult
-    func newTab(load url: String? = nil) -> BrowserTab {
+    func newTab(load url: String? = nil, background: Bool = false) -> BrowserTab {
         ensureCurrentGroup()
         if tabCount >= TabLimits.maxTabs { reclaimOne() }
         let tab = BrowserTab()
         tabs.append(tab)
         tabGroups[currentGroupIndex].tabIDs.append(tab.id)
+        guard !background else {
+            tab.address = url ?? ""
+            tab.lastActiveAt = Date()
+            refreshTabs()
+            return tab
+        }
         switchTo(tabCount - 1)
         // ★ v1.0.120：**新建标签不再自动开主页**（上一版加错了，用户明确纠正）——
         //   主页只在「程序启动进页面」时加载一次（见 openStartPage）；
@@ -1677,15 +1681,10 @@ final class BrowserModel: NSObject, ObservableObject {
         }
     }
 
-    /// 设置里改了「网页广告清理」→ 通知**所有已经建好的页面**立刻生效，不用刷新。
-    /// 关掉时脚本会顺手把隐藏过的元素**原样还原**（见 cleaner.js 的 restoreAll）。
-    func applyAdCleanSetting() {
-        let js = "window.__vgCleanSet ? window.__vgCleanSet('\(AdClean.isOn ? "on" : "off")') : 0"
-        for t in tabs {
-            guard let wv = t.webView else { continue }
-            wv.evaluateJavaScript(js) { _, _ in }
-        }
-    }
+    // ★ v1.0.238：`applyAdCleanSetting()`（运行时用 `__vgCleanSet` 开关清理）**已删除** ——
+    //   广告清理的"总开关"撤了，改成**按站名单**（见 `SiteRules.adCleanOn`）；
+    //   而名单是**建 WebView 时的快照**，所以改名单必须**刷新页面**才生效，
+    //   不存在运行时通道（设置页里已写明这一点）。
 
     /// 顶部提示。seconds 默认 1.8 秒 —— 普通提示（"已复制地址"这种）保持不变。
     ///
@@ -2347,16 +2346,6 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     nonisolated func webView(_ wv: WKWebView,
                              decidePolicyFor action: WKNavigationAction,
                              decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        // ★ v1.0.236：**我们自己重新发起的那一次，直接放行**（别再问一遍）。
-        //   用户选了"在本页打开"之后，我们是 cancel 掉原导航、再自己 load 一次的
-        //   （见 `loadInPlace`）—— 那次会**再进这个回调**，靠这个标记认出来。
-        if let a = allowOnce, let u = action.request.url?.absoluteString,
-           u == a, Date().timeIntervalSince(allowOnceAt) < 6 {
-            allowOnce = nil
-            decisionHandler(.allow)
-            return
-        }
-
         // ★ v1.0.225：网页黑名单 —— **只拦主文档**（子资源不拦：那是广告拦截的活，别越界）。
         //   放在最前面：被拉黑的站，连"下载"那条路也不该走通。
         //   `targetFrame == nil` 的那种（`target="_blank"`）单独在 createWebViewWith 里管。
@@ -2369,32 +2358,12 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             }
             return
         }
-        // ★★ v1.0.236：**手点链接时问一句「在本页还是新标签」**。
-        //
-        // 触发要三件事同时成立，缺一不可：
-        //   ① `navigationType == .linkActivated` —— **只认"手点"**。脚本跳转 / 重定向 / 表单提交
-        //      都不问（那些要么是页面自己的行为，要么会连弹好几次，问了没法用）。
-        //   ② 主文档（`targetFrame?.isMainFrame`）—— iframe 里的跳转不是"你打开了一页"。
-        //   ③ **跨站**（`SiteRules.sameSite` 判）—— 同一个站里的翻页不打扰他，
-        //      否则列表页点进详情、后退、再点下一个，每个链接都要按一次确定。
-        // 另外：这个站要是之前勾过"以后都用新标签"，就直接开新标签、也不再问。
-        if Self.askOnLink,
-           action.navigationType == .linkActivated,
-           action.targetFrame?.isMainFrame == true,
-           let u = action.request.url,
-           let cur = wv.url?.absoluteString,
-           !SiteRules.sameSite(cur, u.absoluteString) {
-            if let h = u.host, SiteRules.has(h, .openInNewTab) {
-                decisionHandler(.cancel)
-                Task { @MainActor in _ = self.newTab(load: u.absoluteString) }
-                return
-            }
-            decisionHandler(.cancel)
-            Task { @MainActor in
-                self.askHowToOpen(wv, url: u, req: action.request)
-            }
-            return
-        }
+        // ★★ v1.0.238：**这里不再问"链接怎么打开"**。
+        //   原来（v1.0.236）是"手点跨站链接 → 弹在本页/新标签"，用户实测后判定
+        //   **不是他要的东西** —— 他要的是「**网页自己开弹窗**」时那个菜单
+        //   （"当前网页触发了弹出式窗口"），那条走的是**另一条路**：
+        //   `createWebViewWith`（`target="_blank"` / `window.open`）。
+        //   所以这里恢复成最朴素的行为：**放行**，页内正常跳转、不打扰。
         guard action.shouldPerformDownload else {
             decisionHandler(.allow)
             return
@@ -2494,6 +2463,9 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     nonisolated func webView(_ wv: WKWebView, didCommit n: WKNavigation!) {
         Task { @MainActor in
             guard let t = self.tab(for: wv), n !== t.warmupNav else { return }
+            // ★ v1.0.238：换页了 → 「已阻止弹出窗口」那句提示的节流重置
+            //   （同一个页面里脏站会连着弹好几次，只提示第一句就够）
+            self.popupBlockedNoticed = false
             if let u = wv.url?.absoluteString, !u.isEmpty {
                 t.address = u
                 if t === self.currentTab { self.address = u }
@@ -2647,38 +2619,52 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         return false
     }
 
-    /// ★ v1.0.236：这两样搬去了主类（extension 里**不能放存储属性**），见 `allowOnce`。
-
-    /// 问一句"这个链接怎么打开"。**手点跨站链接**时才会走到这儿。
+    /// ★★ v1.0.238：**问一句"这个弹出窗口怎么打开"** —— 照用户给的截图重做。
+    ///
+    /// 触发时机跟旧版（v1.0.236 的 `askHowToOpen`）**完全不同**：
+    ///   旧版 = 「**你手点**了一个跨站链接」（已撤掉）；
+    ///   新版 = 「**网页自己开了一个弹窗**」（`target="_blank"` / `window.open`）——
+    ///   见 `createWebViewWith`。
+    /// 所以你手点普通链接**不弹这个**；只有网页真的要弹窗时才出现。
+    /// ★ 也正因为如此，**不需要站点名单** —— 不开弹窗的站天然看不到它。
+    ///
+    /// 三个选项照截图：当前窗口加载 / 新窗口打开 / 后台窗口打开。
     @MainActor
-    private func askHowToOpen(_ wv: WKWebView, url: URL, req: URLRequest) {
-        let host = url.host ?? url.absoluteString
-        // 弹不出来（界面还没挂好）/ 正在弹别的窗 → **直接在本页打开**。
-        // 保守处理：不能因为"弹窗没弹出来"就变成"点了没反应"。
-        guard let vc = dialogHost(for: wv), !dialogBusy else {
-            loadInPlace(wv, req: req)
+    private func askPopup(_ wv: WKWebView, url: URL, req: URLRequest) {
+        // ① 界面还没挂好（拿不到宿主）→ 问不了。**至少给它开个后台标签** ——
+        //    网页要开窗我们却什么都不做，表现就是"点了没反应"，那是更糟的错。
+        guard let vc = dialogHost(for: wv) else {
+            _ = newTab(load: url.absoluteString, background: true)
             return
         }
-        let a = UIAlertController(title: "这个链接怎么打开？", message: host,
+        // ② 正在问别的弹窗（多半是同一个广告的连环弹）→ **丢掉**，
+        //    否则一次点击能刷出一堆标签。
+        guard !dialogBusy else { return }
+
+        let a = UIAlertController(title: "当前网页触发了弹出式窗口",
+                                  message: url.absoluteString,
                                   preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: "在本页打开", style: .default) { _ in
+        a.addAction(UIAlertAction(title: "当前窗口加载", style: .default) { _ in
             Task { @MainActor in
                 self.dialogBusy = false
-                self.loadInPlace(wv, req: req)
+                // ★ 复用原 request（自带 Referer / UA）：自己拼 `URLRequest(url:)`
+                //   是没有 Referer 的，有些站会直接拒、或者跳回首页。
+                // ★ 这条路跟 `decidePolicyFor` 无关（弹窗走的是 createWebViewWith），
+                //   所以不需要任何"放行一次"的标记。
+                wv.load(req)
             }
         })
-        a.addAction(UIAlertAction(title: "在新标签打开", style: .default) { _ in
+        a.addAction(UIAlertAction(title: "新窗口打开", style: .default) { _ in
             Task { @MainActor in
                 self.dialogBusy = false
                 _ = self.newTab(load: url.absoluteString)
             }
         })
-        a.addAction(UIAlertAction(title: "以后都用新标签", style: .default) { _ in
+        a.addAction(UIAlertAction(title: "后台窗口打开", style: .default) { _ in
             Task { @MainActor in
                 self.dialogBusy = false
-                SiteRules.add(host, to: .openInNewTab)
-                _ = self.newTab(load: url.absoluteString)
-                self.showToast("已记住：\(SiteRules.normalize(host)) 以后都用新标签")
+                _ = self.newTab(load: url.absoluteString, background: true)
+                self.showToast("已在后台打开")
             }
         })
         a.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
@@ -2692,16 +2678,16 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    /// 「在本页打开」—— 把刚才被取消的那次导航**原样重新发起**。
+    /// ★ v1.0.238：网页**自己**弹了个窗、**没有用户手势**（多半是广告）→ 拦掉 + 提示一句。
     ///
-    /// ★ 必须复用 `action.request`（它自带 Referer / UA）：自己拼一个 `URLRequest(url:)`
-    ///   是没有 Referer 的，有些站会直接拒、或者跳回首页。
-    /// ★ 用 `allowOnce` 标记这一次 —— 否则重新发起时又会命中拦截、再弹一次（死循环）。
+    /// 这是用户选的处理方式（原话"已阻止"）。同一次页面加载**只提示一句** ——
+    /// 脏站是会连环弹的，每弹一次提示一次就成刷屏了（`didCommit` 时重置这个标志）。
     @MainActor
-    private func loadInPlace(_ wv: WKWebView, req: URLRequest) {
-        allowOnce = req.url?.absoluteString
-        allowOnceAt = Date()
-        wv.load(req)
+    private func noticePopupBlocked(_ wv: WKWebView) {
+        guard tab(for: wv) === currentTab else { return }   // 后台标签的弹窗不打扰你
+        guard !popupBlockedNoticed else { return }
+        popupBlockedNoticed = true
+        showToast("已阻止弹出式窗口")
     }
 
     /// ★ v1.0.236：把这个标签"还没等到结果的那次访问"撤掉 ——
@@ -2895,14 +2881,20 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 
     /// 网页要求「开新窗口」的链接（`target="_blank"` / `window.open`）。
     ///
-    /// ★ v1.0.103：改成**照 Safari 的策略**（用户要求"参考 Safari"）：
-    ///   · **用户点出来的**（`navigationType == .linkActivated`）→ 开**新标签**并切过去
-    ///     —— Safari 的默认就是"开新标签 + 立刻切过去"（它的「Open Links」设置才管后台打开）
-    ///   · **没有用户手势**的脚本弹窗（广告那种 `window.open`）→ **不开**，同 Safari 的弹窗拦截
-    ///   · 页内普通链接（不带 target）**不走这个回调** → 仍在本标签内跳转，同 Safari
+    /// ★★ v1.0.238：**这里改成"问一句"**（用户 2026-10-09 拍板，照他给的截图）：
+    ///   菜单 = 「当前网页触发了弹出式窗口」+ 地址 + 三个选项
+    ///   （当前窗口加载 / 新窗口打开 / 后台窗口打开）。
     ///
-    /// 以前这里是把链接塞回**同一个** WebView（老注释写着"免得弹出嗅探不到的新窗口"）——
-    /// 那个担心在多标签架构（v1.0.48）之后已经不成立：**每个标签都有自己的嗅探**。
+    /// ★ 跟 v1.0.236 那套（"手点跨站链接问在本页还是新标签"）**不是一回事** ——
+    ///   那套问的是"**你点的那个链接**去哪打开"，已经在 `decidePolicyFor` 里撤掉了；
+    ///   这一套问的是"**网页自己要弹的那个窗**怎么办"。触发者不同，所以也别混在一起。
+    ///
+    /// 两类分开处理（判据用 WebKit 自己给的 `navigationType`）：
+    ///   · **有用户手势**（`.linkActivated`）→ **弹菜单**让他选；
+    ///   · **没有手势**（广告自己弹的 `window.open`）→ **拦掉** + 提示"已阻止"
+    ///     （用户选的处理方式），同一次页面加载只提示一句。
+    ///
+    /// 返回 `nil` = 不把这个 WebView 交给 WebKit —— 开不开标签、在不在本页加载，我们自己说了算。
     nonisolated func webView(_ wv: WKWebView,
                              createWebViewWith cfg: WKWebViewConfiguration,
                              for action: WKNavigationAction,
@@ -2925,10 +2917,17 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             }
             return nil
         }
+        // ★★ v1.0.238：**有手势 → 问他怎么开；没手势 → 拦掉 + 提示。**
+        //   传整个 `action.request`（不是只传 URL）：选"当前窗口加载"时要**原样重发**，
+        //   原 request 自带 Referer / UA，自己拼会被防盗链的站拒掉。
         let byTap = action.navigationType == .linkActivated
+        let req = action.request
         Task { @MainActor in
-            guard byTap else { return }        // 脚本自己弹的：不理会（同 Safari）
-            _ = self.newTab(load: url.absoluteString)
+            if byTap {
+                self.askPopup(wv, url: url, req: req)
+            } else {
+                self.noticePopupBlocked(wv)
+            }
         }
         return nil
     }

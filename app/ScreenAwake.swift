@@ -23,8 +23,9 @@ enum ScreenAwake {
     static let key = "keepScreenAwake"
 
     /// 默认**关**（省电优先）。
-    /// 读取写法跟 `AdClean.isOn` 保持一致：用 `object(forKey:)` 区分「没设过」和「设成 false」——
-    /// 现在两者都算关，但以后万一想改成默认开，这里不用重写。
+    /// 读取写法沿用本工程的老规矩：用 `object(forKey:)` 而不是 `bool(forKey:)`，
+    /// 这样能区分「没设过」和「设成 false」—— 现在两者都算关，
+    /// 但以后万一想改成默认开，这里不用重写（这个坑别的开关上踩过）。
     static var isOn: Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? false
     }

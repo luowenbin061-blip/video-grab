@@ -3,8 +3,15 @@
 // 由 WKUserScript 在 document-start 注入到【每一个 frame】（forMainFrameOnly=false），
 // page world。与 sniffer.js **并列但各管各的**：
 //   · sniffer.js 管「找视频地址」，它的定时器只在「后台自动嗅探」开着时才跑；
-//   · 本脚本管「把盖住内容的浮层广告清掉」，**默认常开**。
-//     两者**不能合并** —— 否则关掉自动嗅探会把广告清理也一起关掉。
+//   · 本脚本管「把盖住内容的浮层广告清掉」。
+//     两者**不能合并** —— 它们各有各的开关口径，合成一个会互相牵连。
+//
+// ★★ v1.0.238：**只对名单里的站生效**（用户 2026-10-09 拍板反转）。
+//   以前是「**默认全都清理** + 按站豁免」—— 用户实测判定"弊端太大"
+//   （清理会误伤页面、还可能吞掉正常点击）。
+//   现在脚本里带的是 **ONLY（要清理的域名清单）**，不在名单里就**一个字都不干**。
+//   ★ 原生侧在名单为空时**根本不注入这个脚本**（连解析都省了）——
+//     见 BrowserModel.makeRawWebView。
 //
 // 治的是什么（已按用户 6 张真机截图核实）：
 //   小聚合站/资源站在页面上**自己画的一层浮层**（全屏插屏图、赌博浮层、居中模态）。
@@ -13,16 +20,18 @@
 // 设计取舍（经 DeepSeek 复核后修正，两个关键点）：
 //   1. **只隐藏、不移除**：remove() 会被站点自己的 MutationObserver 发现并重新插回来；
 //      这里改成 display/visibility/pointer-events 三件套 + !important 同时设，
-//      站点要检测的成本更高。（但**关掉开关时会还原**，见 restoreAll）
+//      站点要检测的成本更高。
 //   2. 判据**不用单一条件**（"fixed + 面积大"会大量误杀播放器/选集抽屉），
 //      改成**多信号累计打分**，且先过一道**硬性排除**（含 video/audio/canvas、含 form、
 //      含大量链接/按钮的"正经面板"）。
+//      ★★ v1.0.238：**点击防护也改成同一套打分**（原来只看"浮 + 够大"就吞点击 ——
+//      聚合站那种整块 fixed 大容器极易被误命中，正常点击也跟着被吞）。
 //
 // 本脚本**做不到**的事（如实说明，别指望它）：
 //   · 画在 <canvas> 里的广告 → 无解（拿不到像素里的语义）
 //   · closed 模式的 Shadow DOM → 页面世界里够不到
 //   · 跨域 iframe 里的浮层 → 只能清它自己那一层，清不到父页面
-//   · 「反反拦截」（站点检测到被隐藏就黑屏）→ 只能靠用户关掉总开关
+//   · 「反反拦截」（站点检测到被隐藏就黑屏）→ 只能把站点移出清理名单
 // ---------------------------------------------------------------------------
 (function () {
   'use strict';
@@ -30,21 +39,19 @@
   if (window.__vgCleanerInstalled) return;
   window.__vgCleanerInstalled = true;
 
-  // ★ 注入时由原生替换这两行（同 sniffer.js 的 autoOn 手法）
-  var MODE = 'on';
-  // ★ v1.0.236：**这个站"不清理"的域名清单**（注入时由原生填，见 SiteRules）。
-  //   空数组 = 谁都不豁免（默认）。
-  var SKIP = [];
+  // ★ 注入时由原生替换这一行（同 sniffer.js 的 autoOn 手法）。
+  //   **要清理的域名清单** —— 空数组 = 谁都不清（默认）。
+  var ONLY = [];
 
-  // 当前域名在不在豁免名单里（**本域或它的子域**都算）。
+  // 当前域名在不在名单里（**本域或它的子域**都算）。
   // ★ 判据跟原生侧 `SiteRules.hit` 完全一致：必须比到 "." + 规则，
   //   否则 `nota.com` 会被 `a.com` 误命中（两个完全不同的站）。
-  function vgHostSkipped() {
-    if (!SKIP || !SKIP.length) return false;
+  function vgHostListed() {
     var h = (location.hostname || '').toLowerCase();
     if (!h) return false;
-    for (var i = 0; i < SKIP.length; i++) {
-      var r = String(SKIP[i] || '').toLowerCase();
+    if (!ONLY || !ONLY.length) return false;
+    for (var i = 0; i < ONLY.length; i++) {
+      var r = String(ONLY[i] || '').toLowerCase();
       if (!r) continue;
       if (h === r) return true;
       if (h.length > r.length && h.slice(-(r.length + 1)) === '.' + r) return true;
@@ -52,10 +59,9 @@
     return false;
   }
 
-  // ★★ 命中豁免 → **整个脚本一个字都不干**。
-  //   必须放在最前面：先装了 MutationObserver / 起了定时器再退出，会留下残骸，
-  //   而且"清理已执行过"这件事**退不回来**（页面缺的那一块不会自己回来）。
-  if (vgHostSkipped()) return;
+  // ★★ 不在名单 → **整个脚本一个字都不干**。
+  //   必须放在最前面：先装了 MutationObserver / 起了定时器再退出，会留下残骸。
+  if (!vgHostListed()) return;
 
   var ATTR = 'data-vg-blk';       // 打过这个标记 = 已被我们处理过
   var MAX_HIDE = 40;              // 单页最多隐藏几个（防某条判据失灵时雪崩）
@@ -150,24 +156,6 @@
     return true;
   }
 
-  // 关掉开关 / 需要还原时：把隐藏过的**原样恢复**
-  // （比 remove() 好在：站点从没察觉元素消失过，恢复也不留痕）
-  function restoreAll() {
-    var els;
-    try { els = document.querySelectorAll('[' + ATTR + ']'); } catch (e) { return; }
-    for (var i = 0; i < els.length; i++) {
-      try {
-        els[i].style.removeProperty('display');
-        els[i].style.removeProperty('visibility');
-        els[i].style.removeProperty('pointer-events');
-        els[i].removeAttribute(ATTR);
-        els[i].removeAttribute('aria-hidden');
-      } catch (e) {}
-    }
-    hiddenCount = 0;
-    recent = [];
-  }
-
   // ── 候选收集：只走到第 4 层（浮层基本都在这个范围），避免遍历整页 ──────────
   function candidates() {
     var out = [];
@@ -189,7 +177,6 @@
   }
 
   function sweep() {
-    if (MODE === 'off') return 0;
     if (document.visibilityState && document.visibilityState !== 'visible') return 0;
     if (!vw() || !vh()) return 0;
     // ★ 最小间隔：整轮扫要调几百次 getBoundingClientRect（会触发布局），
@@ -221,9 +208,11 @@
   // 治的是：「广告上的 X 点一下就跳走」。做法：click 进入 capture 阶段时，
   // **现场判断**这一点是否落在一个广告浮层里 —— 是就把这次点击整个掐掉
   // （掐掉后站点的 click 处理不会跑 → 它那条跳转也就不会执行）。
-  // ★ 只掐"落在浮层里的点击"，**不碰普通链接**（那种是正常导航）。
+  // ★ 只掐"确实是广告浮层里的点击"，**不碰普通链接**（那种是正常导航）。
+  // ★★ v1.0.238：判据收紧到**跟 sweep 同一套打分**（原来只看"浮 + 够大"）——
+  //   聚合站里那种"整块 fixed 的大容器"很容易满足"浮 + 够大"，
+  //   于是正常点击也被吞（用户实测的"点了不跳转"的怀疑点之一）。
   function onDocClick(e) {
-    if (MODE === 'off') return;
     var t = e.target;
     if (!t || !t.closest) return;
     if (t.closest('[' + ATTR + ']')) { swallow(e); return; }   // 已隐藏的（理论上点不到）
@@ -231,7 +220,7 @@
     while (el && el !== document.body && hops < 6) {
       var r, cs;
       try { r = el.getBoundingClientRect(); cs = getComputedStyle(el); } catch (err) { break; }
-      if (floating(cs) && bigEnough(r) && safeToTouch(el)) {
+      if (floating(cs) && bigEnough(r) && safeToTouch(el) && score(el, cs, r) >= THRESHOLD) {
         swallow(e);
         if (hide(el, 'click')) report();     // 顺手清掉，下次不用再拦
         return;
@@ -281,24 +270,13 @@
     }
   }
 
-  function stop() {
-    if (timer) { clearInterval(timer); timer = null; }
-    if (moTimer) { clearTimeout(moTimer); moTimer = null; }
-    if (observer) { try { observer.disconnect(); } catch (e) {} observer = null; }
-    try { document.removeEventListener('click', onDocClick, true); } catch (e) {}
-    started = false;
-  }
-
-  // ── 暴露给原生 ────────────────────────────────────────────────────────────
-  window.__vgCleanSet = function (mode) {
-    MODE = (mode === 'off') ? 'off' : 'on';
-    if (MODE === 'off') { stop(); restoreAll(); } else { start(); sweep(); }
-    return MODE;
-  };
+  // ── 暴露给原生（诊断用）────────────────────────────────────────────────────
+  // ★ v1.0.238：`__vgCleanSet`（运行时总开关）和 `restoreAll` 随"总开关"一起撤掉 ——
+  //   现在"清不清理"由**注入时的 ONLY 名单**决定，改名单要刷新页面才生效。
   window.__vgCleanNow = function () { return sweep(); };
   window.__vgCleanStats = function () {
-    return { mode: MODE, hidden: hiddenCount, recent: recent.slice(-10) };
+    return { hidden: hiddenCount, recent: recent.slice(-10) };
   };
 
-  if (MODE !== 'off') start();
+  start();
 })();

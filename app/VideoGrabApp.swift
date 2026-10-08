@@ -11,6 +11,11 @@ struct VideoGrabApp: App {
         // ★ v1.0.119：无图模式的拦截规则是**异步编译**的（WebKit 就这么设计的）——
         //   在这里先编译好，等用户去拨开关时就能同步拿到规则、当次加载就生效。
         NoImageMode.warmUp()
+
+        // ★ v1.0.238：清掉广告清理**反转之前**的那几个键。
+        //   老键存的是"**不**清理的站"，新口径是"**要**清理的站"—— 语义正好相反，
+        //   没有正确的映射，只能丢（详见 `SiteRules.purgeLegacyKeys`）。
+        SiteRules.purgeLegacyKeys()
     }
 
     var body: some Scene {

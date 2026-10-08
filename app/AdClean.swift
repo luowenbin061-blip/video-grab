@@ -10,21 +10,10 @@ import Foundation
 ///   挂上主线程隔离就会编不过（工程里踩过一次同类坑）。
 enum AdClean {
 
-    /// 总开关的 UserDefaults 键。设置页的 `@AppStorage` 用同一个键。
-    static let key = "adClean"
-
-    /// 是否开启。
-    ///
-    /// ★ 用 `object(forKey:)` 而不是 `bool(forKey:)` —— 后者把「没设过」和
-    ///   「设成 false」都读成 false，而我们要区分的恰恰是这两者：
-    ///   没设过 → **默认开**；显式关过 → 关。
-    ///   （设置页那个 `@AppStorage(..., ) var = true` 在用户没动它时不会写盘，
-    ///   所以这里读到 nil 就是"用户从没关过"。）
-    static var isOn: Bool {
-        let d = UserDefaults.standard
-        if d.object(forKey: key) == nil { return true }
-        return d.bool(forKey: key)
-    }
+    // ★★ v1.0.238：这里的「总开关」（原来的 `key` / `isOn`）**已删除** ——
+    //   广告清理改成**按站名单**（`SiteRules.adCleanOn`：只清名单里的站），
+    //   不再有"全开 / 全关"这回事。于是这个类型只剩下一件事：
+    //   **接住网页层回传的诊断信息**（下面这段）。
 
     // MARK: - 诊断日志
 
