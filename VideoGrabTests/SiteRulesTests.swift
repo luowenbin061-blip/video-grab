@@ -70,18 +70,22 @@ final class SiteRulesTests: XCTestCase {
         XCTAssertFalse(SiteRules.has("www.whatever.cn", .adCleanOn))
     }
 
-    // MARK: - 注入源（cleaner.js 的 ONLY 名单）
+    // MARK: - 注入用的小工具（cleaner.js 的 ONLY 名单靠它拼）
 
-    /// 名单要**真的填进脚本**，而且填的是 `ONLY`（不是老版的 `SKIP`）。
-    /// ★ `cleanerSource` 是 `@MainActor` 类上的 static 方法 → 测试方法也得标 `@MainActor`。
-    /// ★ 判据写成"代码那一行的形式"，别带前导缩进（换容器会让缩进变一格、断言集体失效）。
-    @MainActor
-    func testCleanerSourceCarriesOnlyList() {
-        let src = BrowserModel.cleanerSource(hosts: ["a.com", "b.com"])
-        XCTAssertTrue(src.contains("var ONLY = [\"a.com\",\"b.com\"];"))
-        XCTAssertFalse(src.contains("var SKIP"))
-        XCTAssertFalse(src.contains("var MODE"))
-        // 脚本自己判 host 的那段还在（不在名单里 → 一个字都不干）
-        XCTAssertTrue(src.contains("if (!vgHostListed()) return;"))
+    /// 域名列表 → JS 数组字面量。
+    ///
+    /// ★ 为什么测 `SiteRules.jsList` 而不是 `BrowserModel.cleanerSource`：
+    ///   后者要读 Bundle 里的脚本文件，而**测试 target 的源码清单里没有 BrowserModel**
+    ///   → 写 `BrowserModel.xxx` 会直接 `Cannot find 'BrowserModel' in scope`
+    ///   （run #238 就栽在这儿）。拼串这一步是纯函数，搬到数据层才盯得住。
+    /// ★ 拼坏了整段注入脚本就废了，而且**在浏览器里是静默不干活**（查都不好查）——
+    ///   所以转义那两条必须守着。
+    func testJsListEscapesAndJoins() {
+        XCTAssertEqual(SiteRules.jsList([]), "")
+        XCTAssertEqual(SiteRules.jsList(["a.com"]), "\"a.com\"")
+        XCTAssertEqual(SiteRules.jsList(["a.com", "b.com"]), "\"a.com\",\"b.com\"")
+        // 万一混进带引号 / 反斜杠的，拼出来也必须是合法 JS
+        XCTAssertEqual(SiteRules.jsList(["a\"b"]), "\"a\\\"b\"")
+        XCTAssertEqual(SiteRules.jsList(["a\\b"]), "\"a\\\\b\"")
     }
 }

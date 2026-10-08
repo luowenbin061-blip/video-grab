@@ -126,6 +126,24 @@ enum SiteRules {
 
     static func forgetAll(_ k: Kind) { store([], k) }
 
+    // MARK: - 注入用的小工具
+
+    /// 把域名列表拼成 JS 数组字面量的**内容**（形如 `"a.com","b.com"`）。
+    ///
+    /// ★ 为什么单独抽到这儿：`BrowserModel.cleanerSource` 要读 Bundle 里的脚本文件，
+    ///   而**测试 target 里没有 BrowserModel**（run #238 就是栽在这 —— 测试里写
+    ///   `BrowserModel.cleanerSource(...)` 直接 `Cannot find 'BrowserModel' in scope`）。
+    ///   拼串这一步是**纯函数**，放数据层就能被 CI 单测盯住。
+    /// ★ 域名是 `normalize` 洗过的（只有字母数字点和减号），理论上不会有引号/反斜杠；
+    ///   这里照样转义一遍 —— 万一哪天 normalize 放松了，拼出来的也**仍是合法 JS**
+    ///   （拼坏了整段注入脚本就废了，那是查都不好查的故障）。
+    static func jsList(_ hosts: [String]) -> String {
+        hosts.map { h in
+            "\"" + h.replacingOccurrences(of: "\\", with: "\\\\")
+                   .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }.joined(separator: ",")
+    }
+
     // MARK: - 清理旧键（v1.0.238 一次性）
 
     /// 把 v1.0.236~237 那套反转前的键**清掉**。

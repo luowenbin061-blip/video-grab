@@ -482,9 +482,10 @@ final class BrowserModel: NSObject, ObservableObject {
         var s = rawCleanerSource
         let line = "var ONLY = [];"
         if s.contains(line) {
-            // 域名是 `SiteRules.normalize` 洗过的（只有字母数字点和减号）→ 不会破坏 JSON
-            let json = hosts.map { "\"" + $0 + "\"" }.joined(separator: ",")
-            s = s.replacingOccurrences(of: line, with: "var ONLY = [\(json)];")
+            // ★ 拼串交给 `SiteRules.jsList`（纯函数，CI 单测盯着它 ——
+            //   这个类不在测试 target 的源码清单里，测试够不着这里）
+            s = s.replacingOccurrences(of: line,
+                                       with: "var ONLY = [\(SiteRules.jsList(hosts))];")
         }
         return s
     }
