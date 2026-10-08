@@ -410,6 +410,24 @@ final class BrowserModel: NSObject, ObservableObject {
     /// 待确认地址，**重定向链自然只保留最后一跳**，不会把中间那些地址也记进历史。
     private var pendingVisit: [ObjectIdentifier: String] = [:]
 
+    /// ★ v1.0.236：设置里的「点链接时问一句：在本页还是新标签」（**默认开**）。
+    ///   两个都标 `nonisolated` —— 它们要在 `decidePolicyFor`（**nonisolated 的同步回调**）
+    ///   里读，而 `BrowserModel` 整体是 `@MainActor` 隔离的（不标就直接编译失败，run #236 栽过）。
+    nonisolated static let askOnLinkKey = "askOpenTarget"
+
+    nonisolated static var askOnLink: Bool {
+        let d = UserDefaults.standard
+        return d.object(forKey: askOnLinkKey) == nil ? true : d.bool(forKey: askOnLinkKey)
+    }
+
+    /// ★ v1.0.236：**放行一次**的标记（见 `decidePolicyFor` 开头）。
+    ///
+    /// `nonisolated(unsafe)`：`decidePolicyFor` 是同步回调、必须当场读写这两个值，
+    /// 而属性在 `@MainActor` 类里。它俩只在主线程与这个回调之间碰，
+    /// 最坏结果是"多问一次 / 少问一次"，不值得为它上锁。
+    nonisolated(unsafe) private var allowOnce: String?
+    nonisolated(unsafe) private var allowOnceAt = Date.distantPast
+
     /// sniffer.js 的**原始**内容（只读一次盘）
     private static let rawSnifferSource: String = {
         guard let url = Bundle.main.url(forResource: "sniffer", withExtension: "js"),
@@ -2629,20 +2647,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         return false
     }
 
-    /// ★ v1.0.236：设置里的「点链接时问一句：在本页还是新标签」（**默认开**）。
-    ///   默认开的理由：这就是他要的功能；嫌烦的人在设置里关掉即可。
-    static var askOnLink: Bool {
-        let k = "askOpenTarget"
-        let d = UserDefaults.standard
-        return d.object(forKey: k) == nil ? true : d.bool(forKey: k)
-    }
-
-    /// 上面那个开关的 UserDefaults 键（设置页的 @AppStorage 绑同一个）
-    static let askOnLinkKey = "askOpenTarget"
-
-    /// ★ v1.0.236：**放行一次**的标记（见 `decidePolicyFor` 开头）。
-    private var allowOnce: String?
-    private var allowOnceAt = Date.distantPast
+    /// ★ v1.0.236：这两样搬去了主类（extension 里**不能放存储属性**），见 `allowOnce`。
 
     /// 问一句"这个链接怎么打开"。**手点跨站链接**时才会走到这儿。
     @MainActor
