@@ -48,6 +48,44 @@ jobs:
           done
           find . -maxdepth 2 -type d | tee -a ../../build.log
 
+      # ★ v1.0.247 磁力（BT）引擎：**复用**另一条流水线（build-libtorrent-ios）编好的产物。
+      #   为什么不在这里重编：要多花 3 分钟 + 依赖 Boost 头/CMake/Ninja 一整套工具链，
+      #   而这个产物几个月都不会变一次。它挂在固定 tag `lt-prebuilt` 的 release 上。
+      # ★★ 私有仓库取 release 资产**必须走 API 资产通道**（`/releases/assets/<id>`
+      #   + `Accept: application/octet-stream`）：直接下 browser_download_url 会 401，
+      #   用 `gh release download` 实测会中途断（PROTOCOL_ERROR）拿到坏包 ——
+      #   所以这里既走 API，又**校验压缩包完整性后重试**。
+      - name: Download libtorrent prebuilt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          mkdir -p vendor/libtorrent
+          cd vendor/libtorrent
+          ASSET_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/lt-prebuilt" \
+            --jq '.assets[] | select(.name=="libtorrent-ios-arm64.zip") | .id')
+          echo "=== libtorrent asset id: $ASSET_ID ===" | tee -a ../../build.log
+          test -n "$ASSET_ID"
+          ok=0
+          for i in 1 2 3 4 5; do
+            rm -f lt.zip
+            curl -fsSL \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -o lt.zip \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}" || true
+            if unzip -tq lt.zip >/dev/null 2>&1; then ok=1; break; fi
+            echo "-- 第 $i 次下到的包不完整，重试" | tee -a ../../build.log
+            sleep 3
+          done
+          test "$ok" = "1"
+          unzip -oq lt.zip
+          rm -f lt.zip
+          ls -la lib | tee -a ../../build.log
+          test -f lib/libvideoGrabLT.a
+          test -f include/libtorrent/version.hpp
+          echo "-- libtorrent 预编译产物就位" | tee -a ../../build.log
+
       - name: Generate Xcode project
         run: |
           echo "=== xcodegen generate ===" | tee -a build.log

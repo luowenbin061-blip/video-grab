@@ -61,6 +61,24 @@ struct Entry {
     int id = 0;
     lt::info_hash_t ih;
     std::string name;       // 磁力里的 dn=（元数据到手后会换成真名）
+    bool added = false;     // 会话里登记成功没有（靠 add_torrent_alert 判定）
+    std::string err;        // 引擎报的错（add 失败 / torrent_error_alert）
+};
+
+/// 磁力链接里自带的 tracker 经常全是死的 —— 再补一份公共 tracker。
+/// ★ 这份单子是各客户端通用的那几条；重复 announce 没坏处，死掉的会被自动淘汰。
+const char *kPublicTrackers[] = {
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.tracker.cl:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.moeking.me:6969/announce",
+    "udp://explodie.org:6969/announce",
+    "udp://tracker1.bt.moack.co.kr:80/announce",
+    "http://tracker.openbittorrent.com:80/announce",
 };
 
 struct EngineImpl {
@@ -122,11 +140,31 @@ LTEngine lt_engine_new(const char *saveDir) {
     sp.set_str(lt::settings_pack::user_agent, "VideoGrab/1.0");
     // ★ 监听端口用 2.0 的写法（listen_interfaces）。原来那个 listen_on() 已经废弃。
     sp.set_str(lt::settings_pack::listen_interfaces, "0.0.0.0:6881,[::]:6881");
+
+    // ★★ v1.0.248：**显式给 DHT 引导节点**。
+    //   实测（用户真机）：磁力加进去以后一直「已连上 0 个」，几十秒都不变 ——
+    //   那不是"没人做种"，是**引擎根本没接进 DHT 网络**。
+    //   只把 enable_dht 打开并不保证有引导节点（拿不到 DHT 路由表 = 找不到任何 peer）。
+    //   这几个是各客户端通用的公共引导节点，写死在这儿最稳。
+    sp.set_str(lt::settings_pack::dht_bootstrap_nodes,
+               "router.bittorrent.com:6881,router.utorrent.com:6881,"
+               "dht.libtorrent.org:25401,dht.transmissionbt.com:6881,"
+               "dht.aelitis.com:6881");
+
+    // ★★ 磁力链接里带的 tracker 经常全是死的。客户端通行的做法是**再补一份公共 tracker**，
+    //   并且**一次向所有 tracker / 所有 tier 同时 announce**（不然要等前一个超时才轮到下一个，
+    //   表现为"几十秒一个 peer 都没有"）。
+    sp.set_bool(lt::settings_pack::announce_to_all_trackers, true);
+    sp.set_bool(lt::settings_pack::announce_to_all_tiers, true);
+    // 主动外连的速度上限（默认偏保守，冷门种子要等很久才凑够 peer）
+    sp.set_int(lt::settings_pack::connection_speed, 100);
+
     // ★★ alert 队列**必须有人排空**，否则会一直涨到把内存吃光。
-    //   我们不去处理具体 alert（错误从 torrent_status 读），这里只把掩码压到最小，
-    //   然后在 poll 里 pop_alerts 排空。
+    //   v1.0.248：掩码放宽到 error + status —— 我们要从 `add_torrent_alert` /
+    //   `torrent_error_alert` 里读「这条任务到底登记上没有 / 报没报错」。
     sp.set_int(lt::settings_pack::alert_mask,
-               static_cast<int>(lt::alert_category::error));
+               static_cast<int>(lt::alert_category::error)
+               | static_cast<int>(lt::alert_category::status));
 
     lt::session_params params;
     params.settings = sp;
@@ -156,6 +194,8 @@ int lt_engine_add_magnet(LTEngine h, const char *uri) {
     lt::add_torrent_params atp = lt::parse_magnet_uri(lt::string_view(uri), ec);
     if (ec) return -1;
     atp.save_path = e->savePath;
+    // ★ 补公共 tracker：磁力里自带的那些经常整批都是死的，光靠 DHT 有时候会很慢。
+    for (const char *t : kPublicTrackers) atp.trackers.emplace_back(t);
 
     std::lock_guard<std::mutex> lock(e->mu);
     int id = e->nextId++;
@@ -237,10 +277,31 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
     if (e == nullptr || out == nullptr || outLen < 64) return -1;
 
     std::lock_guard<std::mutex> lock(e->mu);
-    // ★ 排空 alert 队列（不排会无限涨）。具体内容我们不看。
+    // ★ 排空 alert 队列（不排会无限涨），顺便把「登记成功没有 / 报错没有」记到任务上。
+    //   ★★ v1.0.248：以前只排空、不看内容 → 任务要是压根没登记上，
+    //   界面就只会一直显示"正在找资源…0 个"，完全看不出是引擎的问题。
     if (e->ses) {
         std::vector<lt::alert *> alerts;
         e->ses->pop_alerts(&alerts);
+        for (lt::alert *a : alerts) {
+            if (auto *at = lt::alert_cast<lt::add_torrent_alert>(a)) {
+                const lt::sha1_hash h = ih1(at->params.info_hashes);
+                for (auto &en : e->entries) {
+                    if (ih1(en.ih) == h) {
+                        if (at->error) {
+                            en.err = std::string("加入任务失败：") + at->error.message();
+                        } else {
+                            en.added = true;
+                        }
+                    }
+                }
+            } else if (auto *te = lt::alert_cast<lt::torrent_error_alert>(a)) {
+                const lt::sha1_hash h = ih1(te->handle.info_hashes());
+                for (auto &en : e->entries) {
+                    if (ih1(en.ih) == h) en.err = te->error.message();
+                }
+            }
+        }
     }
 
     const Entry *en = findEntry(e, id);
@@ -249,13 +310,28 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
     lt::torrent_handle th;
     if (e->ses) th = e->ses->find_torrent(ih1(en->ih));
 
+    // ★★ v1.0.248：把「引擎接受这条任务没有 / 有没有报错 / DHT 连上几个节点」
+    //   一起报上去。用户实测那次"一直已连上 0 个"，界面上分不出是
+    //   "引擎没接进网络" 还是 "这个种没人做种" —— 有这几个字段就能分辨。
+    char buf[512];
+    const int dhtNodes = e->ses ? e->ses->status().dht_nodes : 0;
     std::string js = "{";
+    js += "\"hasHandle\":";
+    js += th.is_valid() ? "true" : "false";
+    js += ",\"added\":";
+    js += en->added ? "true" : "false";
+    js += ",\"dhtNodes\":";
+    std::snprintf(buf, sizeof(buf), "%d,\"err\":\"", dhtNodes);
+    js += buf;
+    jsonEsc(js, en->err);
+    js += "\"";
+
     if (!th.is_valid()) {
-        // 刚 add 完还没登记进会话
-        js += "\"state\":\"metadata\",\"name\":\"";
+        // 还没在会话里找到（刚 add 完的瞬间，或者压根没登记上 —— 看 added 字段）
+        js += ",\"state\":\"metadata\",\"name\":\"";
         jsonEsc(js, en->name);
-        js += "\",\"totalBytes\":0,\"doneBytes\":0,\"rateBytes\":0,\"peers\":0,"
-              "\"progress\":0,\"files\":[]}";
+        js += "\",\"meta\":false,\"totalBytes\":0,\"doneBytes\":0,\"rateBytes\":0,"
+              "\"peers\":0,\"progress\":0,\"trackers\":0,\"files\":[]}";
     } else {
         const lt::torrent_status st = th.status();
         const bool hasMeta = st.has_metadata;
@@ -283,22 +359,23 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
             break;
         }
 
-        char buf[512];
-        js += "\"state\":\"";
+        char buf2[512];
+        js += ",\"state\":\"";
         js += state;
         js += "\",\"name\":\"";
         jsonEsc(js, st.name.empty() ? en->name : st.name);
         js += "\",\"meta\":" + std::string(hasMeta ? "true" : "false");
 
-        std::snprintf(buf, sizeof(buf),
+        std::snprintf(buf2, sizeof(buf2),
                       ",\"totalBytes\":%lld,\"doneBytes\":%lld,\"rateBytes\":%lld,"
-                      "\"peers\":%d,\"progress\":%.4f",
+                      "\"peers\":%d,\"progress\":%.4f,\"trackers\":%d",
                       static_cast<long long>(st.total_wanted),
                       static_cast<long long>(st.total_wanted_done),
                       static_cast<long long>(st.download_payload_rate),
                       st.num_peers,
-                      static_cast<double>(st.progress));
-        js += buf;
+                      static_cast<double>(st.progress),
+                      static_cast<int>(th.trackers().size()));
+        js += buf2;
 
         js += ",\"files\":[";
         if (hasMeta) {

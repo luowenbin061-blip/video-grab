@@ -62,11 +62,17 @@ void lt_engine_select_files(LTEngine e, int id, const int *idx, int n);
  *
  * JSON 形状：
  * {
+ *   "hasHandle": true|false,   // 会话里找到这条任务没有（false 且 added=false → 引擎没接受它）
+ *   "added": true|false,       // 会话登记成功了没有（靠 add_torrent_alert 判定）
+ *   "dhtNodes": 123,           // ★ DHT 路由表里有几个节点 —— 用来区分
+ *                              //   "引擎没接进网络"（恒为 0）和"这个种没人做种"（有节点但没 peer）
+ *   "err": "",                 // 引擎报的错（加入失败 / torrent_error_alert）
  *   "state": "metadata" | "downloading" | "checking" | "finished" | "error",
  *   "name": "种子名",
+ *   "meta": true|false,        // 元数据（文件列表）到手没有
  *   "totalBytes": 123456, "doneBytes": 4567, "rateBytes": 1024,
- *   "peers": 3, "progress": 0.37,
- *   "files": [ {"index":0,"path":"a/b.mp4","size":123,"done":0,"wanted":1} ]
+ *   "peers": 3, "progress": 0.37, "trackers": 11,
+ *   "files": [ {"index":0,"path":"a/b.mp4","size":123,"done":0} ]
  * }
  */
 int lt_engine_poll(LTEngine e, int id, char *out, int outLen);
