@@ -1,0 +1,244 @@
+name: build-libtorrent-ios
+
+# ★ 这个工作流**不属于 App 发布流水线**，是单独一条探针线：
+#   把 libtorrent 编成 iOS 静态库 + 我们自己的桥接层，产物发到 release 资产，
+#   App 构建时直接下载复用（不每次重编）。
+#
+# 为什么另起一条、还带 paths 过滤：build.yml 是「push 到 main 就编译」，
+#   这个工作流跑一次要十几二十分钟，不能跟 App 发布抢构建号，也不能因为
+#   探针失败影响发版。
+#
+# 用法：推到任何分支都会跑；也可以用 workflow_dispatch 手动触发
+#   （encryption=1 时开 TLS/加密连接，需要 OpenSSL —— 见下面 enc 步骤）。
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-libtorrent.yml'
+      - 'vendor/ltbridge/**'
+  workflow_dispatch:
+    inputs:
+      encryption:
+        description: '1 = 开 TLS/混淆连接（需要 OpenSSL）；0 = 关（只验能否编译）'
+        default: '0'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    env:
+      LT_VERSION: v2.0.10
+      BOOST_VERSION: 1.84.0
+      BOOST_DIRNAME: boost_1_84_0
+      IOS_MIN: '15.0'
+      REL_TAG: lt-prebuilt
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          echo "=== xcodebuild ===" | tee build-lt.log
+          xcodebuild -version 2>&1 | tee -a build-lt.log
+          echo "=== runner arch ===" | tee -a build-lt.log
+          uname -m | tee -a build-lt.log
+          echo "=== encryption input ===" | tee -a build-lt.log
+          echo "encryption=${{ github.event.inputs.encryption || '0' }}" | tee -a build-lt.log
+
+      # ── CMake 用固定版本 ──────────────────────────────────────────────
+      # ★ 为什么不用 brew 的 cmake：CMake 4.x 移除了 FindBoost 模块，
+      #   而 libtorrent 的 CMakeLists 走的是 find_package(Boost) 的老路子，
+      #   在 4.x 上会直接找不到 Boost。所以钉一个 3.x。
+      - name: Install pinned CMake 3.31.6
+        run: |
+          set -e
+          curl -fsSL -o cmake.tar.gz \
+            https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-macos-universal.tar.gz
+          tar xzf cmake.tar.gz
+          rm -f cmake.tar.gz
+          echo "$PWD/cmake-3.31.6-macos-universal/CMake.app/Contents/bin" >> "$GITHUB_PATH"
+          echo "=== cmake version ===" | tee -a build-lt.log
+          ./cmake-3.31.6-macos-universal/CMake.app/Contents/bin/cmake --version | tee -a build-lt.log
+
+      - name: Install ninja
+        run: |
+          brew install ninja 2>&1 | tail -3 || true
+          ninja --version | tee -a build-lt.log
+
+      # ── Boost：只用头文件 ────────────────────────────────────────────
+      # libtorrent 官方 building.rst 明写可以用「只有头文件」的 Boost，
+      # 并给了正统做法：把 BOOST_ROOT 置空、只给 include 路径。
+      # 这样省掉编译 Boost 库（最慢的一块）。
+      - name: Fetch Boost headers (header-only)
+        run: |
+          set -e
+          mkdir -p third_party
+          cd third_party
+          echo "-- downloading boost $BOOST_VERSION" | tee -a ../build-lt.log
+          curl -fsSL -o boost.tar.gz \
+            "https://archives.boost.io/release/${BOOST_VERSION}/source/${BOOST_DIRNAME}.tar.gz"
+          tar xzf boost.tar.gz
+          rm -f boost.tar.gz
+          test -f "${BOOST_DIRNAME}/boost/config.hpp"
+          echo "-- boost headers ready: $PWD/${BOOST_DIRNAME}" | tee -a ../build-lt.log
+          du -sh "${BOOST_DIRNAME}" | tee -a ../build-lt.log
+
+      - name: Clone libtorrent ${{ env.LT_VERSION }}
+        run: |
+          set -e
+          # ★★ 必须带子模块：libtorrent 把 `deps/try_signal` 放在 git submodule 里，
+          #   不拉子模块 → CMake 会在 `add_library` 上报
+          #     Cannot find source file: deps/try_signal/try_signal.cpp
+          #     No SOURCES given to target: torrent-rasterbar
+          #   （第一版探针就栽在这儿，日志里那句"Configuring done"后面才报，很容易看漏）
+          git clone --depth 1 --branch "${LT_VERSION}" \
+            --recurse-submodules \
+            https://github.com/arvidn/libtorrent.git third_party/libtorrent
+          echo "-- 子模块:" | tee -a build-lt.log
+          ls third_party/libtorrent/deps/ | tee -a build-lt.log
+          test -f third_party/libtorrent/deps/try_signal/try_signal.cpp
+          echo "-- libtorrent $(grep -m1 'LIBTORRENT_VERSION_NUM' third_party/libtorrent/include/libtorrent/version.hpp)" | tee -a build-lt.log
+
+      # ── 配 CMake（iOS 真机 arm64 静态库） ────────────────────────────
+      # 第一步只出 arm64 真机切片：真机是 arm64、TrollStore 免签，
+      # 不需要模拟器切片，也不需要签名。
+      - name: Configure (iOS arm64, static)
+        run: |
+          # ★★ 必须开 pipefail：这一行是拿第一版探针的教训换来的 ——
+          #   `cmake ... | tee` 时管道的退出码是 `tee` 的，cmake 失败会被**静默吞掉**，
+          #   步骤显示 ✓，下一步 ninja 才报 "loading 'build.ninja': No such file or directory"，
+          #   把真正的原因（CMake 的报错）埋在后面。
+          set -eo pipefail
+          SRC="$PWD/third_party/libtorrent"
+          BOOST="$PWD/third_party/${BOOST_DIRNAME}"
+          ENC="${{ github.event.inputs.encryption || '0' }}"
+          ENCOPT="OFF"
+          if [ "$ENC" = "1" ]; then ENCOPT="ON"; fi
+          mkdir -p build-lt && cd build-lt
+          # ★ BOOST_ROOT 置空是官方推荐做法（否则会去找系统上预编译的 Boost 库，
+          #   但头文件用的是源码包里的 —— 版本/架构不一致会出诡异错误）
+          BOOST_ROOT="" cmake "$SRC" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${IOS_MIN}" \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DBoost_INCLUDE_DIR="$BOOST" \
+            -DBOOST_INCLUDEDIR="$BOOST" \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -Dencryption="$ENCOPT" \
+            -Dbuild_tests=OFF \
+            -Dbuild_examples=OFF \
+            -Dbuild_tools=OFF \
+            -Dpython-bindings=OFF \
+            2>&1 | tee -a ../build-lt.log
+          echo "-- cmake configure done" | tee -a ../build-lt.log
+
+      - name: Build libtorrent
+        run: |
+          set -o pipefail
+          cd build-lt
+          ninja -j4 2>&1 | tee -a ../build-lt.log
+          echo "=== 产物 ===" | tee -a ../build-lt.log
+          find . -name "*.a" | tee -a ../build-lt.log
+
+      # ── 编我们自己的桥接层，并跟 libtorrent 合并成一个 .a ─────────────
+      - name: Build LT bridge
+        run: |
+          set -e
+          BOOST="$PWD/third_party/${BOOST_DIRNAME}"
+          xcrun -sdk iphoneos clang++ -c vendor/ltbridge/ltbridge.cpp \
+            -o build-lt/ltbridge.o \
+            -arch arm64 -mios-version-min="${IOS_MIN}" \
+            -std=c++17 -O2 -fPIC -DNDEBUG \
+            -DBOOST_ALL_NO_LIB -DBOOST_ASIO_ENABLE_CANCELIO -DBOOST_ASIO_HAS_STD_CHRONO \
+            -DBOOST_MULTI_INDEX_DISABLE_SERIALIZATION -DBOOST_NO_DEPRECATED \
+            -DBOOST_SYSTEM_NO_DEPRECATED \
+            -I vendor/ltbridge \
+            -I third_party/libtorrent/include \
+            -I build-lt/include \
+            -I "$BOOST" \
+            2>&1 | tee -a build-lt.log
+          echo "-- bridge compiled OK" | tee -a build-lt.log
+
+      - name: Merge into one static library
+        run: |
+          set -e
+          LT_A=$(find build-lt -maxdepth 2 -name "libtorrent-rasterbar.a" | head -1)
+          echo "libtorrent archive: $LT_A" | tee -a build-lt.log
+          test -n "$LT_A"
+          mkdir -p lt-out/lib
+          libtool -static -o lt-out/lib/libvideoGrabLT.a "$LT_A" build-lt/ltbridge.o
+          ls -la lt-out/lib/ | tee -a build-lt.log
+          echo "-- 里面的目标文件数:" | tee -a build-lt.log
+          ar -t lt-out/lib/libvideoGrabLT.a | wc -l | tee -a build-lt.log
+
+      - name: Assemble headers
+        run: |
+          set -e
+          mkdir -p lt-out/include
+          cp -R third_party/libtorrent/include/libtorrent lt-out/include/
+          # CMake 生成的配置头（如果有）优先覆盖
+          if [ -d build-lt/include/libtorrent ]; then
+            cp -R build-lt/include/libtorrent/. lt-out/include/libtorrent/ 2>/dev/null || true
+          fi
+          cp -R "third_party/${BOOST_DIRNAME}/boost" lt-out/include/
+          du -sh lt-out/include | tee -a build-lt.log
+          {
+            echo "libtorrent ${LT_VERSION}"
+            echo "boost ${BOOST_VERSION} (headers only)"
+            echo "slice arm64-iphoneos, min iOS ${IOS_MIN}"
+            echo "encryption=${{ github.event.inputs.encryption || '0' }}"
+            echo "built run #${{ github.run_number }}"
+          } > lt-out/VERSION.txt
+          cat lt-out/VERSION.txt | tee -a build-lt.log
+
+      - name: Zip
+        run: |
+          cd lt-out && zip -qry ../libtorrent-ios-arm64.zip . && cd ..
+          ls -la libtorrent-ios-arm64.zip | tee -a build-lt.log
+
+      - name: Publish build log back to repo
+        if: always()
+        run: |
+          mkdir -p _ci
+          if [ -f build-lt.log ]; then
+            { head -c 150000 build-lt.log; echo; echo "=== (中间省略) ==="; echo; tail -c 150000 build-lt.log; } > _ci/build-lt.log
+          else
+            echo "no build-lt.log generated" > _ci/build-lt.log
+          fi
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add -f _ci/
+          git commit -m "ci: libtorrent build log for run ${{ github.run_number }} [skip ci]" || echo "nothing to commit"
+          git pull --rebase --autostash || true
+          git push || echo "push failed"
+
+      - name: Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtorrent-ios-arm64
+          path: libtorrent-ios-arm64.zip
+          if-no-files-found: error
+
+      - name: Attach to release (fixed tag, App 构建从这里取)
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.REL_TAG }}
+          name: libtorrent iOS 预编译（App 构建用）
+          body: |
+            libtorrent ${{ env.LT_VERSION }} + 自研桥接层（BSD-3-Clause 授权）。
+            切片：arm64-iphoneos，最低 iOS ${{ env.IOS_MIN }}。
+            由 build-libtorrent-ios 工作流产出，run #${{ github.run_number }}。
+            App 构建时下载这个包，取 include/ 与 lib/libvideoGrabLT.a。
+          files: libtorrent-ios-arm64.zip
