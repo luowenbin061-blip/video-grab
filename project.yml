@@ -154,6 +154,11 @@ targets:
       #   归一化 / 子域命中 / "跨站"判据这三件事，错一条的后果都是"该弹的不弹、不该弹的狂弹"，
       #   或者"加 a.com 把 nota.com 也免了"。这种必须跑起来才算数。
       - path: app/SiteRules.swift
+      # ★ v1.0.244：B站解析（纯逻辑，只 Foundation + CryptoKit）——
+      #   wbi 签名那几个数字是拿 JS 参考实现**对拍**出来的标准答案，
+      #   "中文怎么编码""!'()* 该不该滤"这类光看代码看不出对错，必须跑。
+      #   注意：这个文件必须保持自包含，import 了 UIKit 这里就编译不过。
+      - path: app/BiliParse.swift
       - path: VideoGrabTests
     settings:
       base:

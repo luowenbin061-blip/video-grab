@@ -92,16 +92,29 @@ jobs:
       - name: Clone libtorrent ${{ env.LT_VERSION }}
         run: |
           set -e
+          # ★★ 必须带子模块：libtorrent 把 `deps/try_signal` 放在 git submodule 里，
+          #   不拉子模块 → CMake 会在 `add_library` 上报
+          #     Cannot find source file: deps/try_signal/try_signal.cpp
+          #     No SOURCES given to target: torrent-rasterbar
+          #   （第一版探针就栽在这儿，日志里那句"Configuring done"后面才报，很容易看漏）
           git clone --depth 1 --branch "${LT_VERSION}" \
+            --recurse-submodules \
             https://github.com/arvidn/libtorrent.git third_party/libtorrent
-          echo "-- libtorrent $(cat third_party/libtorrent/include/libtorrent/version.hpp | grep -m1 'LIBTORRENT_VERSION_NUM')" | tee -a build-lt.log
+          echo "-- 子模块:" | tee -a build-lt.log
+          ls third_party/libtorrent/deps/ | tee -a build-lt.log
+          test -f third_party/libtorrent/deps/try_signal/try_signal.cpp
+          echo "-- libtorrent $(grep -m1 'LIBTORRENT_VERSION_NUM' third_party/libtorrent/include/libtorrent/version.hpp)" | tee -a build-lt.log
 
       # ── 配 CMake（iOS 真机 arm64 静态库） ────────────────────────────
       # 第一步只出 arm64 真机切片：真机是 arm64、TrollStore 免签，
       # 不需要模拟器切片，也不需要签名。
       - name: Configure (iOS arm64, static)
         run: |
-          set -e
+          # ★★ 必须开 pipefail：这一行是拿第一版探针的教训换来的 ——
+          #   `cmake ... | tee` 时管道的退出码是 `tee` 的，cmake 失败会被**静默吞掉**，
+          #   步骤显示 ✓，下一步 ninja 才报 "loading 'build.ninja': No such file or directory"，
+          #   把真正的原因（CMake 的报错）埋在后面。
+          set -eo pipefail
           SRC="$PWD/third_party/libtorrent"
           BOOST="$PWD/third_party/${BOOST_DIRNAME}"
           ENC="${{ github.event.inputs.encryption || '0' }}"
