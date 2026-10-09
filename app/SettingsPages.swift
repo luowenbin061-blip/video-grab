@@ -69,6 +69,8 @@ struct SettingsWebPage: View {
     @AppStorage("sniffButtonResident") private var sniffResident = false
     @AppStorage("lpLongPressDownload") private var lpDownload = true
     @AppStorage("lpDebug") private var lpDebug = false
+    /// ★ v1.0.255：拦截网页跳转其他 App（默认开 —— 用户实测 B站 登录会被它打断）
+    @AppStorage("vgBlockExternalApp") private var blockExternal = true
     @AppStorage("desktopUA") private var desktopUA = false
     @AppStorage("noImageMode") private var noImage = false
     /// ★ v1.0.230：网页媒体自动播放（四档）。这里读它只是为了让**从二级页改完回来这一行能刷新**。
@@ -139,6 +141,14 @@ struct SettingsWebPage: View {
                     set: { on in if on != noImage { model.toggleNoImage() } }))
             } footer: {
                 Text("桌面版：让网站按电脑版加载（有些站桌面版功能更全）。\n无图模式：图片不下载，省流量。")
+            }
+
+            // ★ v1.0.255：网页跳转站外 App 的拦截（用户实测 B站 登录页会被拉起 B站 App）。
+            Section {
+                Toggle("拦截网页跳转其他 App", isOn: $blockExternal)
+            } footer: {
+                Text("开启后，网页想打开站外 App（比如 B站 登录页要唤起 B站 App）时会留在网页里，"
+                     + "不会再被带走。哪个站你想放它跳，就来这里关掉这一项。")
             }
 
             Section {

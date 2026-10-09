@@ -177,6 +177,25 @@ final class BrowserModel: NSObject, ObservableObject {
     private var lpDebugOn: Bool {
         (UserDefaults.standard.object(forKey: "lpDebug") as? Bool) ?? false
     }
+
+    /// ★ v1.0.255：设置里的「拦截网页跳转其他 App」（默认**开**）。
+    ///   用户实测：B站 登录页会被 `bilibili://` 这类 App 专属链接拉去 B站 App，
+    ///   登录一直做不完 —— 所以默认拦，想放开去设置里关。
+    ///   ★ `nonisolated static`：navigation delegate 是 nonisolated 的，得够得着
+    ///   （@MainActor 类的成员默认被隔离 —— 这个工程栽过，别省 nonisolated）。
+    ///   ★ 走 `object(forKey:) as? Bool ?? 默认值`（bool(forKey:) 对没写过的 key 返回
+    ///   false，会把"默认开"的开关变为默认关 —— 上面 lpDownloadOn 同样的坑）。
+    nonisolated static func blockExternalAppOn() -> Bool {
+        (UserDefaults.standard.object(forKey: "vgBlockExternalApp") as? Bool) ?? true
+    }
+
+    /// ★ v1.0.255：这个 scheme 是"网页自己能加载的"吗？
+    ///   白名单之外（`bilibili://` / `taobao://` / `itms-apps://` …）一律算"跳站外 App"。
+    ///   （iOS 上网页能"跳出浏览器"的通道只有这种非 http(s) 链接 —— 普通 https 在
+    ///   App 内浏览器里不会跳，那要走系统 Safari 的 universal link，这儿碰不到。）
+    nonisolated static func isWebScheme(_ s: String) -> Bool {
+        ["http", "https", "about", "data", "blob", "file", "applewebdata"].contains(s)
+    }
     /// 设置里的「后台自动嗅探」（★ v1.0.104 起默认**关**）。
     ///
     /// 关着的时候：页面不会每 3 秒自己扫、也不会自动把结果推上来 ——
@@ -2386,6 +2405,23 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             }
             return
         }
+        // ★★ v1.0.255：**网页跳转站外 App 的拦截**（用户实测：B站 登录页被
+        //   `bilibili://` 这类 App 专属链接拉去 B站 App，登录一直做不完）。
+        //   白名单之外的 scheme 一律拦下（「设置 → 网页 → 拦截网页跳转其他 App」可放开）。
+        //   ★ 不挑 frame：子框架里的合法导航全是白名单里的，被拦的只有"跳 App"性质的。
+        if Self.blockExternalAppOn(),
+           let u = action.request.url, let sc = u.scheme?.lowercased(),
+           !Self.isWebScheme(sc) {
+            decisionHandler(.cancel)
+            // 用户主动点「打开 App」→ 给一句轻提示（知道为什么没动静）；
+            // 页面自己跳的（登录页那种自动唤起）→ 静默拦，不打扰。
+            if action.navigationType == .linkActivated {
+                Task { @MainActor in
+                    self.showToast("已拦截跳转到站外 App（不想拦可去设置里关）")
+                }
+            }
+            return
+        }
         // ★★ v1.0.238：**这里不再问"链接怎么打开"**。
         //   原来（v1.0.236）是"手点跨站链接 → 弹在本页/新标签"，用户实测后判定
         //   **不是他要的东西** —— 他要的是「**网页自己开弹窗**」时那个菜单
@@ -2935,6 +2971,12 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
             Task { @MainActor in
                 self.showBlocked(wv, url: url, rule: BlockList.hit(url.host ?? "") ?? "")
             }
+            return nil
+        }
+        // ★ v1.0.255：`window.open("bilibili://…")` 这种也不许跳站外 App。
+        //   静默拦 —— 这条路的"手点还是自动"判不出（v1.0.238~240 的老教训），
+        //   不弹提示免得刷屏；开关关掉时保持旧行为（落下去弹菜单）。
+        if Self.blockExternalAppOn(), let sc = url.scheme?.lowercased(), !Self.isWebScheme(sc) {
             return nil
         }
         // ★ v1.0.112：这个"新窗口"其实是要下文件 → 不开标签，直接交给下载器。
