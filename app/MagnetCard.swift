@@ -23,6 +23,8 @@ struct MagnetCard: View {
         let id = UUID()
         let url: URL
         let title: String
+        /// 文件在种子里的下标（拼播放进度的 key 用）。
+        let fileIndex: Int
     }
 
     private var files: [MagnetStatus.File] { engine.snap.files }
@@ -75,7 +77,9 @@ struct MagnetCard: View {
         }
         // ★ v1.0.250：边下边播
         .sheet(item: $playItem) { t in
-            PlayerSheet(url: t.url, title: t.title, pip: nil, key: "torrent-stream")
+            // key 带上"任务+文件下标"——播放进度是按键记的，用固定串会让不同文件互相串
+            PlayerSheet(url: t.url, title: t.title, pip: nil,
+                        key: "torrent-\(engine.streamTag)-\(t.fileIndex)")
         }
     }
 
@@ -297,6 +301,6 @@ struct MagnetCard: View {
         let ext = (f.path as NSString).pathExtension
         guard let u = LocalHTTPServer.shared
             .url("__torrent/\(engine.streamTag)/\(f.index).\(ext)") else { return }
-        playItem = PlayTarget(url: u, title: f.name)
+        playItem = PlayTarget(url: u, title: f.name, fileIndex: f.index)
     }
 }
