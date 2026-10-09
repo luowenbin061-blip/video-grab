@@ -91,7 +91,7 @@ This warning is for project developers.  Use -Wno-dev to suppress it.
  * LibGcrypt, A general purpose cryptographic library, <https://www.gnupg.org/software/libgcrypt/index.html>
    Use GCrypt instead of the built-in functions for RC4 and SHA1
 
--- Configuring done (4.8s)
+-- Configuring done (8.1s)
 -- Generating done (0.0s)
 -- Build files have been written to: /Users/runner/work/video-grab/video-grab/build-lt
 -- cmake configure done
@@ -722,8 +722,8 @@ flag_default_flags
 [17/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/directory.cpp.o
 [18/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/choker.cpp.o
 [19/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_buffer_holder.cpp.o
-[20/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/bt_peer_connection.cpp.o
-[21/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disabled_disk_io.cpp.o
+[20/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disabled_disk_io.cpp.o
+[21/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/bt_peer_connection.cpp.o
 [22/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_buffer_pool.cpp.o
 [23/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_interface.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/disk_interface.cpp:38:44: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
@@ -786,12 +786,12 @@ constexpr disk_job_flags_t disk_interface::flush_piece;
 [28/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_io_thread_pool.cpp.o
 [29/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/error_code.cpp.o
 [30/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/entry.cpp.o
-[31/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ffs.cpp.o
-[32/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/escape_string.cpp.o
+[31/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/escape_string.cpp.o
+[32/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ffs.cpp.o
 [33/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file.cpp.o
-[34/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_progress.cpp.o
-[35/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/enum_net.cpp.o
-[36/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/fingerprint.cpp.o
+[34/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/enum_net.cpp.o
+[35/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/fingerprint.cpp.o
+[36/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_progress.cpp.o
 [37/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_storage.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/file_storage.cpp:68:39: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr file_flags_t file_storage::flag_pad_file;
@@ -824,30 +824,30 @@ constexpr aux::path_index_t aux::file_entry::no_path;
 constexpr aux::path_index_t aux::file_entry::path_is_absolute;
                                              ^
 10 warnings generated.
-[38/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/gzip.cpp.o
-[39/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/generate_peer_id.cpp.o
-[40/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_view_pool.cpp.o
+[38/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/generate_peer_id.cpp.o
+[39/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_view_pool.cpp.o
+[40/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/gzip.cpp.o
 [41/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/hex.cpp.o
 [42/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/hasher.cpp.o
 [43/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_parser.cpp.o
 [44/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/hash_picker.cpp.o
-[45/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/i2p_stream.cpp.o
-[46/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_seed_connection.cpp.o
+[45/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_seed_connection.cpp.o
+[46/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/i2p_stream.cpp.o
 [47/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_tracker_connection.cpp.o
 [48/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/identify_client.cpp.o
-[49/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_helpers.cpp.o
-[50/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_filter.cpp.o
+[49/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_filter.cpp.o
+[50/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_helpers.cpp.o
 [51/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/instantiate_connection.cpp.o
 [52/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_notifier.cpp.o
 [53/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_voter.cpp.o
 [54/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/load_torrent.cpp.o
 [55/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/listen_socket_handle.cpp.o
 [56/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/merkle.cpp.o
-[57/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/magnet_uri.cpp.o
-[58/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/lsd.cpp.o
-[59/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_connection.cpp.o
-[60/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/merkle_tree.cpp.o
-[61/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap.cpp.o
+[57/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_connection.cpp.o
+[58/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/magnet_uri.cpp.o
+[59/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/lsd.cpp.o
+[60/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap.cpp.o
+[61/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/merkle_tree.cpp.o
 [62/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_disk_job.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/mmap_disk_job.cpp:119:44: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr disk_job_flags_t mmap_disk_job::fence;
@@ -861,13 +861,14 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
 3 warnings generated.
 [63/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/packet_buffer.cpp.o
 [64/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/parse_url.cpp.o
-[65/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_disk_io.cpp.o
-[66/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/natpmp.cpp.o
+[65/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/natpmp.cpp.o
+[66/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_disk_io.cpp.o
 [67/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/part_file.cpp.o
-[68/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_storage.cpp.o
-[69/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class_set.cpp.o
+[68/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class_set.cpp.o
+[69/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_storage.cpp.o
 [70/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/path.cpp.o
-[71/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_info.cpp.o
+[71/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class.cpp.o
+[72/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_info.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/peer_info.cpp:44:36: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr peer_flags_t peer_info::interesting;
                                           ^
@@ -980,7 +981,6 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
         constexpr connection_type_t peer_info::http_seed;
                                                ^
 37 warnings generated.
-[72/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class.cpp.o
 [73/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/performance_counters.cpp.o
 [74/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_connection_handle.cpp.o
 [75/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/platform_util.cpp.o
@@ -1049,8 +1049,7 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
 [85/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/receive_buffer.cpp.o
 [86/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/read_resume_data.cpp.o
 [87/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/resolve_links.cpp.o
-[88/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/request_blocks.cpp.o
-[89/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_connection.cpp.o
+[88/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_connection.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/peer_connection.cpp:101:45: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr request_flags_t peer_connection::time_critical;
                                                    ^
@@ -1070,6 +1069,7 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
         constexpr disconnect_severity_t peer_connection_interface::peer_error;
                                                                    ^
 6 warnings generated.
+[89/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/request_blocks.cpp.o
 [90/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/resolver.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/resolver.cpp:42:47: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr resolver_flags resolver_interface::cache_only;
@@ -1206,14 +1206,14 @@ constexpr add_peer_flags_t torrent_plugin::filtered;
                                                          ^
 22 warnings generated.
 [98/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/sha256.cpp.o
-[99/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/settings_pack.cpp.o
-[100/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/sha1_hash.cpp.o
+[99/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/sha1_hash.cpp.o
+[100/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/settings_pack.cpp.o
 [101/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socket_io.cpp.o
 [102/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ssl.cpp.o
-[103/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socks5_stream.cpp.o
-[104/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stat.cpp.o
-[105/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stack_allocator.cpp.o
-[106/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socket_type.cpp.o
+[103/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socket_type.cpp.o
+[104/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stack_allocator.cpp.o
+[105/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socks5_stream.cpp.o
+[106/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stat.cpp.o
 [107/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stat_cache.cpp.o
 [108/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/string_util.cpp.o
 [109/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/time.cpp.o
@@ -1379,8 +1379,7 @@ constexpr udp_send_flags_t udp_socket::dont_fragment;
 [125/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/utp_stream.cpp.o
 [126/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/upnp.cpp.o
 [127/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/web_connection_base.cpp.o
-[128/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/xml_parse.cpp.o
-[129/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/torrent.cpp.o
+[128/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/torrent.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/torrent.cpp:152:37: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr web_seed_flag_t torrent::ephemeral;
                                            ^
@@ -1388,6 +1387,7 @@ constexpr udp_send_flags_t udp_socket::dont_fragment;
         constexpr web_seed_flag_t torrent::no_local_ips;
                                            ^
 2 warnings generated.
+[129/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/xml_parse.cpp.o
 [130/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/write_resume_data.cpp.o
 [131/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/web_peer_connection.cpp.o
 [132/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/deps/try_signal/try_signal.cpp.o
@@ -1462,7 +1462,7 @@ constexpr traversal_flags_t traversal_algorithm::short_timeout;
 [168/168] Linking CXX static library libtorrent-rasterbar.a
 === 产物 ===
 ./libtorrent-rasterbar.a
-vendor/ltbridge/ltbridge.cpp:131:17: warning: 'status' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:148:17: warning: 'status' is deprecated [-Wdeprecated-declarations]
     if (e->ses->status().dht_nodes <= 0) return;
                 ^
 third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'status' has been explicitly marked deprecated here
@@ -1471,7 +1471,7 @@ third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'statu
 third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:37:31: note: expanded from macro 'TORRENT_DEPRECATED'
 # define TORRENT_DEPRECATED [[deprecated]]
                               ^
-vendor/ltbridge/ltbridge.cpp:522:43: warning: 'status' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:598:43: warning: 'status' is deprecated [-Wdeprecated-declarations]
     const int dhtNodes = e->ses ? e->ses->status().dht_nodes : 0;
                                           ^
 third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'status' has been explicitly marked deprecated here
@@ -1480,7 +1480,7 @@ third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'statu
 third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:37:31: note: expanded from macro 'TORRENT_DEPRECATED'
 # define TORRENT_DEPRECATED [[deprecated]]
                               ^
-vendor/ltbridge/ltbridge.cpp:552:34: warning: 'queued_for_checking' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:628:34: warning: 'queued_for_checking' is deprecated [-Wdeprecated-declarations]
         case lt::torrent_status::queued_for_checking:
                                  ^
 third_party/libtorrent/include/libtorrent/torrent_status.hpp:90:24: note: 'queued_for_checking' has been explicitly marked deprecated here
@@ -1489,7 +1489,7 @@ third_party/libtorrent/include/libtorrent/torrent_status.hpp:90:24: note: 'queue
 third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:48:51: note: expanded from macro 'TORRENT_DEPRECATED_ENUM'
 #  define TORRENT_DEPRECATED_ENUM __attribute__ ((deprecated))
                                                   ^
-vendor/ltbridge/ltbridge.cpp:555:34: warning: 'allocating' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:631:34: warning: 'allocating' is deprecated [-Wdeprecated-declarations]
         case lt::torrent_status::allocating:
                                  ^
 third_party/libtorrent/include/libtorrent/torrent_status.hpp:123:15: note: 'allocating' has been explicitly marked deprecated here
@@ -1501,10 +1501,10 @@ third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:48:51: note: expan
 4 warnings generated.
 -- bridge compiled OK
 libtorrent archive: build-lt/libtorrent-rasterbar.a
-total 27552
-drwxr-xr-x  3 runner  staff        96 Oct  9 07:51 .
-drwxr-xr-x  3 runner  staff        96 Oct  9 07:51 ..
--rw-r--r--  1 runner  staff  14103344 Oct  9 07:51 libvideoGrabLT.a
+total 27560
+drwxr-xr-x  3 runner  staff        96 Oct  9 10:16 .
+drwxr-xr-x  3 runner  staff        96 Oct  9 10:16 ..
+-rw-r--r--  1 runner  staff  14106888 Oct  9 10:16 libvideoGrabLT.a
 -- 里面的目标文件数:
      169
 175M	lt-out/include
@@ -1512,8 +1512,8 @@ libtorrent v2.0.10
 boost 1.84.0 (headers only)
 slice arm64-iphoneos, min iOS 15.0
 encryption=1
-built run #12
--rw-r--r--  1 runner  staff  30530984 Oct  9 07:51 libtorrent-ios-arm64.zip
+built run #14
+-rw-r--r--  1 runner  staff  30532099 Oct  9 10:16 libtorrent-ios-arm64.zip
 
 === (中间省略) ===
 
@@ -1610,7 +1610,7 @@ This warning is for project developers.  Use -Wno-dev to suppress it.
  * LibGcrypt, A general purpose cryptographic library, <https://www.gnupg.org/software/libgcrypt/index.html>
    Use GCrypt instead of the built-in functions for RC4 and SHA1
 
--- Configuring done (4.8s)
+-- Configuring done (8.1s)
 -- Generating done (0.0s)
 -- Build files have been written to: /Users/runner/work/video-grab/video-grab/build-lt
 -- cmake configure done
@@ -2241,8 +2241,8 @@ flag_default_flags
 [17/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/directory.cpp.o
 [18/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/choker.cpp.o
 [19/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_buffer_holder.cpp.o
-[20/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/bt_peer_connection.cpp.o
-[21/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disabled_disk_io.cpp.o
+[20/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disabled_disk_io.cpp.o
+[21/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/bt_peer_connection.cpp.o
 [22/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_buffer_pool.cpp.o
 [23/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_interface.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/disk_interface.cpp:38:44: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
@@ -2305,12 +2305,12 @@ constexpr disk_job_flags_t disk_interface::flush_piece;
 [28/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/disk_io_thread_pool.cpp.o
 [29/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/error_code.cpp.o
 [30/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/entry.cpp.o
-[31/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ffs.cpp.o
-[32/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/escape_string.cpp.o
+[31/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/escape_string.cpp.o
+[32/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ffs.cpp.o
 [33/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file.cpp.o
-[34/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_progress.cpp.o
-[35/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/enum_net.cpp.o
-[36/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/fingerprint.cpp.o
+[34/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/enum_net.cpp.o
+[35/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/fingerprint.cpp.o
+[36/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_progress.cpp.o
 [37/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_storage.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/file_storage.cpp:68:39: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr file_flags_t file_storage::flag_pad_file;
@@ -2343,30 +2343,30 @@ constexpr aux::path_index_t aux::file_entry::no_path;
 constexpr aux::path_index_t aux::file_entry::path_is_absolute;
                                              ^
 10 warnings generated.
-[38/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/gzip.cpp.o
-[39/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/generate_peer_id.cpp.o
-[40/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_view_pool.cpp.o
+[38/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/generate_peer_id.cpp.o
+[39/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/file_view_pool.cpp.o
+[40/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/gzip.cpp.o
 [41/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/hex.cpp.o
 [42/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/hasher.cpp.o
 [43/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_parser.cpp.o
 [44/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/hash_picker.cpp.o
-[45/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/i2p_stream.cpp.o
-[46/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_seed_connection.cpp.o
+[45/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_seed_connection.cpp.o
+[46/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/i2p_stream.cpp.o
 [47/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_tracker_connection.cpp.o
 [48/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/identify_client.cpp.o
-[49/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_helpers.cpp.o
-[50/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_filter.cpp.o
+[49/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_filter.cpp.o
+[50/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_helpers.cpp.o
 [51/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/instantiate_connection.cpp.o
 [52/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_notifier.cpp.o
 [53/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ip_voter.cpp.o
 [54/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/load_torrent.cpp.o
 [55/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/listen_socket_handle.cpp.o
 [56/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/merkle.cpp.o
-[57/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/magnet_uri.cpp.o
-[58/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/lsd.cpp.o
-[59/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_connection.cpp.o
-[60/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/merkle_tree.cpp.o
-[61/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap.cpp.o
+[57/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/http_connection.cpp.o
+[58/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/magnet_uri.cpp.o
+[59/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/lsd.cpp.o
+[60/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap.cpp.o
+[61/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/merkle_tree.cpp.o
 [62/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_disk_job.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/mmap_disk_job.cpp:119:44: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr disk_job_flags_t mmap_disk_job::fence;
@@ -2380,13 +2380,14 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
 3 warnings generated.
 [63/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/packet_buffer.cpp.o
 [64/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/parse_url.cpp.o
-[65/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_disk_io.cpp.o
-[66/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/natpmp.cpp.o
+[65/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/natpmp.cpp.o
+[66/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_disk_io.cpp.o
 [67/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/part_file.cpp.o
-[68/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_storage.cpp.o
-[69/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class_set.cpp.o
+[68/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class_set.cpp.o
+[69/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/mmap_storage.cpp.o
 [70/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/path.cpp.o
-[71/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_info.cpp.o
+[71/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class.cpp.o
+[72/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_info.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/peer_info.cpp:44:36: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr peer_flags_t peer_info::interesting;
                                           ^
@@ -2499,7 +2500,6 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
         constexpr connection_type_t peer_info::http_seed;
                                                ^
 37 warnings generated.
-[72/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_class.cpp.o
 [73/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/performance_counters.cpp.o
 [74/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_connection_handle.cpp.o
 [75/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/platform_util.cpp.o
@@ -2568,8 +2568,7 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
 [85/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/receive_buffer.cpp.o
 [86/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/read_resume_data.cpp.o
 [87/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/resolve_links.cpp.o
-[88/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/request_blocks.cpp.o
-[89/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_connection.cpp.o
+[88/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/peer_connection.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/peer_connection.cpp:101:45: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr request_flags_t peer_connection::time_critical;
                                                    ^
@@ -2589,6 +2588,7 @@ constexpr aux::path_index_t aux::file_entry::path_is_absolute;
         constexpr disconnect_severity_t peer_connection_interface::peer_error;
                                                                    ^
 6 warnings generated.
+[89/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/request_blocks.cpp.o
 [90/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/resolver.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/resolver.cpp:42:47: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr resolver_flags resolver_interface::cache_only;
@@ -2725,14 +2725,14 @@ constexpr add_peer_flags_t torrent_plugin::filtered;
                                                          ^
 22 warnings generated.
 [98/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/sha256.cpp.o
-[99/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/settings_pack.cpp.o
-[100/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/sha1_hash.cpp.o
+[99/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/sha1_hash.cpp.o
+[100/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/settings_pack.cpp.o
 [101/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socket_io.cpp.o
 [102/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/ssl.cpp.o
-[103/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socks5_stream.cpp.o
-[104/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stat.cpp.o
-[105/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stack_allocator.cpp.o
-[106/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socket_type.cpp.o
+[103/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socket_type.cpp.o
+[104/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stack_allocator.cpp.o
+[105/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/socks5_stream.cpp.o
+[106/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stat.cpp.o
 [107/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/stat_cache.cpp.o
 [108/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/string_util.cpp.o
 [109/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/time.cpp.o
@@ -2898,8 +2898,7 @@ constexpr udp_send_flags_t udp_socket::dont_fragment;
 [125/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/utp_stream.cpp.o
 [126/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/upnp.cpp.o
 [127/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/web_connection_base.cpp.o
-[128/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/xml_parse.cpp.o
-[129/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/torrent.cpp.o
+[128/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/torrent.cpp.o
 /Users/runner/work/video-grab/video-grab/third_party/libtorrent/src/torrent.cpp:152:37: warning: out-of-line definition of constexpr static data member is redundant in C++17 and is deprecated [-Wdeprecated]
         constexpr web_seed_flag_t torrent::ephemeral;
                                            ^
@@ -2907,6 +2906,7 @@ constexpr udp_send_flags_t udp_socket::dont_fragment;
         constexpr web_seed_flag_t torrent::no_local_ips;
                                            ^
 2 warnings generated.
+[129/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/xml_parse.cpp.o
 [130/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/write_resume_data.cpp.o
 [131/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/src/web_peer_connection.cpp.o
 [132/168] Building CXX object CMakeFiles/torrent-rasterbar.dir/deps/try_signal/try_signal.cpp.o
@@ -2981,7 +2981,7 @@ constexpr traversal_flags_t traversal_algorithm::short_timeout;
 [168/168] Linking CXX static library libtorrent-rasterbar.a
 === 产物 ===
 ./libtorrent-rasterbar.a
-vendor/ltbridge/ltbridge.cpp:131:17: warning: 'status' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:148:17: warning: 'status' is deprecated [-Wdeprecated-declarations]
     if (e->ses->status().dht_nodes <= 0) return;
                 ^
 third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'status' has been explicitly marked deprecated here
@@ -2990,7 +2990,7 @@ third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'statu
 third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:37:31: note: expanded from macro 'TORRENT_DEPRECATED'
 # define TORRENT_DEPRECATED [[deprecated]]
                               ^
-vendor/ltbridge/ltbridge.cpp:522:43: warning: 'status' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:598:43: warning: 'status' is deprecated [-Wdeprecated-declarations]
     const int dhtNodes = e->ses ? e->ses->status().dht_nodes : 0;
                                           ^
 third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'status' has been explicitly marked deprecated here
@@ -2999,7 +2999,7 @@ third_party/libtorrent/include/libtorrent/session_handle.hpp:365:3: note: 'statu
 third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:37:31: note: expanded from macro 'TORRENT_DEPRECATED'
 # define TORRENT_DEPRECATED [[deprecated]]
                               ^
-vendor/ltbridge/ltbridge.cpp:552:34: warning: 'queued_for_checking' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:628:34: warning: 'queued_for_checking' is deprecated [-Wdeprecated-declarations]
         case lt::torrent_status::queued_for_checking:
                                  ^
 third_party/libtorrent/include/libtorrent/torrent_status.hpp:90:24: note: 'queued_for_checking' has been explicitly marked deprecated here
@@ -3008,7 +3008,7 @@ third_party/libtorrent/include/libtorrent/torrent_status.hpp:90:24: note: 'queue
 third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:48:51: note: expanded from macro 'TORRENT_DEPRECATED_ENUM'
 #  define TORRENT_DEPRECATED_ENUM __attribute__ ((deprecated))
                                                   ^
-vendor/ltbridge/ltbridge.cpp:555:34: warning: 'allocating' is deprecated [-Wdeprecated-declarations]
+vendor/ltbridge/ltbridge.cpp:631:34: warning: 'allocating' is deprecated [-Wdeprecated-declarations]
         case lt::torrent_status::allocating:
                                  ^
 third_party/libtorrent/include/libtorrent/torrent_status.hpp:123:15: note: 'allocating' has been explicitly marked deprecated here
@@ -3020,10 +3020,10 @@ third_party/libtorrent/include/libtorrent/aux_/deprecated.hpp:48:51: note: expan
 4 warnings generated.
 -- bridge compiled OK
 libtorrent archive: build-lt/libtorrent-rasterbar.a
-total 27552
-drwxr-xr-x  3 runner  staff        96 Oct  9 07:51 .
-drwxr-xr-x  3 runner  staff        96 Oct  9 07:51 ..
--rw-r--r--  1 runner  staff  14103344 Oct  9 07:51 libvideoGrabLT.a
+total 27560
+drwxr-xr-x  3 runner  staff        96 Oct  9 10:16 .
+drwxr-xr-x  3 runner  staff        96 Oct  9 10:16 ..
+-rw-r--r--  1 runner  staff  14106888 Oct  9 10:16 libvideoGrabLT.a
 -- 里面的目标文件数:
      169
 175M	lt-out/include
@@ -3031,5 +3031,5 @@ libtorrent v2.0.10
 boost 1.84.0 (headers only)
 slice arm64-iphoneos, min iOS 15.0
 encryption=1
-built run #12
--rw-r--r--  1 runner  staff  30530984 Oct  9 07:51 libtorrent-ios-arm64.zip
+built run #14
+-rw-r--r--  1 runner  staff  30532099 Oct  9 10:16 libtorrent-ios-arm64.zip
