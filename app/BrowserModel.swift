@@ -196,6 +196,30 @@ final class BrowserModel: NSObject, ObservableObject {
     nonisolated static func isWebScheme(_ s: String) -> Bool {
         ["http", "https", "about", "data", "blob", "file", "applewebdata"].contains(s)
     }
+
+    /// ★ v1.0.256：普通导航的放行策略 —— 开着「拦截跳转站外 App」时用
+    ///   **"不尝试拉起 App 的放行"**。
+    ///
+    ///   治的是 **Universal Link 型跳转**：网页里的「打开App」按钮很多时候用的不是
+    ///   `xxx://`（白名单拦得到那种），而是**普通 https 链接** —— iOS 对"用户在
+    ///   网页里点它"的**官方行为就是直接拉开对应 App**（Apple App Search 文档写明）。
+    ///   这种"暗跳"只能在**放行策略**上治：返回 `allow + 2`，WebKit 就会"照常把
+    ///   网页加载出来、但**不把这次导航交给 App**"（微信封 Universal Link 用的
+    ///   就是这一招，线上跑了多年）。
+    ///
+    ///   `allow + 2` = WebKit 源码里的私有常量
+    ///   `_WKNavigationActionPolicyAllowWithoutTryingAppLink`
+    ///   （WebKit 主干 `WKNavigationDelegatePrivate.h`，iOS 9 起就是这个值；
+    ///   `NavigationState.mm` 里该分支会**跳过 `tryInterceptNavigation`** ——
+    ///   也就是跳过"把导航交给其他 App"那一步）。
+    ///   ★ `?? .allow` 兜底：万一将来取不到这个值（理论上不会），回落旧行为 ——
+    ///   宁退不崩，只是拦不住 UL。
+    nonisolated static func allowPolicy(blockApp: Bool) -> WKNavigationActionPolicy {
+        guard blockApp else { return .allow }
+        return WKNavigationActionPolicy(rawValue: WKNavigationActionPolicy.allow.rawValue + 2)
+            ?? .allow
+    }
+
     /// 设置里的「后台自动嗅探」（★ v1.0.104 起默认**关**）。
     ///
     /// 关着的时候：页面不会每 3 秒自己扫、也不会自动把结果推上来 ——
@@ -2429,7 +2453,12 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
         //   `createWebViewWith`（`target="_blank"` / `window.open`）。
         //   所以这里恢复成最朴素的行为：**放行**，页内正常跳转、不打扰。
         guard action.shouldPerformDownload else {
-            decisionHandler(.allow)
+            // ★ v1.0.256：普通放行走 `allowPolicy` —— 开着「拦截跳转站外 App」时
+            //   用"不尝试拉起 App 的放行"，把 **Universal Link 型"暗跳"**（普通
+            //   https 链接被 iOS 认成 App 链接）也拦住；开关关 = 旧行为（.allow）。
+            //   详见 `allowPolicy` 的注释。这是**所有非下载导航**的最后一道放行，
+            //   同页跳转 / 子框架 / 服务端 302 后的落地 / 我们自己 load() 都经过它。
+            decisionHandler(Self.allowPolicy(blockApp: Self.blockExternalAppOn()))
             return
         }
         let url = action.request.url

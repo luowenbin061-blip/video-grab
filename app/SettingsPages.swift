@@ -147,8 +147,8 @@ struct SettingsWebPage: View {
             Section {
                 Toggle("拦截网页跳转其他 App", isOn: $blockExternal)
             } footer: {
-                Text("开启后，网页想打开站外 App（比如 B站 登录页要唤起 B站 App）时会留在网页里，"
-                     + "不会再被带走。哪个站你想放它跳，就来这里关掉这一项。")
+                Text("开启后，网页想打开站外 App（比如 B站 登录页要唤起 B站 App，或页面里的「打开App」按钮）"
+                     + "时会留在网页里，不会再被带走。哪个站你想放它跳，就来这里关掉这一项。")
             }
 
             Section {
