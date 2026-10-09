@@ -248,8 +248,13 @@ enum BiliParse {
                let a = (dolby["audio"] as? [[String: Any]] ?? []).compactMap(stream(from:)).first {
                 audios.append(a)
             }
+            // ★ 这两个的形状**不一样**（照平台实际响应写的，别想当然）：
+            //   · `dash.dolby.audio` 是**数组**
+            //   · `dash.flac.audio`  是**单个对象**
+            //   写成一样的话，`?? []` 会把类型推成字典、直接编译不过（run #244 就栽在这）。
             if let flac = dash["flac"] as? [String: Any],
-               let a = (flac["audio"] as? [String: Any] ?? []).compactMap(stream(from:)).first {
+               let fa = flac["audio"] as? [String: Any],
+               let a = stream(from: fa) {
                 audios.append(a)
             }
             return (best, pickAudio(audios))
