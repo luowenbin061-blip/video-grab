@@ -1,0 +1,219 @@
+=== xcodebuild ===
+Xcode 15.4
+Build version 15F31d
+=== runner arch ===
+arm64
+=== encryption input ===
+encryption=0
+=== cmake version ===
+cmake version 3.31.6
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+1.13.2
+-- downloading boost 1.84.0
+-- boost headers ready: /Users/runner/work/video-grab/video-grab/third_party/boost_1_84_0
+888M	boost_1_84_0
+-- libtorrent #define LIBTORRENT_VERSION_NUM ((LIBTORRENT_VERSION_MAJOR * 10000) + (LIBTORRENT_VERSION_MINOR * 100) + LIBTORRENT_VERSION_TINY)
+-- The C compiler identification is AppleClang 15.0.0.15000309
+-- The CXX compiler identification is AppleClang 15.0.0.15000309
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test HAVE_CXX_ATOMICS_WITHOUT_LIB
+-- Performing Test HAVE_CXX_ATOMICS_WITHOUT_LIB - Success
+-- Performing Test HAVE_CXX_ATOMICS8_WITHOUT_LIB
+-- Performing Test HAVE_CXX_ATOMICS8_WITHOUT_LIB - Success
+-- Performing Test HAVE_CXX_ATOMICS64_WITHOUT_LIB
+-- Performing Test HAVE_CXX_ATOMICS64_WITHOUT_LIB - Success
+-- Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the system variable OPENSSL_ROOT_DIR (missing: OPENSSL_CRYPTO_LIBRARY OPENSSL_INCLUDE_DIR) 
+-- Could NOT find GnuTLS (missing: GNUTLS_LIBRARY GNUTLS_INCLUDE_DIR) (found version "3.8.13")
+-- Could NOT find LibGcrypt (missing: LibGcrypt_INCLUDE_DIRS LibGcrypt_LIBRARIES) 
+-- Warning: Property DESCRIPTION for package LibGcrypt already set to "General purpose crypto library based on the code used in GnuPG.", overriding it with "A general purpose cryptographic library"
+-- Warning: Property URL already set to "http://directory.fsf.org/wiki/Libgcrypt", overriding it with "https://www.gnupg.org/software/libgcrypt/index.html"
+CMake Warning (dev) at cmake/Modules/LibtorrentMacros.cmake:43 (find_package):
+  Policy CMP0167 is not set: The FindBoost module is removed.  Run "cmake
+  --help-policy CMP0167" for policy details.  Use the cmake_policy command to
+  set the policy and suppress this warning.
+
+Call Stack (most recent call first):
+  CMakeLists.txt:812 (find_public_dependency)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Found Boost: /Users/runner/work/video-grab/video-grab/third_party/boost_1_84_0 (found version "1.84.0")
+-- The following features have been enabled:
+
+ * dht, enable support for Mainline DHT
+ * deprecated-functions, enable deprecated functions for backwards compatibility
+ * exceptions, build with exception support
+ * extensions, Enables protocol extensions
+ * i2p, build with I2P support
+ * logging, build with logging
+ * mutable-torrents, Enables mutable torrent support
+ * streaming, Enables support for piece deadline
+
+-- The following REQUIRED packages have been found:
+
+ * Threads
+ * Boost
+
+-- The following features have been disabled:
+
+ * BUILD_SHARED_LIBS, build libtorrent as a shared library
+ * static_runtime, build libtorrent with static runtime
+ * build_tests, build tests
+ * build_examples, build examples
+ * build_tools, build tools
+ * python-bindings, build python bindings
+ * python-egg-info, generate python egg info
+ * python-install-system-dir, Install python bindings to the system installation directory rather than the CMake installation prefix
+ * encryption, Enables encryption in libtorrent
+ * gnutls, build using GnuTLS instead of OpenSSL
+
+-- The following RECOMMENDED packages have not been found:
+
+ * OpenSSL, Full-strength general purpose cryptography library, <https://www.openssl.org/>
+   Provides HTTPS support to libtorrent
+ * GnuTLS, GnuTLS is a free software implementation of the TLS and DTLS protocols, <https://www.gnutls.org/>
+   Provides HTTPS support to libtorrent
+ * LibGcrypt, A general purpose cryptographic library, <https://www.gnupg.org/software/libgcrypt/index.html>
+   Use GCrypt instead of the built-in functions for RC4 and SHA1
+
+-- Configuring done (6.4s)
+CMake Error at CMakeLists.txt:548 (add_library):
+  Cannot find source file:
+
+    deps/try_signal/try_signal.cpp
+
+  Tried extensions .c .C .c++ .cc .cpp .cxx .cu .mpp .m .M .mm .ixx .cppm
+  .ccm .cxxm .c++m .h .hh .h++ .hm .hpp .hxx .in .txx .f .F .for .f77 .f90
+  .f95 .f03 .hip .ispc
+
+
+CMake Error at CMakeLists.txt:548 (add_library):
+  No SOURCES given to target: torrent-rasterbar
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
+-- cmake configure done
+ninja: error: loading 'build.ninja': No such file or directory
+
+=== (中间省略) ===
+
+=== xcodebuild ===
+Xcode 15.4
+Build version 15F31d
+=== runner arch ===
+arm64
+=== encryption input ===
+encryption=0
+=== cmake version ===
+cmake version 3.31.6
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+1.13.2
+-- downloading boost 1.84.0
+-- boost headers ready: /Users/runner/work/video-grab/video-grab/third_party/boost_1_84_0
+888M	boost_1_84_0
+-- libtorrent #define LIBTORRENT_VERSION_NUM ((LIBTORRENT_VERSION_MAJOR * 10000) + (LIBTORRENT_VERSION_MINOR * 100) + LIBTORRENT_VERSION_TINY)
+-- The C compiler identification is AppleClang 15.0.0.15000309
+-- The CXX compiler identification is AppleClang 15.0.0.15000309
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test HAVE_CXX_ATOMICS_WITHOUT_LIB
+-- Performing Test HAVE_CXX_ATOMICS_WITHOUT_LIB - Success
+-- Performing Test HAVE_CXX_ATOMICS8_WITHOUT_LIB
+-- Performing Test HAVE_CXX_ATOMICS8_WITHOUT_LIB - Success
+-- Performing Test HAVE_CXX_ATOMICS64_WITHOUT_LIB
+-- Performing Test HAVE_CXX_ATOMICS64_WITHOUT_LIB - Success
+-- Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the system variable OPENSSL_ROOT_DIR (missing: OPENSSL_CRYPTO_LIBRARY OPENSSL_INCLUDE_DIR) 
+-- Could NOT find GnuTLS (missing: GNUTLS_LIBRARY GNUTLS_INCLUDE_DIR) (found version "3.8.13")
+-- Could NOT find LibGcrypt (missing: LibGcrypt_INCLUDE_DIRS LibGcrypt_LIBRARIES) 
+-- Warning: Property DESCRIPTION for package LibGcrypt already set to "General purpose crypto library based on the code used in GnuPG.", overriding it with "A general purpose cryptographic library"
+-- Warning: Property URL already set to "http://directory.fsf.org/wiki/Libgcrypt", overriding it with "https://www.gnupg.org/software/libgcrypt/index.html"
+CMake Warning (dev) at cmake/Modules/LibtorrentMacros.cmake:43 (find_package):
+  Policy CMP0167 is not set: The FindBoost module is removed.  Run "cmake
+  --help-policy CMP0167" for policy details.  Use the cmake_policy command to
+  set the policy and suppress this warning.
+
+Call Stack (most recent call first):
+  CMakeLists.txt:812 (find_public_dependency)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Found Boost: /Users/runner/work/video-grab/video-grab/third_party/boost_1_84_0 (found version "1.84.0")
+-- The following features have been enabled:
+
+ * dht, enable support for Mainline DHT
+ * deprecated-functions, enable deprecated functions for backwards compatibility
+ * exceptions, build with exception support
+ * extensions, Enables protocol extensions
+ * i2p, build with I2P support
+ * logging, build with logging
+ * mutable-torrents, Enables mutable torrent support
+ * streaming, Enables support for piece deadline
+
+-- The following REQUIRED packages have been found:
+
+ * Threads
+ * Boost
+
+-- The following features have been disabled:
+
+ * BUILD_SHARED_LIBS, build libtorrent as a shared library
+ * static_runtime, build libtorrent with static runtime
+ * build_tests, build tests
+ * build_examples, build examples
+ * build_tools, build tools
+ * python-bindings, build python bindings
+ * python-egg-info, generate python egg info
+ * python-install-system-dir, Install python bindings to the system installation directory rather than the CMake installation prefix
+ * encryption, Enables encryption in libtorrent
+ * gnutls, build using GnuTLS instead of OpenSSL
+
+-- The following RECOMMENDED packages have not been found:
+
+ * OpenSSL, Full-strength general purpose cryptography library, <https://www.openssl.org/>
+   Provides HTTPS support to libtorrent
+ * GnuTLS, GnuTLS is a free software implementation of the TLS and DTLS protocols, <https://www.gnutls.org/>
+   Provides HTTPS support to libtorrent
+ * LibGcrypt, A general purpose cryptographic library, <https://www.gnupg.org/software/libgcrypt/index.html>
+   Use GCrypt instead of the built-in functions for RC4 and SHA1
+
+-- Configuring done (6.4s)
+CMake Error at CMakeLists.txt:548 (add_library):
+  Cannot find source file:
+
+    deps/try_signal/try_signal.cpp
+
+  Tried extensions .c .C .c++ .cc .cpp .cxx .cu .mpp .m .M .mm .ixx .cppm
+  .ccm .cxxm .c++m .h .hh .h++ .hm .hpp .hxx .in .txx .f .F .for .f77 .f90
+  .f95 .f03 .hip .ispc
+
+
+CMake Error at CMakeLists.txt:548 (add_library):
+  No SOURCES given to target: torrent-rasterbar
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
+-- cmake configure done
+ninja: error: loading 'build.ninja': No such file or directory
