@@ -26,6 +26,7 @@
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
+#include <libtorrent/session_status.hpp>   // ses->status().dht_nodes —— 不 include 会报 incomplete type
 #include <libtorrent/settings_pack.hpp>
 #include <libtorrent/string_view.hpp>
 #include <libtorrent/torrent_flags.hpp>

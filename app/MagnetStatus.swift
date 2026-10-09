@@ -72,6 +72,42 @@ enum MagnetStatus {
         var peers: Int = 0
         var progress: Double = 0
         var files: [File] = []
+
+        // ★★ v1.0.248：这几个是用来**分辨"为什么连不上"**的。
+        //   用户实测那次"一直已连上 0 个"，界面上分不出是引擎没接进网络、
+        //   还是这个种真的没人做种 —— 只能干等。现在有依据了。
+        /// 会话里找到这条任务没有。
+        var hasHandle: Bool = true
+        /// 会话登记成功了没有。
+        var added: Bool = true
+        /// DHT 路由表里有几个节点。**恒为 0 = 引擎根本没接进 BT 网络。**
+        var dhtNodes: Int = 0
+        /// 打了几个 tracker。
+        var trackers: Int = 0
+        /// 引擎报的错（加入失败 / torrent_error_alert）。
+        var engineError: String = ""
+    }
+
+    /// 「等元数据的时候到底卡在哪」—— 界面按这个换文案，而不是一律说"没人做种"。
+    enum WaitReason: Equatable {
+        /// 引擎压根没接受这条任务（真错）。
+        case engineRejected
+        /// DHT 一个节点都没有 → 网络层面就没接进去。
+        case noDht
+        /// 网络接上了，但一个 peer 都没有 → 这个种暂时没人做种。
+        case noPeers
+        /// 已经连上 peer 了，就差元数据。
+        case fetching
+    }
+
+    /// 判断"卡在哪"。★ 纯函数，可单测。
+    /// 注意：刚起步的头十几秒 DHT 一定是 0 个节点（正常），所以**调用方要配合
+    /// "已经等了多久"来用** —— 界面在 20 秒之前不把 `noDht` 当结论。
+    static func waitReason(_ s: Snapshot) -> WaitReason {
+        if !s.hasHandle && !s.added { return .engineRejected }
+        if s.peers > 0 { return .fetching }
+        if s.dhtNodes <= 0 { return .noDht }
+        return .noPeers
     }
 
     // MARK: - 解析
@@ -91,6 +127,11 @@ enum MagnetStatus {
         s.rateBytes = int64(root["rateBytes"])
         s.peers = Int(int64(root["peers"]))
         s.progress = double(root["progress"])
+        s.hasHandle = (root["hasHandle"] as? Bool) ?? true
+        s.added = (root["added"] as? Bool) ?? true
+        s.dhtNodes = Int(int64(root["dhtNodes"]))
+        s.trackers = Int(int64(root["trackers"]))
+        s.engineError = (root["err"] as? String) ?? ""
         if let arr = root["files"] as? [[String: Any]] {
             s.files = arr.compactMap { o in
                 guard let path = o["path"] as? String else { return nil }

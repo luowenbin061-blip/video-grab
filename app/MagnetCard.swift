@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// 「粘贴链接」卡里**磁力那一段**的界面。
@@ -11,6 +12,8 @@ struct MagnetCard: View {
 
     /// 下完登记了几个（nil = 还没登记）。
     @State private var adopted: Int?
+    /// ★ v1.0.248：每秒走一下，用来算"已经等了多久"（见 waited）。
+    @State private var now = Date()
 
     private var files: [MagnetStatus.File] { engine.snap.files }
 
@@ -44,6 +47,15 @@ struct MagnetCard: View {
                 adopted = engine.adopt(into: center)
             }
         }
+        // 每秒走一下（只在等元数据时界面上才用得到，但开着也无害）
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { t in
+            now = t
+        }
+    }
+
+    /// 这条任务已经等了多久（秒）。
+    private var waited: TimeInterval {
+        engine.startedAt.map { now.timeIntervalSince($0) } ?? 0
     }
 
     // MARK: - 各段
@@ -63,15 +75,42 @@ struct MagnetCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 ProgressView().scaleEffect(0.8)
-                Text("正在找资源…已连上 \(engine.snap.peers) 个")
+                Text("正在找资源…已连上 \(engine.snap.peers) 个 · "
+                     + "DHT \(engine.snap.dhtNodes) 节点 · "
+                     + "tracker \(engine.snap.trackers) 个")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
-            if engine.snap.peers == 0 {
-                Text("一个都没连上。冷门资源可能没人做种，那就下不动 —— 换个种或者多等一会儿。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
+            Text(waitHint)
+                .font(.system(size: 12))
+                .foregroundStyle(reason == .engineRejected ? .red : .secondary)
+        }
+    }
+
+    private var reason: MagnetStatus.WaitReason {
+        MagnetStatus.waitReason(engine.snap)
+    }
+
+    /// ★★ v1.0.248：**把"卡在哪"说出来**。
+    ///   以前不管什么原因都只显示"已连上 0 个"+ 一句"可能没人做种" ——
+    ///   用户实测时完全分不出是引擎没接进网络还是真没人做种，只能干等。
+    private var waitHint: String {
+        switch reason {
+        case .engineRejected:
+            return engine.snap.engineError.isEmpty
+                ? "引擎没有接受这条任务。"
+                : "引擎没有接受这条任务：\(engine.snap.engineError)"
+        case .fetching:
+            return "已经连上 peer，正在取文件列表…"
+        case .noDht:
+            // ★ 头 20 秒不把"没有 DHT 节点"当结论 —— 刚起步本来就还没接上
+            if waited < 20 { return "正在接入 BT 网络（头十几秒是正常的），再等等。" }
+            return "一个 DHT 节点都没连上 —— 引擎没能接进 BT 网络。"
+                + "换一下网络（比如关掉代理、换 Wi-Fi）再试，或者过一会儿重来。"
+        case .noPeers:
+            if waited < 20 { return "正在接入 BT 网络，再等等。" }
+            return "网络是通的（DHT 已连上 \(engine.snap.dhtNodes) 个节点），"
+                + "但这个种暂时没有 peer —— 冷门资源可能没人做种。"
         }
     }
 

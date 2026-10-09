@@ -21,6 +21,10 @@ final class MagnetEngine: ObservableObject {
     @Published var selected: Set<Int> = []
     /// libtorrent 版本号 —— 界面上不显示，但"库到底链上没有"靠它一眼确认。
     @Published private(set) var version: String = ""
+    /// ★ v1.0.248：这次任务什么时候开始的 —— 界面用它算"已经等了多久"。
+    ///   为的是区分"刚起步（头十几秒 DHT 还没连上很正常）"和
+    ///   "等半天一个节点都没有（那是真有问题）"。
+    @Published private(set) var startedAt: Date?
 
     private var handle: LTEngine?
     private var tid: Int32 = -1
@@ -72,6 +76,7 @@ final class MagnetEngine: ObservableObject {
         }
         handle = h
         tid = id
+        startedAt = Date()
         startPump()
         return true
     }
@@ -84,6 +89,7 @@ final class MagnetEngine: ObservableObject {
         }
         handle = nil
         tid = -1
+        startedAt = nil
     }
 
     private func startPump() {
