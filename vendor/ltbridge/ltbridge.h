@@ -82,11 +82,18 @@ long long lt_engine_stream_prefix(LTEngine e, int id, int fileIndex, long long o
  *   "dhtNodes": 123,           // ★ DHT 路由表里有几个节点 —— 用来区分
  *                              //   "引擎没接进网络"（恒为 0）和"这个种没人做种"（有节点但没 peer）
  *   "err": "",                 // 引擎报的错（加入失败 / torrent_error_alert）
- *   "state": "metadata" | "downloading" | "checking" | "finished" | "error",
+ *   "state": "metadata" | "checking" | "downloading" | "idle" | "finished",
+ *                              // ★ v1.0.253 起 "idle" = 元数据到手、但"还没有任何想要的
+ *                              //   数据"（等用户点「开始下载」，或用户把勾选清空了）。
+ *                              //   libtorrent 对这种情况会误报 finished/seeding
+ *                              //   （"想要的数据都齐了"——个数为 0 也是齐），桥接层已归一。
  *   "name": "种子名",
  *   "meta": true|false,        // 元数据（文件列表）到手没有
  *   "totalBytes": 123456, "doneBytes": 4567, "rateBytes": 1024,
  *   "peers": 3, "progress": 0.37, "trackers": 11, "paused": true|false,
+ *   "trReplies": 5, "trErrors": 2, "peerErrors": 1,
+ *                              // ★ v1.0.253：诊断计数（tracker 回话几次 / 报错几次 /
+ *                              //   peer 连接错误几次）—— "找不到资源"时用它定位卡在哪一层
  *   "files": [ {"index":0,"path":"a/b.mp4","size":123,"done":0} ]
  * }
  */

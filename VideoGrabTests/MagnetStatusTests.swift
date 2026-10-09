@@ -213,4 +213,38 @@ final class MagnetStatusTests: XCTestCase {
         XCTAssertFalse(MagnetStatus.streamable(path: "a.txt"))
         XCTAssertFalse(MagnetStatus.streamable(path: "noext"))
     }
+
+    // MARK: - v1.0.253：idle 状态 + 引擎细况计数
+
+    /// ★ 「元数据到手、但还没有想要的数据」→ idle。
+    ///   用户实测"文件列表一出来就显示下载完成"的修复核心：
+    ///   libtorrent 会把这种状态报成 finished/seeding（想要的数据个数为 0 也算"齐"），
+    ///   桥接层归一成 idle —— 这里钉死"idle 必须原样解析出来，且**不是** finished"。
+    func testParsesIdleStage() {
+        let s = MagnetStatus.parse("""
+        {"state":"idle","meta":true,"peers":3,"dhtNodes":100,"trackers":27,
+         "hasHandle":true,"added":true,"err":"","paused":false,"files":[
+           {"index":0,"path":"a.mp4","size":100,"done":0}]}
+        """)!
+        XCTAssertEqual(s.state, .idle)
+        XCTAssertNotEqual(s.state, .finished)
+        XCTAssertTrue(s.metaReady)
+    }
+
+    /// 引擎细况计数（tracker 回应 / 报错 / peer 连接错误）要能解析出来 ——
+    /// "找不到资源"时界面/反馈截图靠这三个数定位卡在哪一层。
+    func testParsesDiagCounters() {
+        let s = MagnetStatus.parse("""
+        {"state":"metadata","meta":false,"peers":0,"dhtNodes":10,"trackers":27,
+         "trReplies":5,"trErrors":2,"peerErrors":1,"files":[]}
+        """)!
+        XCTAssertEqual(s.trackerReplies, 5)
+        XCTAssertEqual(s.trackerErrors, 2)
+        XCTAssertEqual(s.peerErrors, 1)
+        // 老引擎（没这几个字段）→ 全是 0（不许因此报错吓人）
+        let t = MagnetStatus.parse("{\"state\":\"metadata\",\"meta\":false}")!
+        XCTAssertEqual(t.trackerReplies, 0)
+        XCTAssertEqual(t.trackerErrors, 0)
+        XCTAssertEqual(t.peerErrors, 0)
+    }
 }

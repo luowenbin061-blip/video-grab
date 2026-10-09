@@ -121,6 +121,16 @@ struct MagnetCard: View {
             Text(waitHint)
                 .font(.system(size: 12))
                 .foregroundStyle(reason == .engineRejected ? .red : .secondary)
+            // ★ v1.0.253：20 秒后把「引擎细况」亮出来 —— tracker 到底回没回话、
+            //   报没报错、peer 连接有没有出问题。"找不到资源"时一眼看出卡在哪一层
+            //   （也能在反馈截图里带上，方便下一步定位）。
+            if waited >= 20 {
+                Text("引擎细况：tracker 回应 \(engine.snap.trackerReplies) 次 · "
+                     + "报错 \(engine.snap.trackerErrors) 次 · "
+                     + "peer 连接错误 \(engine.snap.peerErrors) 次")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 

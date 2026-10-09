@@ -21,6 +21,12 @@ enum MagnetStatus {
         case metadata       // 还在拉元数据（文件列表还没到手）
         case checking       // 校验/分配中
         case downloading
+        /// ★ v1.0.253：元数据到手、但"还没有任何想要的数据"—— 等用户点「开始下载」，
+        ///   或者用户把勾选清空了。
+        ///   **注意**：libtorrent 会把这种状态报成 finished/seeding（"想要的数据
+        ///   都齐了"——要的个数为 0 也是齐）——桥接层已经把它归一成 idle；
+        ///   界面据此显示"等用户操作"，而不是"已完成"。
+        case idle
         case finished
         case unknown
     }
@@ -88,6 +94,11 @@ enum MagnetStatus {
         var engineError: String = ""
         /// ★ v1.0.250：任务暂停没有 —— 界面的「暂停 / 继续」按钮和"已暂停"字样跟着它切。
         var paused: Bool = false
+        /// ★ v1.0.253：诊断计数（DP 审查建议）——"找不到资源"时能看到
+        ///   tracker 到底回没回话、peer 连接有没有在报错。
+        var trackerReplies: Int = 0
+        var trackerErrors: Int = 0
+        var peerErrors: Int = 0
     }
 
     /// 「等元数据的时候到底卡在哪」—— 界面按这个换文案，而不是一律说"没人做种"。
@@ -135,6 +146,9 @@ enum MagnetStatus {
         s.trackers = Int(int64(root["trackers"]))
         s.engineError = (root["err"] as? String) ?? ""
         s.paused = (root["paused"] as? Bool) ?? false
+        s.trackerReplies = Int(int64(root["trReplies"]))
+        s.trackerErrors = Int(int64(root["trErrors"]))
+        s.peerErrors = Int(int64(root["peerErrors"]))
         if let arr = root["files"] as? [[String: Any]] {
             s.files = arr.compactMap { o in
                 guard let path = o["path"] as? String else { return nil }

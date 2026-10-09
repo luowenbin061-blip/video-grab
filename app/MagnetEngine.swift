@@ -159,11 +159,20 @@ final class MagnetEngine: ObservableObject {
             if n == -2 { error = "任务不见了（引擎那边已经把它移除）" }
             return
         }
-        guard let s = MagnetStatus.parse(String(cString: buf)) else {
+        guard let parsed = MagnetStatus.parse(String(cString: buf)) else {
             error = "引擎回的格式不对（可能是文件太多、列表被截断了）"
             return
         }
         error = nil
+        // ★★ v1.0.253：第一道防线 —— 用户没点过「开始下载」，却报"下载完成"，
+        //   逻辑上不可能（没开始下，哪来的完成）。历史上 libtorrent 在
+        //   "全部文件=不下"（total_wanted == 0）时会这样误报 ——
+        //   桥接层已把它归一成 idle，这里再挡一层：把误报的 finished 压回 idle，
+        //   保证界面任何情况下都不会"列表一出来就跳完成"。
+        var s = parsed
+        if !userStarted && s.state == .finished {
+            s.state = .idle
+        }
         snap = s
 
         // ★ v1.0.250：把最新快照放进流盒（后台线程给播放器「边等边读」用）。
@@ -188,7 +197,9 @@ final class MagnetEngine: ObservableObject {
         }
 
         // 下完 → 自动登记进下载中心（★ v1.0.250：引擎兜底 —— 卡片没开着也能登记上）
-        if s.state == .finished, adoptedCount == nil, let c = center {
+        // ★ v1.0.253：第二道防线 —— 再加 userStarted 守卫：没点过「开始下载」的任务
+        //   永远不可能"下完"，不带这个条件的触发一律不放行。
+        if s.state == .finished, userStarted, adoptedCount == nil, let c = center {
             adoptedCount = adopt(into: c)
         }
     }
@@ -305,7 +316,8 @@ final class MagnetEngine: ObservableObject {
     /// 只登记**勾选的那几个**。返回登记了几个。**幂等**（登记过就返回同一个数）。
     @discardableResult
     func adopt(into center: DownloadCenter) -> Int {
-        guard snap.state == .finished, adoptedCount == nil else { return adoptedCount ?? 0 }
+        // ★ v1.0.253：第三道防线 —— 没点过「开始下载」就永远不算完成（同 tick 里的注释）。
+        guard userStarted, snap.state == .finished, adoptedCount == nil else { return adoptedCount ?? 0 }
         let want = selected.isEmpty ? Set(snap.files.map(\.index)) : selected
         var count = 0
         for f in snap.files where want.contains(f.index) {
