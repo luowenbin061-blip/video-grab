@@ -73,6 +73,13 @@ struct EngineImpl {
 
 EngineImpl *asImpl(LTEngine e) { return static_cast<EngineImpl *>(e); }
 
+/* ★ `session::find_torrent` 只认老的 `sha1_hash`（v1 哈希），
+ *   2.0.10 里**没有** `info_hash_t` 的重载 —— 实测编译报
+ *   「no viable conversion from 'lt::info_hash_t' to 'const sha1_hash'」。
+ *   磁力链接绝大多数是 v1（btih），`get_best()` 正好给出 v1 那一个。
+ */
+lt::sha1_hash ih1(const lt::info_hash_t &ih) { return ih.get_best(); }
+
 const Entry *findEntry(const EngineImpl *e, int id) {
     for (const auto &x : e->entries) {
         if (x.id == id) return &x;
@@ -167,7 +174,7 @@ void lt_engine_remove(LTEngine h, int id) {
     std::lock_guard<std::mutex> lock(e->mu);
     for (std::size_t i = 0; i < e->entries.size(); ++i) {
         if (e->entries[i].id == id) {
-            lt::torrent_handle th = e->ses->find_torrent(e->entries[i].ih);
+            lt::torrent_handle th = e->ses->find_torrent(ih1(e->entries[i].ih));
             if (th.is_valid()) {
                 // ★ 不删文件（`delete_files` 保持默认 false）—— 删不删由上层说了算
                 e->ses->remove_torrent(th);
@@ -184,7 +191,7 @@ void lt_engine_pause(LTEngine h, int id, int paused) {
     std::lock_guard<std::mutex> lock(e->mu);
     const Entry *en = findEntry(e, id);
     if (en == nullptr) return;
-    lt::torrent_handle th = e->ses->find_torrent(en->ih);
+    lt::torrent_handle th = e->ses->find_torrent(ih1(en->ih));
     if (!th.is_valid()) return;
     if (paused) {
         th.unset_flags(lt::torrent_flags::auto_managed);
@@ -201,7 +208,7 @@ void lt_engine_select_files(LTEngine h, int id, const int *idx, int n) {
     std::lock_guard<std::mutex> lock(e->mu);
     const Entry *en = findEntry(e, id);
     if (en == nullptr) return;
-    lt::torrent_handle th = e->ses->find_torrent(en->ih);
+    lt::torrent_handle th = e->ses->find_torrent(ih1(en->ih));
     if (!th.is_valid()) return;
     auto ti = th.torrent_file();
     if (!ti) return;                       // 元数据还没到手，选不了
@@ -240,7 +247,7 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
     if (en == nullptr) return -2;
 
     lt::torrent_handle th;
-    if (e->ses) th = e->ses->find_torrent(en->ih);
+    if (e->ses) th = e->ses->find_torrent(ih1(en->ih));
 
     std::string js = "{";
     if (!th.is_valid()) {
