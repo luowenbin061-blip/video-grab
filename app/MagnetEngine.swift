@@ -50,8 +50,12 @@ final class MagnetEngine: ObservableObject {
     private var pump: Task<Void, Never>?
     /// 元数据第一次到手时自动套用一次默认勾选（只套一次）。
     private var appliedDefault = false
-    /// 下完只登记一次。
-    private var adopted = false
+    /// ★ v1.0.250：下完自动登记进下载中心的结果（登记了几个）；nil = 还没完成 / 还没登记。
+    ///   这一步原来挂在 MagnetCard 的 onChange 上 —— **卡片没开着就不会触发**，
+    ///   文件会卡在 torrent 目录里（下载页里永远不出现）。现在挪到引擎 tick 里兜底。
+    @Published private(set) var adoptedCount: Int?
+    /// 完成后自动登记用的下载中心（LinkGrabber 开任务时塞进来；weak 防循环引用）。
+    weak var center: DownloadCenter?
     /// ★ v1.0.250：用户点过「开始下载」没有 —— 没点之前只把文件列表列出来，**不自动下载**。
     ///   （@Published：界面要从"待开始"切到"下载中"）
     @Published private(set) var userStarted = false
@@ -84,10 +88,10 @@ final class MagnetEngine: ObservableObject {
         //   测的链接越多，网络越热。
         // ★ v1.0.250：先清掉上一条任务留在 torrent 目录里的半成品（换任务 = 放弃它），
         //   免得"孤儿文件"越堆越多、还没入口能删。
-        cleanupCurrentFiles()
+        cleanupCurrentFiles(onlyPartial: true)
         stopCurrent()
         error = nil
-        adopted = false
+        adoptedCount = nil
         appliedDefault = false
         userStarted = false
         snap = MagnetStatus.Snapshot()
@@ -182,6 +186,11 @@ final class MagnetEngine: ObservableObject {
                 lt_engine_select_none(h, tid)   // 全挡下：连接 / DHT 照常跑着，只是不拉数据
             }
         }
+
+        // 下完 → 自动登记进下载中心（★ v1.0.250：引擎兜底 —— 卡片没开着也能登记上）
+        if s.state == .finished, adoptedCount == nil, let c = center {
+            adoptedCount = adopt(into: c)
+        }
     }
 
     // MARK: - 挑文件
@@ -264,23 +273,26 @@ final class MagnetEngine: ObservableObject {
     /// ★ 删除这条任务（连同它下到一半的文件）。
     ///   下载页里"已保存"的成品不受影响（它们早被挪走了）。
     func removeTask() {
-        cleanupCurrentFiles()
+        cleanupCurrentFiles(onlyPartial: false)
         stopCurrent()
         selected = []
         snap = MagnetStatus.Snapshot()
         error = nil
         userStarted = false
         appliedDefault = false
-        adopted = false
+        adoptedCount = nil
     }
 
     /// 清掉当前任务在 torrent 目录里的文件（删除任务 / 换新任务时用）。
     /// ★ 已 adopt 进下载页的成品早就被**挪走**了，这里不会误伤。
-    private func cleanupCurrentFiles() {
+    /// - Parameter onlyPartial: true = 只清"没下完的"（换任务时用 —— 下完的先留着，
+    ///   宁可留错、不可删错）；false = 全清（用户主动点删除时）。
+    private func cleanupCurrentFiles(onlyPartial: Bool) {
         let files = snap.files
         let fm = FileManager.default
         let rootPath = saveRoot.standardizedFileURL.path
         for f in files {
+            if onlyPartial, f.done >= f.size { continue }
             let u = saveRoot.appendingPathComponent(f.path).standardizedFileURL
             guard u.path.hasPrefix(rootPath + "/") else { continue }   // 防越界
             try? fm.removeItem(at: u)
@@ -290,11 +302,10 @@ final class MagnetEngine: ObservableObject {
     // MARK: - 下完 → 登记进下载中心
 
     /// 把下好的成品登记进下载中心（它会自己把文件挪进程序目录、做缩略图/体检）。
-    /// 只登记**勾选的那几个**。返回登记了几个。
+    /// 只登记**勾选的那几个**。返回登记了几个。**幂等**（登记过就返回同一个数）。
     @discardableResult
     func adopt(into center: DownloadCenter) -> Int {
-        guard snap.state == .finished, !adopted else { return 0 }
-        adopted = true
+        guard snap.state == .finished, adoptedCount == nil else { return adoptedCount ?? 0 }
         let want = selected.isEmpty ? Set(snap.files.map(\.index)) : selected
         var count = 0
         for f in snap.files where want.contains(f.index) {
@@ -310,6 +321,7 @@ final class MagnetEngine: ObservableObject {
             _ = center.adoptCompressed(url, title: f.name, kind: kind)
             count += 1
         }
+        adoptedCount = count
         return count
     }
 

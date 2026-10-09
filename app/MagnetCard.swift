@@ -11,8 +11,6 @@ struct MagnetCard: View {
     @ObservedObject var engine: MagnetEngine
     let center: DownloadCenter
 
-    /// 下完登记了几个（nil = 还没登记）。
-    @State private var adopted: Int?
     /// ★ v1.0.248：每秒走一下，用来算"已经等了多久"（见 waited）。
     @State private var now = Date()
     /// ★ v1.0.250：删除确认弹窗。
@@ -59,12 +57,6 @@ struct MagnetCard: View {
             }
             if let e = engine.error {
                 Text(e).font(.system(size: 13)).foregroundStyle(.red)
-            }
-        }
-        // 下完 → 自动登记进下载中心（只登记勾选的那几个）
-        .onChange(of: engine.snap.state) { st in
-            if st == .finished, adopted == nil {
-                adopted = engine.adopt(into: center)
             }
         }
         // 每秒走一下（只在等元数据时界面上才用得到，但开着也无害）
@@ -263,8 +255,9 @@ struct MagnetCard: View {
     }
 
     private var finishedNote: some View {
-        Text(adopted == nil ? "下载完成，正在加入下载页…"
-                           : "下载完成，已加入下载页 \(adopted ?? 0) 个")
+        // ★ v1.0.250：结果从引擎来（adopt 已挪进引擎兜底 —— 卡片没开着也能登记上）
+        Text(engine.adoptedCount == nil ? "下载完成，正在加入下载页…"
+                                        : "下载完成，已加入下载页 \(engine.adoptedCount ?? 0) 个")
             .font(.system(size: 13))
             .foregroundStyle(.secondary)
     }

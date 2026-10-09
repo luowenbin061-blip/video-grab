@@ -76,7 +76,8 @@ final class LinkGrabber: ObservableObject {
         case .magnet:
             // ★ 磁力交给 BT 引擎（**单例**，关掉卡片下载也不会断；状态由卡片上的
             //   `MagnetCard` 显示）。引擎自己会：拉元数据 → 列文件 → **等用户点开始** →
-            //   下完登记进下载中心。
+            //   下完自动登记进下载中心（引擎内兜底，卡片没开着也算数）。
+            MagnetEngine.shared.center = center          // ★ v1.0.250：完成登记要用它
             if MagnetEngine.shared.start(magnet: url) {
                 done = true
                 stage = "已交给 BT 引擎"
