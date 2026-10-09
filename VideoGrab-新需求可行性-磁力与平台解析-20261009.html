@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>两条新需求可行性报告 · 磁力解析 / 平台无水印 · 2026-10-09</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e5e7eb;
+    --yes:#0a7d4d; --no:#b42318; --part:#b45309; --accent:#1d4ed8; --warnbg:#fff8e6;
+    --warnline:#f0c36d; --okbg:#eefaf3; --okline:#9fd9bb; --nobg:#fdf1f0; --noline:#f0b4ae;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:18px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15.5px;margin:24px 0 8px;color:#111827}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .lead{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 22px 16px;margin-bottom:8px}
+  .lead ol{margin:10px 0 0;padding-left:22px}
+  .lead li{margin:9px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13.5px}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;white-space:nowrap}
+  td.c,th.c{text-align:center;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .yes{color:var(--yes);font-weight:700}
+  .no{color:var(--no);font-weight:700}
+  .part{color:var(--part);font-weight:700}
+  .muted{color:var(--muted)}
+  .box{border-radius:10px;padding:14px 18px;margin:14px 0;border:1px solid}
+  .box.ok{background:var(--okbg);border-color:var(--okline)}
+  .box.warn{background:var(--warnbg);border-color:var(--warnline)}
+  .box.no{background:var(--nobg);border-color:var(--noline)}
+  .box b{display:block;margin-bottom:6px;font-size:14.5px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+  code{background:#f0f2f5;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:Consolas,Menlo,monospace}
+  .big{font-size:16px;font-weight:700}
+  .q{background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;padding:12px 16px;margin:10px 0}
+  .q b{display:inline}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>两条新需求的可行性报告</h1>
+<div class="sub">
+  ① 工具箱：粘贴磁力链接 → 解析 + 播放 + 下载 &nbsp;|&nbsp;
+  ② 工具箱：粘贴 B站 / 抖音 / 小红书 / 快手链接 → 无水印下载<br>
+  结论都对着<b>公开资料 + 我们的源码</b>核实过；核不实的地方我单独标出来，没编。
+</div>
+
+<div class="lead">
+  <h3 style="margin-top:14px">先给结论（四条）</h3>
+  <ol>
+    <li><b>两条都做得出来，但它俩不是一类东西</b> —— 一条是「<b>重活，打通一次长期有效</b>」（磁力协议十年没大改）；
+        另一条是「<b>轻活，但会过期</b>」（平台的接口和签名一直在改，属于长期拉锯）。<b>这个区别比"能不能做"更重要。</b></li>
+    <li><b>平台解析里，B站最稳</b>：它的签名是<b>纯算法（公开、可移植）</b>，而且音视频分离这件事
+        <b>我们已经有现成的合并能力</b>。抖音 / 快手 / 小红书是"跟平台斗智"，<b>做好了也会隔段时间失效</b>。</li>
+    <li><b>磁力的难点不在"下载"，在两件事</b>：把 BitTorrent 引擎（C++）编进 iOS；
+        以及「<b>边下边播</b>」—— 现成能用的那个库，<b>连它自己都还没做这个</b>。</li>
+    <li><b>两条需求可以共用一个入口</b>（工具箱加一格「粘贴链接」，自动分辨是磁力还是平台链接），
+        比你原计划的"加两格"更干净 —— 也符合你一贯的「一个入口」习惯。</li>
+  </ol>
+</div>
+
+<h2>一、需求② 平台无水印下载</h2>
+
+<div class="card">
+  <b class="big">先说清一件事：所谓"去水印"根本不是"把水印擦掉"</b>
+  <p style="margin:8px 0 0">
+    所有这类工具（包括那些小程序、在线站）用的都是同一条路：<b>调平台自己的数据接口，
+    从返回的 JSON 里取那条"没叠水印的原始视频流"</b> —— 平台本来就把干净的那条放在接口里，
+    只是网页版/App 播放时又给你叠了一层水印而已。</p>
+  <p style="margin:8px 0 0">
+    所以要干的活只有两件：<b>算出请求签名</b>（证明"这个请求是合法的"）+ <b>解析返回的 JSON</b>。
+    另一条路（逐帧 AI 修补水印）需要显卡、还掉画质，<b>我们不做、也没必要做</b>。</p>
+</div>
+
+<h3>逐平台可行性</h3>
+<table>
+  <tr>
+    <th>平台</th><th class="c">可行性</th><th>核心活儿</th><th>凭据</th><th>风险 / 前提</th>
+  </tr>
+  <tr>
+    <td><b>B站</b></td>
+    <td class="c yes">高</td>
+    <td>WBI 签名（<b>纯算法</b>：取 key → 固定乱序表重排 → MD5 盖章）<br>
+        + 音视频两条流分别下 → 合并</td>
+    <td>算法在开源项目（如 DownKyi 的 <code>WbiSign.cs</code>）和多篇技术文里是<b>完整公开</b>的</td>
+    <td>1080P+ 要登录 Cookie（更高清要大会员）；签名算法平台会更新</td>
+  </tr>
+  <tr>
+    <td><b>抖音</b></td>
+    <td class="c part">中</td>
+    <td><code>a_bogus</code> / <code>msToken</code> 签名（<b>混淆过的 JS 算法</b>）<br>
+        + 可能必须带 Cookie</td>
+    <td>有"三个端点依次尝试"的成熟做法；老接口对<b>公开作品可能免登录</b>直接返回</td>
+    <td>签名要么移植、要么塞个 JS 引擎进去算；接口改动最频繁的一档</td>
+  </tr>
+  <tr>
+    <td><b>快手</b></td>
+    <td class="c part">中</td>
+    <td>解析接口 + 请求头/设备指纹</td>
+    <td>有开源实现（KS-Downloader 一类），思路与抖音同</td>
+    <td>同上；成功率依赖请求头伪装得像不像</td>
+  </tr>
+  <tr>
+    <td><b>小红书</b></td>
+    <td class="c part">中</td>
+    <td>链接有<b>四种格式</b>（含 <code>xhslink.com</code> 短链要先展开）<br>
+        + 解析页面里的数据 + Cookie</td>
+    <td>有开源实现（XHS-Downloader），链接识别做得比较细</td>
+    <td>不带 Cookie 只给 720P；链接格式平台会改</td>
+  </tr>
+</table>
+
+<div class="box warn">
+  <b>三个必须提前说清的点</b>
+  <ul>
+    <li><b>"会过期"是这类功能的固有属性，不是我手艺问题。</b>平台一改签名，规则就废 —— 要么接受"隔段时间修一次"，要么接受"失效了就先不用"。</li>
+    <li><b>不保证高清。</b>多数平台的"高清直链"要登录态 Cookie。真要做高清，就得在设置里加一项"填 Cookie"（填了才给高清）—— 这一点你拍板。</li>
+    <li><b>不碰"擦水印"那条路。</b>逐帧修补要显卡、还掉画质，跟"取原始流"是两回事。</li>
+  </ul>
+</div>
+
+<div class="box ok">
+  <b>好消息：这件事我们已经有一大半了</b>
+  现成的：<b>嗅探、下载器（多连接分块）、ffmpeg 合并、HLS 那条线、本机 HTTP 服务</b> —— 全都在跑。<br>
+  <b>真正缺的只有"解析器"这一层</b>（算签名 + 解 JSON + 挑出最高画质那条直链）。<br>
+  而且我们<b>已经有「用户脚本」体系</b>（能导入 JS 脚本）—— 社区里有现成的各家下载脚本。
+  这条路我没验过能不能跑通（见文末「我不能确认的」），但值得先试一次 —— 如果通，成本能再降一大截。
+</div>
+
+<h2>二、需求① 磁力链接</h2>
+
+<div class="card">
+  <b class="big">磁力链接里没有文件，只有一个"编号"</b>
+  <p style="margin:8px 0 0">
+    <code>magnet:?xt=urn:btih:...</code> 里那串东西只是文件的<b>指纹（20 字节）</b>。
+    要拿到真正的文件，必须有完整的 BitTorrent 协议栈：<b>去 DHT 网络找持有这个文件的节点 → 交换元数据 → 分片下载</b>。
+    在 iOS 上，唯一现实的路径是<b>把 libtorrent（C++ 库）编成静态库搬进来</b>。
+  </p>
+</div>
+
+<h3>现成的 Swift 封装：两个坏消息</h3>
+<table>
+  <tr><th>现成的库</th><th class="c">平台要求</th><th class="c">我们能直接用吗</th><th>说明</th></tr>
+  <tr>
+    <td><code>LibTorrent-swift</code></td>
+    <td class="c">iOS 17 / Swift 6</td>
+    <td class="c no">不能</td>
+    <td>它的门槛比我们的部署目标（iOS 15，你真机 16.6）高，编不过去</td>
+  </tr>
+  <tr>
+    <td><code>SwiftyTorrent</code></td>
+    <td class="c">iOS 15+</td>
+    <td class="c part">能参考</td>
+    <td>它就是 iOS 上的 BT 客户端，可以扒它的 BT 模块和构建脚本。<b>但它的待办清单里明写着：「边下边播的分片优先级」和「接播放器」都还没做</b></td>
+  </tr>
+</table>
+
+<h3>三个难点（按工作量排）</h3>
+<table>
+  <tr><th class="c">#</th><th>难点</th><th>有多大</th><th>怎么办</th></tr>
+  <tr>
+    <td class="c">1</td>
+    <td><b>把 libtorrent + Boost + OpenSSL 编成 iOS 静态库</b></td>
+    <td class="c part">一次性、耗时</td>
+    <td>我们的云编译是 macOS 环境，编得出来；但<b>不该每次构建都编</b> ——
+        编一次、产物存进仓库，后面直接复用（我们放 ffmpeg 静态库就是这么干的）</td>
+  </tr>
+  <tr>
+    <td class="c">2</td>
+    <td><b>边下边播</b></td>
+    <td class="c no">最麻烦</td>
+    <td>BT 分片是乱序来的，要"边下边播"就得让引擎<b>优先下你正在看的那一段</b> ——
+        这叫分片优先级调度，<b>现成库里没有，得自己写</b></td>
+  </tr>
+  <tr>
+    <td class="c">3</td>
+    <td><b>后台 / 锁屏继续下</b></td>
+    <td class="c part">中等</td>
+    <td>iOS 会把后台进程挂起。我们<b>已经有"画中画保活"这套经验</b>（下载用它撑过后台），可以搬过来</td>
+  </tr>
+</table>
+
+<div class="box ok">
+  <b>复用度很高（这条线是通的）</b>
+  下下来的文件 → 直接用我们<b>已有的本机 HTTP 服务</b>喂给播放器，播放器那一侧不用改。
+</div>
+
+<div class="box warn">
+  <b>一个现实提醒（不是技术问题）</b>
+  磁力能不能下动，<b>取决于有没有人做种</b>：热门资源快，冷门资源基本没速度。国内 DHT 环境和 tracker 状态也会影响。
+  这不是我们的代码能改的 —— 别到时候以为是我没做好。
+</div>
+
+<h2>三、两条放一起看：我的建议</h2>
+
+<table>
+  <tr><th>做哪块</th><th class="c">投入</th><th class="c">回报</th><th class="c">会不会过期</th><th>我的建议</th></tr>
+  <tr>
+    <td>平台解析 · <b>B站</b></td>
+    <td class="c part">中</td>
+    <td class="c yes">高</td>
+    <td class="c part">会</td>
+    <td><b>先做这个</b> —— 确定性最高，我们现成能力用得最多</td>
+  </tr>
+  <tr>
+    <td>平台解析 · 抖音/快手/小红书</td>
+    <td class="c part">中</td>
+    <td class="c part">中</td>
+    <td class="c no">会，且频繁</td>
+    <td>第二批。<b>做成"一个平台一个规则文件"</b>，失效时只改那一个文件、不用动别的</td>
+  </tr>
+  <tr>
+    <td>磁力</td>
+    <td class="c no">大</td>
+    <td class="c part">中（用得上，但不天天用）</td>
+    <td class="c yes">不会</td>
+    <td><b>单独一轮</b>。而且建议<b>先做"只下载不边播"</b> —— 省掉最难那块，成本差不多能砍一半</td>
+  </tr>
+</table>
+
+<div class="box warn">
+  <b>我最想让你先知道的一件事（认知差）</b>
+  你可能会把这两条当成"同一类需求"（都是粘个链接然后下载）。但它们的<b>成本结构和寿命完全不是一回事</b>：<br>
+  · <b>磁力</b>：前期很重，打通之后<b>基本一劳永逸</b>（BT 协议十年没大改）；<br>
+  · <b>平台解析</b>：前期不重，但它<b>一直在跟你消耗</b> —— 平台一改就得跟。<br>
+  <b>如果只按"能不能做"来决定先做哪个，很可能会把最费力的那个排在前面、把最常用的那个拖到最后。</b>
+</div>
+
+<h2>四、需要你拍板的四个点</h2>
+
+<div class="q"><b>1. 平台解析先做几个？</b><br>
+  我建议 <b>先做 B站 + 抖音</b>（覆盖最常用），跑通"解析 → 下载 → 合并"整条链之后，再把快手/小红书按同一套加进去。</div>
+
+<div class="q"><b>2. 要不要加"填 Cookie"这一项？</b><br>
+  不填 = 只有低清；填了 = 高清（B站 1080P+ 还要大会员）。<b>不加这一项，高清基本拿不到。</b></div>
+
+<div class="q"><b>3. 磁力：先做"只下载"还是直接冲"边下边播"？</b><br>
+  先只下载 = 省掉最难那块（分片优先级调度），下完再看（我们播放器直接能放）。</div>
+
+<div class="q"><b>4. 入口怎么放？</b><br>
+  我推荐 <b>工具箱加一格「粘贴链接」</b>：粘什么进去都行，自动认（磁力 → BT；平台链接 → 对应解析器）。
+  比你原本说的"加两格"更干净，也更符合你"一个入口"的习惯。</div>
+
+<h2>五、我不能确认的部分（如实标）</h2>
+<div class="box no">
+  <b>这几条我没验过，不许当结论用</b>
+  <ul>
+    <li><b>抖音那几个接口现在还能不能用、要不要 Cookie</b> —— 必须拿一条真链接实测才知道。动手前我会先做一次<b>只读探测</b>（不改代码）。</li>
+    <li><b>小红书 / 快手的具体接口细节</b> —— 我只查到"有成熟开源实现"，<b>没亲自验</b>当前是否有效。</li>
+    <li><b>B站 WBI 签名算法是公开的，但"公开"不等于"不会变"</b> —— 平台改了我保证不了。</li>
+    <li><b>libtorrent 能不能顺利编进我们的云编译</b> —— 这是整件事里最大的未知数，<b>要真编一次才知道</b>（我倾向先拿它做一个空跑验证，别一上来就写功能）。</li>
+    <li><b>"用户脚本能不能替代一部分平台解析"</b> —— 我们已有脚本体系，理论上社区脚本能用，但 iOS 的网页沙箱（跨域限制）可能拦它，<b>需要实测</b>。</li>
+  </ul>
+</div>
+
+<h2>六、DeepSeek 复核（2026-10-09 追加）</h2>
+
+<div class="card">
+  <p style="margin-top:2px">按老规矩把上面这份判断发给了 DeepSeek 复核（只发一家）。<b>它给了三条我原来没有的信息</b>，
+  其中一条把我的判断改了一半。<b>它说的每一条我都单独核实过，下面分「成立 / 推翻 / 要加前提」列清。</b></p>
+
+  <h3 style="margin-top:14px">6.1 最关键的一条：磁力引擎的编译，别人已经全踩完了</h3>
+  <p>它指出有一个开源项目 <code>libtorrent_flutter</code>，<b>已经用 GitHub Actions 把 libtorrent 编成了 iOS 的 xcframework</b>，
+  并且<b>内置了一个本地 HTTP 流媒体服务器来做边下边播</b>。我查了它的更新日志 —— <b>这条完全成立，而且比它说的更细</b>：</p>
+  <table>
+    <tr><th style="width:210px">别人已经解决掉的问题</th><th>对我们意味着什么</th></tr>
+    <tr><td>CI 里编 libtorrent + 桥接层，<code>xcodebuild -create-xcframework</code> 打包，只出 <b>arm64-iphoneos</b> 一个切片</td>
+        <td>我们真机是 arm64、TrollStore 侧载不用签名 → <b>连模拟器切片都不用编，比它还省</b></td></tr>
+    <tr><td><b>SystemConfiguration.framework 必须显式链接</b>（不加，iOS release 链接直接报 <code>Undefined symbol: _SCNetworkReachabilityCreateWithAddress</code>）</td>
+        <td>这是那种<b>能耗掉一整天</b>的坑，现在写在纸上</td></tr>
+    <tr><td>OpenSSL 要<b>静态</b>编、且每个切片单独编一次（3.2.1）</td><td>依赖清单确定，不用试</td></tr>
+    <tr><td>MSE/PE 加密<b>必须开</b> —— 之前 iOS 版是关的，导致很多 seedbox 拒绝明文连接，<b>实际可连的 peer 少一大截</b></td>
+        <td>直接决定"下得动不动"，这条不说我会踩</td></tr>
+  </table>
+  <div class="box warn" style="margin-top:14px">
+    <b>但有两条它没说，我必须补上（很重要）</b>
+    <ul>
+      <li><b>授权不一样，别抄代码。</b>libtorrent 本体是 <b>BSD-3-Clause</b>（宽松，自用无约束 —— 它这条说对了）；
+        可 <b><code>libtorrent_flutter</code> 这个封装项目是 GPL v3</b>（它 1.2.0 起从别的协议换过去的）。
+        GPL v3 有传染性 → <b>它的桥接层代码、流媒体服务器代码，一个字都不能抄进我们的项目</b>。
+        能用的是<b>"它踩过的坑"这个信息</b>（要链哪些 framework、怎么切切片），<b>不是它的代码</b>。</li>
+      <li><b>它把"边下边播"说成"以后再补一层"</b> —— 从更新日志看，那一层（头 5 个 piece + 尾部 512KB 预取、
+        动态预读窗口、seek 时清掉旧分片优先级、LRU 分片缓存）<b>占了那个项目更新日志的绝大部分篇幅</b>。
+        也就是说：<b>那一层才是真正的大头，不是"顺手加一下"。</b>它建议先砍掉，我同意，但理由要记对。</li>
+    </ul>
+  </div>
+
+  <h3>6.2 它的第二条：抖音/小红书/快手 别自己算签名，用网页自己算</h3>
+  <p>它提了一条<b>我原报告里没有、而我们恰好最有条件做</b>的路子 ——
+  <b>不碰签名，改成"让网页自己去请求"</b>：把分享链接用我们的浏览器打开 → 页面里的 JS <b>会自己带上正确签名和 Cookie</b> 去要视频 →
+  <b>我们早就有的嗅探器直接把真实地址接住</b> → 交给下载中心。</p>
+  <div class="box ok">
+    <b>为什么这条对我们特别便宜</b>
+    <ul>
+      <li>我们这个 App <b>本身就是一个浏览器</b>，嗅探器、本机代理（补齐 Referer/UA/Cookie）、下载中心<b>全是现成的</b>。</li>
+      <li>这条路<b>一行签名算法都不用写</b> —— 而签名（抖音的 <code>a_bogus</code>、小红书的 <code>x-s</code>）恰恰是"写一次、隔几天失效要重写"的那部分。</li>
+      <li>它给的具体判断：抖音的 <code>a_bogus</code> 是<b>虚拟机保护的 JS</b>（要过国密 SM3、逐字节异或混淆），
+        而且有开发者报告<b>"同一套代码几小时后批量失效"</b>（平台按批次热更）。<b>这一条我没核实</b>，但它据此建议"别碰抖音"。</li>
+    </ul>
+  </div>
+  <div class="box no">
+    <b>这条路我还没验证的地方（不许当结论）</b>
+    <ul>
+      <li>这些平台的网页版可能<b>强制跳 App / 要求登录</b>，那样网页里就没有视频可嗅。</li>
+      <li>就算嗅到了，<b>拿到的可能还是带水印的那一条</b>（真正的无水印流要走它们的内网接口才有）——
+        这一条<b>必须拿真链接实测</b>才知道，我倾向先拿快手的分享页试。</li>
+      <li>平台可能识别我们的浏览器不是标准 Safari 而给降级页面。</li>
+    </ul>
+  </div>
+
+  <h3>6.3 逐条核实表</h3>
+  <table>
+    <tr><th style="width:46%">DeepSeek 的说法</th><th style="width:54%">我的核实</th></tr>
+    <tr><td>libtorrent_flutter 用 CI 把 libtorrent 编成 iOS xcframework</td>
+        <td class="yes">✅ 成立</td></tr>
+    <tr><td>它内置 HTTP 流媒体服务器支持边下边播</td>
+        <td class="yes">✅ 成立（且细节描述与更新日志逐条对得上）</td></tr>
+    <tr><td>SwiftyTorrent 「约 92 stars」、iOS 15+、TODO 里没做边下边播</td>
+        <td class="part">⚠️ 部分成立 —— 实际 <b>129 stars</b>（数字错）；iOS 15.0 对；TODO 里确实写着
+            「pieces prioritization logic for video streaming」「integrate VLC player」都未做 ✓。
+            另外我查到有人已经给它加了<b>「GitHub Actions 出未签名 IPA」的流程</b>，跟我们路线一样。</td></tr>
+    <tr><td>libtorrent 是 BSD-3-Clause，自用没问题、只需保留版权声明</td>
+        <td class="yes">✅ 成立 —— 但<b>漏了</b>上面那条（封装项目是 GPL v3）</td></tr>
+    <tr><td>建议参考 libtorrent_flutter 的构建脚本 / CI 配置</td>
+        <td class="part">⚠️ <b>要加前提</b> —— 那个仓库整体 GPL v3，<b>脚本也是它的代码</b>。
+            可以照它的<b>做法</b>自己写，<b>别复制它的文件</b>。</td></tr>
+    <tr><td>B站 有 Swift 版 wbi 签名实现可移植</td>
+        <td class="yes">✅ 成立（与我原报告一致）</td></tr>
+    <tr><td>抖音 <code>a_bogus</code> 是虚拟机保护、几小时就失效一轮</td>
+        <td class="muted">未核实（它自己引用了一个逆向 repo）。<b>我按"未验证"处理</b>，
+            但它据此建议"不做抖音"的方向我认同。</td></tr>
+    <tr><td>B站 频控的具体数字（如每 4 小时 ≤30 条）</td>
+        <td class="muted">它<b>自己标了不确定</b> —— 我不引用，也不当判据。</td></tr>
+  </table>
+
+  <h3>6.4 它和我分歧的地方（只有一处）</h3>
+  <table>
+    <tr><th style="width:150px">先做哪两个</th><th>理由</th></tr>
+    <tr><td><b>我原报告的排法</b><br>B站 + <b>抖音</b></td>
+        <td>按「<b>你最常用</b>」排 —— 抖音覆盖面最大。</td></tr>
+    <tr><td><b>它的排法</b><br>B站 + <b>快手</b></td>
+        <td>按「<b>最快见到能用</b>」排 —— 快手有成熟开源实现、分享页简单；抖音投入产出比最差。</td></tr>
+  </table>
+  <div class="box warn">
+    <b>两种排法目标不同，都不算错，得你定</b>
+    <p style="margin:6px 0 0">要「<b>先把一条链跑通、看得见结果</b>」→ 选 <b>B站 + 快手</b>；
+    要「<b>一步到位覆盖最常用的</b>」→ 选 <b>B站 + 抖音</b>，但抖音可能白做（签名很容易失效）。
+    <b>我个人偏向前者</b>：先跑通流程，比先赌最难的那家稳。</p>
+  </div>
+
+  <h3>6.5 两份判断一致的地方（可以当共识了）</h3>
+  <table>
+    <tr><th style="width:230px">结论</th><th>来源</th></tr>
+    <tr><td>磁力<b>先只做"解析 + 下载"，砍掉边下边播</b></td><td class="yes">我 ✅ &nbsp;+&nbsp; DeepSeek ✅（<b>两个独立来源同一条</b>）</td></tr>
+    <tr><td>B站是平台里<b>最稳、最该先做</b>的</td><td class="yes">我 ✅ &nbsp;+&nbsp; DeepSeek ✅</td></tr>
+    <tr><td>抖音<b>自己算签名不值得</b>（除非网页拦截那条路顺带能通）</td><td class="yes">我 ✅ &nbsp;+&nbsp; DeepSeek ✅</td></tr>
+    <tr><td>工具箱<b>只加一格「粘贴链接」</b>，粘什么自动认</td><td class="yes">我 ✅（它没反对）</td></tr>
+    <tr><td>「去水印」= 取<b>本来就没叠水印的原始流</b>，不是把水印擦掉</td><td class="yes">我 ✅ &nbsp;+&nbsp; DeepSeek ✅</td></tr>
+  </table>
+</div>
+
+<div class="foot">
+  报告日期 2026-10-09（6.1–6.5 为当日 DeepSeek 复核后的追加）· 依据：公开技术资料（libtorrent 的 Swift 封装现状、各平台签名与解析原理）＋ 本工程源码核对。<br>
+  凡写"据说/有开源实现"的地方都是我没验证的；凡写具体算法的都是公开可查的。<b>先看完再定，我不动手。</b>
+</div>
+
+</div>
+</body>
+</html>
