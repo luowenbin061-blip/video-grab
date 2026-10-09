@@ -14,17 +14,10 @@ import WebKit
 final class LinkGrabber: ObservableObject {
 
     /// 认出来的链接类型。
-    enum Kind: Equatable {
-        case magnet
-        case bili
-        case web(Platform)
-
-        enum Platform: String, Equatable {
-            case douyin = "抖音"
-            case xiaohongshu = "小红书"
-            case kuaishou = "快手"
-        }
-    }
+    /// 认出来的链接类型 —— **定义在 `LinkText` 里**。
+    /// 为什么挪过去：识别逻辑要进云端单测（这工程只有"纯逻辑白名单"里的文件够得着），
+    /// 而这个类 import 了 WebKit，进不去。这里留个别名方便引用，行为一个字没改。
+    typealias Kind = LinkText.Kind
 
     /// 输入框里的内容
     @Published var text = ""
@@ -36,40 +29,20 @@ final class LinkGrabber: ObservableObject {
     @Published var error: String?
     @Published var done = false
 
-    // MARK: - 认链接（纯逻辑，可离线验）
+    // MARK: - 认链接（实现全在 LinkText，这里只是转发）
 
     /// ★ `nonisolated`：这几个是**纯函数**，不碰任何界面状态。
     ///   标了之后别的隔离域（比如视图里的计算属性）也能直接调，
     ///   否则 `@MainActor` 会把类里的 static 成员一起隔离掉（这工程栽过同类）。
+    /// ★★ 真正的实现在 `LinkText`（纯逻辑、能进单测）。这里**只转发**，
+    ///   别把逻辑又写一份回来 —— 两份实现迟早会分叉。
     nonisolated static func kind(of link: String) -> Kind? {
-        let s = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
-        if s.lowercased().hasPrefix("magnet:") { return .magnet }
-        if BiliParse.isBiliLink(s), BiliParse.ref(inLink: s) != nil { return .bili }
-        if let h = URL(string: s)?.host?.lowercased() {
-            if h == "douyin.com" || h.hasSuffix(".douyin.com") || h == "iesdouyin.com"
-                || h.hasSuffix(".iesdouyin.com") || h == "v.douyin.com" {
-                return .web(.douyin)
-            }
-            if h == "xhslink.com" || h.hasSuffix(".xhslink.com")
-                || h == "xiaohongshu.com" || h.hasSuffix(".xiaohongshu.com") {
-                return .web(.xiaohongshu)
-            }
-            if h == "kuaishou.com" || h.hasSuffix(".kuaishou.com")
-                || h == "v.kuaishou.com" || h == "gifshow.com" || h.hasSuffix(".gifshow.com") {
-                return .web(.kuaishou)
-            }
-        }
-        return nil
+        LinkText.kind(of: link)
     }
 
     /// 给用户看的一行说明。（界面里不写长篇解释，靠这行字点明接下来会发生什么。）
     nonisolated static func hint(for kind: Kind) -> String {
-        switch kind {
-        case .magnet: return "BT 下载（先拿文件列表，再挑要下的）"
-        case .bili:   return "解析后下最高清（音视频分开下、自动合并）"
-        case .web(let p): return "\(p.rawValue)：在浏览器打开，播放后在嗅探面板下载"
-        }
+        LinkText.hint(for: kind)
     }
 
     // MARK: - 干活
@@ -83,18 +56,21 @@ final class LinkGrabber: ObservableObject {
     }
 
     func handle(link: String, center: DownloadCenter, model: BrowserModel) {
-        let s = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let kind = Self.kind(of: s) else {
+        // ★★ 必须先"从文案里抠出链接"再走后面：
+        //   用户点"粘贴"拿到的是**整段分享文案**（「【标题】 https://b23.tv/xxxx」），
+        //   不是干净的网址。v1.0.245 就是漏了这一步 → 粘 B站 分享一律"认不出"。
+        guard let kind = Self.kind(of: link),
+              let url = LinkText.normalized(link) else {
             error = "认不出这条链接（现在认：磁力、B站、抖音、小红书、快手）"
             return
         }
         reset()
         switch kind {
         case .bili:
-            runBili(link: s, center: center)
+            runBili(link: url, center: center)
         case .web:
             // ★ 不算签名那条路：把网页打开就行，剩下交给已有的嗅探器
-            _ = model.newTab(load: s)
+            _ = model.newTab(load: url)
             done = true
             stage = "已在浏览器打开，页面开始播放后去嗅探面板找它"
         case .magnet:

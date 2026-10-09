@@ -37,7 +37,11 @@ struct PasteLinkSheet: View {
                         .submitLabel(.go)
                         .onSubmit { start() }
                     Button("粘贴") {
-                        if let s = UIPasteboard.general.string { grabber.text = s }
+                        guard let s = UIPasteboard.general.string else { return }
+                        // ★ 抠出链接再填：剪贴板里是**整段分享文案**（前面带标题、后面带标点），
+                        //   直接把整段塞进来太乱、也不方便核对。
+                        //   抠不到就原样填（让上面那行"认不出"的提示来说话）。
+                        grabber.text = LinkText.firstLink(in: s) ?? s
                     }
                     .font(.system(size: 14))
                 }
