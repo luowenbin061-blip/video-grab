@@ -49,7 +49,7 @@ final class DownloadCenter: ObservableObject {
         // ★ v1.0.258：接住"共享给电脑"端对文件的删除/移走 → 给对应任务记一笔。
         //   （用户反馈过"重启后视频显示被系统清理了"—— 其中一部分其实是电脑端
         //   通过共享盘剪切/删除造成的，以前完全无迹可查。）
-        LocalHTTPServer.shared.onExternalFileChange = { [weak self] name, action in
+        LocalHTTPServer.onExternalFileChange = { [weak self] name, action in
             Task { @MainActor in
                 self?.noteExternalFileChange(name: name, action: action)
             }
@@ -129,7 +129,7 @@ final class DownloadCenter: ObservableObject {
                 bad.failed = "文件没能从临时目录保存进来"
                     + (moveError.isEmpty ? "" : "（\(moveError)）")
                 bad.finished = true
-                bad.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
+                bad.onUpdate = { [weak self, weak bad] in self?.save(); if let bad { self?.noticeFinish(bad) } }
                 jobs.insert(bad, at: 0)
                 save()
                 return bad
