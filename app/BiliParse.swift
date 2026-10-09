@@ -248,8 +248,13 @@ enum BiliParse {
                let a = (dolby["audio"] as? [[String: Any]] ?? []).compactMap(stream(from:)).first {
                 audios.append(a)
             }
+            // ★ 这两个的形状**不一样**（照平台实际响应写的，别想当然）：
+            //   · `dash.dolby.audio` 是**数组**
+            //   · `dash.flac.audio`  是**单个对象**
+            //   写成一样的话，`?? []` 会把类型推成字典、直接编译不过（run #244 就栽在这）。
             if let flac = dash["flac"] as? [String: Any],
-               let a = (flac["audio"] as? [String: Any] ?? []).compactMap(stream(from:)).first {
+               let fa = flac["audio"] as? [String: Any],
+               let a = stream(from: fa) {
                 audios.append(a)
             }
             return (best, pickAudio(audios))
@@ -345,5 +350,152 @@ enum BiliParse {
         if let n = v as? NSNumber { return n.doubleValue }
         if let s = v as? String { return Double(s) }
         return nil
+    }
+
+    // MARK: - 联网解析（把上面那些零件串起来）
+
+    /// 解析出来的结果 —— 足够发起下载。
+    struct Resolved {
+        var title: String
+        var videoURL: URL
+        var audioURL: URL?      // nil = 这条流本身就是完整的（durl 那条退路）
+        var quality: Int
+        var qualityText: String
+        var loggedIn: Bool
+    }
+
+    enum ParseError: LocalizedError {
+        case notBiliLink
+        case noVideoID
+        case noWbiKeys
+        case apiFailed(String, Int)
+        case noStream(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notBiliLink:  return "这不是 B站 的链接"
+            case .noVideoID:    return "链接里找不到视频编号（BV 号 / av 号）"
+            case .noWbiKeys:    return "拿不到 B站 的签名密钥（接口可能改版了）"
+            case .apiFailed(let api, let code): return "B站 接口 \(api) 返回错误码 \(code)"
+            case .noStream(let why): return "没解析出可下载的流：\(why)"
+            }
+        }
+    }
+
+    /// 下载这些流时必须带的请求头 —— **不带 Referer 会被 403**，这是最容易漏的一步。
+    static let mediaReferer = "https://www.bilibili.com/"
+    static let defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    /// 把一条 B站 链接解析成「一条视频流 + 一条音频流」。
+    ///
+    /// - Parameters:
+    ///   - cookie: 登录后的 Cookie（主要是 `SESSDATA`）。**空串也能解析** ——
+    ///     只是清晰度被限到 480P（平台对未登录就是这个待遇）。
+    ///   - userAgent: 默认给桌面版 UA（移动端 UA 拿到的流不一样）。
+    static func resolve(link: String, cookie: String = "",
+                        userAgent: String = defaultUA) async throws -> Resolved {
+        // ① 短链先跟一次跳转，否则里面根本没有视频号
+        var real = link
+        if isShortLink(link) {
+            real = await followRedirect(link, userAgent: userAgent) ?? link
+        }
+        guard isBiliLink(real) || isBiliLink(link) else { throw ParseError.notBiliLink }
+        guard let ref = ref(inLink: real) else { throw ParseError.noVideoID }
+        let page = page(inLink: real)
+
+        // ② 密钥（★ 未登录时这个接口 code 是 -101，但 wbi_img 照样有 —— 判据里不看 code）
+        let nav = try await get("https://api.bilibili.com/x/web-interface/nav",
+                                cookie: cookie, userAgent: userAgent, referer: nil)
+        guard let keys = imgSubKeys(navJSON: nav.data) else { throw ParseError.noWbiKeys }
+        let loggedIn = (int64(jsonValue(nav.data, "code")) ?? -101) == 0
+
+        // ③ 视频信息（拿 cid / 标题）
+        let view = try await get("https://api.bilibili.com/x/web-interface/view?"
+                                 + ref.queryItem,
+                                 cookie: cookie, userAgent: userAgent, referer: nil)
+        guard let info = videoInfo(viewJSON: view.data, page: page) else {
+            let code = Int(int64(jsonValue(view.data, "code")) ?? -1)
+            throw ParseError.apiFailed("view", code)
+        }
+
+        // ④ 播放地址（这条接口要 wbi 签名）
+        let params: [String: String] = [
+            "cid": String(info.cid),
+            "qn": "127",            // 要最高；实际给多少由平台的 accept_quality 决定
+            "fnval": "4048",        // 要 DASH（音视频分开的那套）
+            "fnver": "0",
+            "fourk": "1",
+        ]
+        var q = ref.queryItem + "&" + wbiQuery(params: params, imgKey: keys.imgKey,
+                                               subKey: keys.subKey,
+                                               wts: Int(Date().timeIntervalSince1970))
+        if page > 1 { q += "&p=" + String(page) }
+        let play = try await get("https://api.bilibili.com/x/player/wbi/playurl?" + q,
+                                 cookie: cookie, userAgent: userAgent, referer: nil)
+
+        // ⑤ 挑流
+        guard let picked = streams(playURLJSON: play.data) else {
+            let code = Int(int64(jsonValue(play.data, "code")) ?? -1)
+            throw ParseError.noStream(code == 0 ? "响应里既没有 DASH 也没有 durl"
+                                                : "playurl 返回错误码 \(code)")
+        }
+        guard let video = URL(string: picked.video.url) else {
+            throw ParseError.noStream("流地址不是合法 URL")
+        }
+        // ★ 拿到的清晰度以**实际给的**为准（未登录会给降级），不是我们要的
+        let gotQuality = (int64(jsonValue(play.data, "quality")).map { Int($0) })
+            ?? picked.video.quality
+        return Resolved(title: info.title.isEmpty ? "B站视频" : info.title,
+                        videoURL: video,
+                        audioURL: picked.audio.flatMap { URL(string: $0.url) },
+                        quality: gotQuality,
+                        qualityText: qualityName(gotQuality),
+                        loggedIn: loggedIn)
+    }
+
+    /// 跟一次 302，返回最终地址（拿不到就返回 nil，调用方退回原链接）。
+    static func followRedirect(_ link: String, userAgent: String) async -> String? {
+        guard let u = URL(string: link) else { return nil }
+        var r = URLRequest(url: u)
+        r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        r.timeoutInterval = 15
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpShouldSetCookies = false
+        guard let (_, resp) = try? await URLSession(configuration: cfg).data(for: r) else {
+            return nil
+        }
+        return resp.url?.absoluteString
+    }
+
+    /// 一个最小的带 header 的 GET（只用来打平台接口 —— 媒体流不走这里）。
+    static func get(_ link: String, cookie: String, userAgent: String,
+                    referer: String?) async throws -> (data: Data, status: Int) {
+        guard let u = URL(string: link) else { throw ParseError.noStream("接口地址不合法") }
+        var r = URLRequest(url: u)
+        r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        if let referer, !referer.isEmpty { r.setValue(referer, forHTTPHeaderField: "Referer") }
+        if !cookie.isEmpty { r.setValue(cookie, forHTTPHeaderField: "Cookie") }
+        r.timeoutInterval = 20
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpShouldSetCookies = false
+        do {
+            let (d, resp) = try await URLSession(configuration: cfg).data(for: r)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200...299).contains(code) else { throw ParseError.apiFailed(host(of: link) ?? "接口", code) }
+            return (d, code)
+        } catch let e as ParseError {
+            throw e
+        } catch {
+            throw ParseError.apiFailed(host(of: link) ?? "接口", -1)
+        }
+    }
+
+    /// 从响应 JSON 顶层取一个字段（错误码用）。
+    static func jsonValue(_ data: Data, _ key: String) -> Any? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return root[key]
     }
 }

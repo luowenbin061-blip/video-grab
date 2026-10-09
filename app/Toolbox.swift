@@ -40,6 +40,11 @@ struct ToolboxView: View {
     @State private var showCompress = false
     /// ★ v1.0.171：「合并视频」那张卡
     @State private var showMerge = false
+    /// ★ v1.0.244：「粘贴链接」那张卡（磁力 / B站 / 抖音 / 小红书 / 快手）
+    @State private var showPasteLink = false
+    /// ★ v1.0.244：解析状态放在**视图外面**（@StateObject）—— 关掉卡片再打开，
+    ///   正在跑的解析不该被掐掉，进度也还在。
+    @StateObject private var grabber = LinkGrabber()
     /// ★ 合并队列（单例）—— 这格用它显示“还有几个在合”的小角标；
     ///   跟“压画质”那格一个套路（关掉卡片任务仍在跑）。
     @ObservedObject private var mergeQueue = MergeQueue.shared
@@ -151,6 +156,12 @@ struct ToolboxView: View {
                          badge: mergeQueue.badgeCount) {
                         showMerge = true
                     }
+
+                    // ★ v1.0.244：粘贴链接 —— 磁力 / B站 / 抖音 / 小红书 / 快手
+                    //   一个入口认全部（胶什么进去自动分辨），不再一格一个平台。
+                    cell("link.badge.plus", "粘贴链接", .brown) {
+                        showPasteLink = true
+                    }
                 }
                 .padding(16)
 
@@ -199,6 +210,11 @@ struct ToolboxView: View {
             // ★ v1.0.171：合并视频
             .sheet(isPresented: $showMerge) {
                 MergeSheet(center: center, isPresented: $showMerge)
+            }
+            // ★ v1.0.244：粘贴链接
+            .sheet(isPresented: $showPasteLink) {
+                PasteLinkSheet(grabber: grabber, center: center, model: model,
+                               isPresented: $showPasteLink)
             }
             // ★ v1.0.155：压画质省空间
             .sheet(isPresented: $showCompress) {

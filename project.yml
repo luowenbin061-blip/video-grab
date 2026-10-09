@@ -159,6 +159,11 @@ targets:
       #   "中文怎么编码""!'()* 该不该滤"这类光看代码看不出对错，必须跑。
       #   注意：这个文件必须保持自包含，import 了 UIKit 这里就编译不过。
       - path: app/BiliParse.swift
+      # ★ v1.0.246：「粘贴链接」的文本识别（纯逻辑，只 Foundation）——
+      #   这一版就是被它坑的：**分享出去的链接永远带标题文案**，而且 **b23.tv 短链里
+      #   没有 BV 号**，老判据两条都过不了 → 用户实测"粘 B站 一律认不出"。
+      #   抠链接 + 认类型这两件事必须跑起来才算数，光看代码看不出对错（依赖 BiliParse，已在上面）。
+      - path: app/LinkText.swift
       - path: VideoGrabTests
     settings:
       base:
