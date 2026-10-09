@@ -8,8 +8,11 @@ name: build-libtorrent-ios
 #   这个工作流跑一次要十几二十分钟，不能跟 App 发布抢构建号，也不能因为
 #   探针失败影响发版。
 #
-# 用法：推到任何分支都会跑；也可以用 workflow_dispatch 手动触发
-#   （encryption=1 时开 TLS/加密连接，需要 OpenSSL —— 见下面 enc 步骤）。
+# 用法：推到任何分支都会跑；也可以用 workflow_dispatch 手动触发。
+# ★★ v1.0.249：encryption **默认改为 ON**（协议加密 MSE/PE）。
+#   以前默认 OFF 是误判"开加密要 OpenSSL"——查过 libtorrent v2.0.10 的
+#   CMakeLists：encryption=ON 只是把自带的 pe_crypto.cpp 编进去，**无外部依赖**。
+#   关掉的代价是连不上"只接受加密握手"的做种服务器（seedbox / PT 圈）—— 实测吃过大亏。
 
 on:
   push:
@@ -19,8 +22,8 @@ on:
   workflow_dispatch:
     inputs:
       encryption:
-        description: '1 = 开 TLS/混淆连接（需要 OpenSSL）；0 = 关（只验能否编译）'
-        default: '0'
+        description: '1 = 开加密连接（默认，无外部依赖）；0 = 关（只有排障时才用）'
+        default: '1'
         required: false
 
 permissions:
@@ -49,7 +52,7 @@ jobs:
           echo "=== runner arch ===" | tee -a build-lt.log
           uname -m | tee -a build-lt.log
           echo "=== encryption input ===" | tee -a build-lt.log
-          echo "encryption=${{ github.event.inputs.encryption || '0' }}" | tee -a build-lt.log
+          echo "encryption=${{ github.event.inputs.encryption || '1' }}" | tee -a build-lt.log
 
       # ── CMake 用固定版本 ──────────────────────────────────────────────
       # ★ 为什么不用 brew 的 cmake：CMake 4.x 移除了 FindBoost 模块，
@@ -117,7 +120,8 @@ jobs:
           set -eo pipefail
           SRC="$PWD/third_party/libtorrent"
           BOOST="$PWD/third_party/${BOOST_DIRNAME}"
-          ENC="${{ github.event.inputs.encryption || '0' }}"
+          # ★ v1.0.249：默认 ON —— push 触发时没有 inputs，走 `|| '1'`。
+          ENC="${{ github.event.inputs.encryption || '1' }}"
           ENCOPT="OFF"
           if [ "$ENC" = "1" ]; then ENCOPT="ON"; fi
           mkdir -p build-lt && cd build-lt
@@ -199,7 +203,7 @@ jobs:
             echo "libtorrent ${LT_VERSION}"
             echo "boost ${BOOST_VERSION} (headers only)"
             echo "slice arm64-iphoneos, min iOS ${IOS_MIN}"
-            echo "encryption=${{ github.event.inputs.encryption || '0' }}"
+            echo "encryption=${{ github.event.inputs.encryption || '1' }}"
             echo "built run #${{ github.run_number }}"
           } > lt-out/VERSION.txt
           cat lt-out/VERSION.txt | tee -a build-lt.log

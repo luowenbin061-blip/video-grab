@@ -48,6 +48,24 @@ final class LinkTextTests: XCTestCase {
         XCTAssertEqual(LinkText.kind(of: "这个资源不错 " + m), .magnet)
     }
 
+    /// ★★ 全角标点：国内文本环境粘来的磁力常混全角（用户实测样本里第 1 条
+    ///   就是「magnet:？」—— 修之前这种整条认不出）。
+    func testMagnetWithFullWidthPunctuation() {
+        let full = "magnet:？xt=urn:btih:5E3420E20E2AE55FD13E9A2F5CAEF7D9CB8E7ECB"
+        // 抠出来的形状必须是半角（后面要直接塞给 libtorrent 解析）
+        XCTAssertEqual(LinkText.firstLink(in: full),
+                       "magnet:?xt=urn:btih:5E3420E20E2AE55FD13E9A2F5CAEF7D9CB8E7ECB")
+        XCTAssertEqual(LinkText.kind(of: full), .magnet)
+        // 全角冒号变体
+        XCTAssertEqual(LinkText.firstLink(in: "magnet：？xt=urn:btih:abc123"),
+                       "magnet:?xt=urn:btih:abc123")
+        // 一串全角标点一起上（＝ ＆ ： ）
+        XCTAssertEqual(LinkText.kind(of: "magnet：?xt＝urn:btih：abc123＆dn＝x"), .magnet)
+        // 尾部粘了个全角问号 → 剥掉
+        XCTAssertEqual(LinkText.firstLink(in: "magnet:?xt=urn:btih:abc123？"),
+                       "magnet:?xt=urn:btih:abc123")
+    }
+
     // MARK: - ② 认类型
 
     func testBiliKinds() {

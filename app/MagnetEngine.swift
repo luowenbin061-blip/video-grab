@@ -6,6 +6,11 @@ import Foundation
 ///   跟工程里的 `CompressQueue.shared` / `MergeQueue.shared` 一个路子 ——
 ///   卡片只是"看一眼"的窗口，活要活在别处。
 ///
+/// ★★ v1.0.249 起引擎**常驻**：`handle` 建过一次就不再销毁 ——
+///   DHT 路由表是"越养越熟"的东西（再加上桥接层会把路由表存盘、下次热启动）。
+///   以前每次开新链接都把整个会话推倒重建，头一两分钟永远接不进网络，
+///   是用户实测"测了好多链接大多失败"的一大来源。现在换链接只换**任务**。
+///
 /// ★ 轮询而不是回调：桥接层是 C 接口，没有回调通道；每 0.5 秒 poll 一次
 ///   拿一段 JSON 是最省事也最不容易出错的做法（JSON 出一个大缓冲区，不涉及跨线程所有权）。
 @MainActor
@@ -51,10 +56,16 @@ final class MagnetEngine: ObservableObject {
 
     // MARK: - 起停
 
-    /// 加一条磁力链接。返回 false = 起不来（界面据此报错）。
+    /// 加一条磁力链接（换任务：引擎保留）。返回 false = 起不来（界面据此报错）。
     @discardableResult
     func start(magnet: String) -> Bool {
-        stop()
+        // ★★ v1.0.249：**不再销毁整个引擎**。
+        //   旧行为：stop() → lt_engine_free() → 每次开新链接都把整个会话
+        //   （含 DHT 路由表）连根拔掉重建 → 头一两分钟永远处于"还没接进 BT 网络"的状态。
+        //   用户实测"测了好多链接大多失败"，很大一部分就栽在这儿。
+        //   现在：只把**上一个任务**移除；引擎（DHT / 连接）一直养着 ——
+        //   测的链接越多，网络越热。
+        stopCurrent()
         error = nil
         adopted = false
         appliedDefault = false
@@ -64,30 +75,36 @@ final class MagnetEngine: ObservableObject {
         let fm = FileManager.default
         try? fm.createDirectory(at: saveRoot, withIntermediateDirectories: true)
 
-        guard let h = lt_engine_new(saveRoot.path) else {
+        guard let h = ensureEngine() else {
             error = "BT 引擎起不来（库没链上？）"
             return false
         }
         let id = lt_engine_add_magnet(h, magnet)
         guard id >= 0 else {
-            lt_engine_free(h)
             error = "这条磁力链接解析不了"
             return false
         }
-        handle = h
         tid = id
         startedAt = Date()
         startPump()
         return true
     }
 
-    func stop() {
+    /// 引擎只起一次、之后一直活着（DHT 不重置）。
+    private func ensureEngine() -> LTEngine? {
+        if let h = handle { return h }
+        guard let h = lt_engine_new(saveRoot.path) else { return nil }
+        handle = h
+        return h
+    }
+
+    /// 停止**当前任务**（引擎不动 —— DHT 继续养着，下次开新链接不再从零爬）。
+    func stopCurrent() {
         pump?.cancel()
         pump = nil
-        if let h = handle {
-            lt_engine_free(h)
+        if let h = handle, tid >= 0 {
+            lt_engine_remove(h, tid)
         }
-        handle = nil
         tid = -1
         startedAt = nil
     }

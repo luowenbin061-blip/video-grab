@@ -50,7 +50,13 @@ enum LinkText {
         // ★ 用 `range(of:options:.caseInsensitive)` 而不是"先 lowercased 再找"：
         //   后者拿到的索引属于**另一个字符串**，遇到某些字符会越界（String.Index 不能跨串用）。
         if let r = text.range(of: "magnet:", options: .caseInsensitive) {
-            if let s = takeURL(text, from: r.lowerBound) { return s }
+            if let s = takeMagnet(text, from: r.lowerBound) { return s }
+        }
+        // ①b 全角冒号的变体「magnet：」—— 某些来源的分享文本里冒号也是全角
+        let fwMagnet = "magnet："
+        if let r = text.range(of: fwMagnet, options: .caseInsensitive) {
+            let after = text.index(r.lowerBound, offsetBy: fwMagnet.count)
+            if let tail = takeMagnet(text, from: after) { return "magnet:" + tail }
         }
 
         // ② http / https：从协议头开始截
@@ -75,6 +81,32 @@ enum LinkText {
         var out = ""
         for ch in text[start...] {
             if urlChars.contains(ch) { out.append(ch) } else { break }
+        }
+        out = trimTrailingPunctuation(out)
+        return out.isEmpty ? nil : out
+    }
+
+    /// 磁力链接里常见的**全角标点** → 半角。
+    /// ★★ v1.0.249：国内文本环境（输入法、分享文案）粘贴来的链接常混全角，
+    ///   例：「magnet:？xt=...」里那个「？」是全角 —— 不修的话，老逻辑吃到
+    ///   「magnet:」就断了，整条链接认不出来（用户实测样本里第 1 条就是这个形态）。
+    private static let fullWidthFix: [Character: Character] = [
+        "？": "?", "＝": "=", "＆": "&", "；": ";", "：": ":",
+        "／": "/", "．": ".", "％": "%", "＃": "#", "＠": "@", "－": "-", "＿": "_",
+    ]
+
+    /// magnet 专用取串：比 `takeURL` 多一步「全角标点当半角吃」。
+    /// （只在磁力分支用 —— 普通网址里全角罕见，不扩大改动面。）
+    private static func takeMagnet(_ text: String, from start: String.Index) -> String? {
+        var out = ""
+        for ch in text[start...] {
+            if urlChars.contains(ch) {
+                out.append(ch)
+            } else if let fixed = fullWidthFix[ch] {
+                out.append(fixed)
+            } else {
+                break
+            }
         }
         out = trimTrailingPunctuation(out)
         return out.isEmpty ? nil : out

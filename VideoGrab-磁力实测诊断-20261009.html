@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>磁力实测诊断 · 为什么效果差 / 能修到什么程度 · 2026-10-09</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e5e7eb;
+    --yes:#0a7d4d; --no:#b42318; --part:#b45309; --accent:#1d4ed8; --warnbg:#fff8e6;
+    --warnline:#f0c36d; --okbg:#eefaf3; --okline:#9fd9bb; --nobg:#fdf1f0; --noline:#f0b4ae;
+    --tagbg:#eef2ff; --tagink:#3730a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:18px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15.5px;margin:24px 0 8px;color:#111827}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .lead{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 22px 16px;margin-bottom:8px}
+  .lead ol{margin:10px 0 0;padding-left:22px}
+  .lead li{margin:9px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13.5px}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;white-space:nowrap}
+  td.c,th.c{text-align:center;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .yes{color:var(--yes);font-weight:700}
+  .no{color:var(--no);font-weight:700}
+  .part{color:var(--part);font-weight:700}
+  .muted{color:var(--muted)}
+  .box{border-radius:10px;padding:14px 18px;margin:14px 0;border:1px solid}
+  .box.ok{background:var(--okbg);border-color:var(--okline)}
+  .box.warn{background:var(--warnbg);border-color:var(--warnline)}
+  .box.no{background:var(--nobg);border-color:var(--noline)}
+  .box b{display:block;margin-bottom:6px;font-size:14.5px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+  code{background:#f0f2f5;padding:1px 5px;border-radius:4px;font-size:12.5px;
+    font-family:Consolas,Menlo,monospace}
+  .big{font-size:16px;font-weight:700}
+  .tag{display:inline-block;background:var(--tagbg);color:var(--tagink);border-radius:6px;
+    padding:0 7px;font-size:12px;font-weight:600;line-height:20px;margin-right:4px}
+  .hd{display:inline-block;background:#fee2e2;color:#991b1b;border-radius:6px;
+    padding:0 7px;font-size:12px;font-weight:700;line-height:20px;margin-right:4px;white-space:nowrap}
+  .em{background:linear-gradient(transparent 60%, #ffe58a 60%);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>磁力实测诊断：为什么效果差 / 能修到什么程度</h1>
+<div class="sub">
+  会诊对象：v1.0.248 真机实测 —— 「好多链接只有 1 条能出文件列表；成功那条 4-5MB/s 掉到几十 KB/s；
+  大多『连上 peer 但列表一直加载』或『已连上 0 个』」<br>
+  所有结论都对着 <b>我们的源码 + libtorrent 官方构建文档</b>核过；核对不实的地方单独标注，没编。
+</div>
+
+<div class="lead">
+  <h3 style="margin-top:14px">先给结论（四条）</h3>
+  <ol>
+    <li><b>成绩差里，相当大一块是我们自己的问题</b>，不是 P2P 天生这么烂。
+        查出来 <b>4 个硬伤</b>（第三章，都有实据），其中最大的一个可能出乎你意料：
+        <span class="em">每开一条新链接，我们都会把整个引擎连根拔掉重建</span> ——
+        所以每测一条，网络能力都回到零点，头一两分钟基本是「还没接通」的状态。</li>
+    <li><b>修完的现实预期</b>：热种（有人在下的）→ 列表几十秒内出、速度能打到资源带宽上限
+        （你已经见过 4-5MB/s，说明<b>管道本身没问题</b>，这点很重要）；
+        冷种（没人做种的）→ 谁都难，夸克也只是靠「它库里有」。</li>
+    <li><b>「像夸克迅雷那样：秒出 + 恒速 + 后台下」—— 纯客户端做不到等效。</b>
+        那是<b>服务端离线下载能力</b>（第四章讲清为什么）。我们做的是「P2P 下载器」，
+        对标对象是 qBittorrent 这类，不是夸克这类「网盘」。</li>
+    <li><b>「能播」（边下边播）</b>：当时拍板没做。它比下载更吃速度 ——
+        先把「找得到、下得动」修稳，再谈它。</li>
+  </ol>
+</div>
+
+<h2>一、你反馈的四个现象 → 逐条归因</h2>
+
+<table>
+  <tr>
+    <th style="width:26%">你看到的现象</th><th style="width:30%">表层原因</th><th>底下是哪个硬伤</th>
+  </tr>
+  <tr>
+    <td>大多「找不到资源 / 已连上 0 个」</td>
+    <td>引擎还没接进 BT 网络（DHT 正在冷启动）+ 磁力自带 tracker 死了</td>
+    <td><span class="hd">硬伤①</span><span class="hd">硬伤④</span> 同伴来源太少、且每次从零开始</td>
+  </tr>
+  <tr>
+    <td>「连上 peer 但文件列表一直加载」</td>
+    <td>连到的那几个同伴<b>手里也没有清单 / 不给</b></td>
+    <td><span class="hd">硬伤①</span><span class="hd">硬伤④</span> 同伴太少，碰不上「有清单的那位」</td>
+  </tr>
+  <tr>
+    <td>好多链接只有 1 条能出列表</td>
+    <td>那条恰好 tracker 还活着 / 种还热</td>
+    <td>低概率被 <span class="hd">①-④</span> 放大成大面积的「不行」</td>
+  </tr>
+  <tr>
+    <td>成功那条 4-5MB/s → 几十 KB/s</td>
+    <td>高速来源断开 / 被限速，<b>没有后备同伴顶上</b></td>
+    <td><span class="hd">硬伤①</span><span class="hd">硬伤④</span>；另有 1 条待确认项（见第五章）</td>
+  </tr>
+</table>
+
+<h2>二、为什么「连上了」也拿不到文件列表？（大白话）</h2>
+
+<div class="card">
+  <p style="margin:0 0 8px"><b>关键认知：磁力链接本身不带文件清单。</b></p>
+  <ul>
+    <li>磁力链接只是一串<b>「身份证号」</b>（info-hash）——它告诉别人「我要哪份资源」，但<b>不包含文件列表</b>。</li>
+    <li>文件清单（种子里那些文件名/大小）要从<b>「手上已经有清单的同伴」</b>那里换过来。
+        两个都没有清单的人互相连上，也换不出清单。</li>
+    <li>所以「连上 1-2 个、列表还是不出来」<b>不是坏了</b> ——
+        是「连到的这几位刚好都没有 / 不给」。要同伴足够多，才碰得上「有清单的那位」。</li>
+    <li>同伴从哪来？两条路：<b>① tracker</b>（约人点：链接里 <code>tr=</code> 那些服务器）；
+        <b>② DHT</b>（不用服务器、同伴互问的「电话簿」）。</li>
+  </ul>
+  <p style="margin:8px 0 0"><b>我们现在的状况</b>：磁力自带的 tracker 常常整批是死的；
+  DHT 又每次都从零冷启动（硬伤①）—— <b>两个来源都处在最低配状态</b>。这就是「成功率那么低」的结构性原因。</p>
+</div>
+
+<h2>三、四个硬伤（全部有实据）</h2>
+
+<table>
+  <tr>
+    <th style="width:4%"></th><th style="width:30%">硬伤</th><th style="width:34%">实据（代码位置）</th>
+    <th>它对你造成什么</th><th class="c">修复成本</th>
+  </tr>
+  <tr>
+    <td class="c">①</td>
+    <td><b>每开一条新链接 = 连根重建引擎</b><br><span class="muted">DHT 从零冷启动</span></td>
+    <td><code>MagnetEngine.swift</code>：<code>start()</code> 第一行就是 <code>stop()</code>；
+        <code>stop()</code> 调 <code>lt_engine_free()</code> <b>销毁整个会话</b>（<code>ltbridge.cpp</code>）。
+        新会话只从 5 个引导节点从零爬 DHT</td>
+    <td><b>你每测一条，头一两分钟都处于「网络还没接通」的状态。</b>
+        「测了好多条、大部分失败」很大一部分是这个 ——
+        不是种的问题，是<b>我们每次都在重置网络</b></td>
+    <td class="c part">中<br><span class="muted">（改结构）</span></td>
+  </tr>
+  <tr>
+    <td class="c">②</td>
+    <td><b>加密支持被编译时关掉了</b><br><span class="muted">MSE / PE 混淆连接</span></td>
+    <td>构建脚本写死 <code>-Dencryption=OFF</code>（<code>build-libtorrent.yml</code> 的默认值）。
+        libtorrent 官方说明：OFF = <b>关掉「加密/混淆连接」支持</b>。
+        <span class="muted">（2.0 构建脚本核实：开加密只是把自带实现编进去，<b>不需要 OpenSSL</b> ——
+        之前「要 OpenSSL」的判断是错的）</span></td>
+    <td>相当一部分做种服务器（尤其 seedbox / PT 圈）<b>只接受「加密握手」</b>，
+        我们直接连不上 —— 同伴池少一块。「拿不到清单」「掉速没后备」都跟它有关</td>
+    <td class="c yes">极小<br><span class="muted">重编 3 分钟</span></td>
+  </tr>
+  <tr>
+    <td class="c">③</td>
+    <td><b>DHT 状态不存盘</b></td>
+    <td><code>ltbridge.cpp</code> 建会话时只放了设置，<b>没有「状态存盘 / 下次加载」</b></td>
+    <td>每次开 App 都从 5 个引导节点重新爬；和①叠加，
+        等于「永远在冷启动」</td>
+    <td class="c yes">小-中</td>
+  </tr>
+  <tr>
+    <td class="c">④</td>
+    <td><b>tracker 只有静态 11 条</b></td>
+    <td><code>ltbridge.cpp</code> 里的公共 tracker 清单（写死的 11 条）</td>
+    <td>死条率高、从不更新；社区维护的好 tracker 列表（几十条、每天更新）没有接</td>
+    <td class="c yes">小</td>
+  </tr>
+  <tr>
+    <td class="c">⑤</td>
+    <td><b>单任务：开新链接直接杀掉上一条</b></td>
+    <td>同上：<code>start()</code> 先 <code>stop()</code></td>
+    <td>没法同时攒同伴；测试流程上「测下一条，上一条直接没了」</td>
+    <td class="c part">中<br><span class="muted">（可选）</span></td>
+  </tr>
+</table>
+
+<div class="box warn">
+  <b>一句话概括这张表</b>
+  你现在看到的成绩单 = 「我们的 4 个硬伤」×「真实网络环境本来就会做的筛选」。
+  也就是说：<b>这轮的问题里，我们自己占了很大责任</b>，不是「iOS 上做 BT 天生不行」。
+</div>
+
+<h2>四、夸克 / 迅雷为什么「什么都能秒出」？（如实说）</h2>
+
+<div class="card">
+  <ul>
+    <li><b>他们的「秒出文件列表」不是本事，是库存</b> —— 服务器库里存着这份清单
+        （之前有用户下过、或他们的离线系统抓过）。你贴链接，服务器一查库就有。</li>
+    <li><b>速度稳</b> = 文件在服务器上（离线下好 / 缓存），你从服务器拉 ——
+        相当于「网盘下载」，<b>不依赖「还有没有人在做种」</b>。</li>
+    <li><b>后台能下</b> = 下载跑在服务器上，你手机只是个遥控器。</li>
+    <li><b>我们（纯客户端）三者都做不到等效</b> ——
+        这是<b>产品类型差异</b>，不是技术高下：他们是「网盘 + 离线下载」，我们是「P2P 下载器」。
+        <b>qBittorrent 这类纯下载器，也做不到「秒出」。</b></li>
+  </ul>
+  <p style="margin:8px 0 0"><b>但有个公平对照的问题要说清</b>：拿「夸克能秒出的链接」来测我们才公平 ——
+  这类链接至少说明「网络里还有热度 / 库里还有货」。如果修完硬伤之后，连这批链接都出不来，
+  那时才轮到怀疑更深层（运营商干扰 BT 流量这类环境问题）。</p>
+</div>
+
+<h2>五、「4-5MB/s 掉到几十 KB/s」的专门解释</h2>
+
+<div class="card">
+  <p style="margin:0 0 6px"><span class="tag">好消息</span>
+  起步能跑 4-5MB/s = <b>你的手机、我们的引擎、整条链路都具备跑高速的能力</b>。管道没问题 ——
+  这一条恰恰证明「多连同伴」是这个引擎值得投资的方向，而不是引擎本身不行。</p>
+  <p style="margin:10px 0 6px"><span class="tag">掉速机制</span>
+  给你供速的那台做种机（能从 4-5MB/s 起步，大概率是服务器型做种机）断开、或把上传让给了别人；
+  而<b>我们没有后备同伴顶上</b>（硬伤①④）→ 速度塌方。</p>
+  <p style="margin:10px 0 6px"><span class="tag">待确认</span>
+  iOS 会在 App 进后台几十秒后冻结网络 —— 如果测的时候你切出去过 / 锁过屏，速度会断崖式掉。
+  这条<b>没有实据</b>，需要你回忆确认一下。</p>
+  <p style="margin:10px 0 0"><span class="tag">下次实测</span>
+  请顺手记两个数：<b>掉速 / 失败那一刻的「已连上 N 个」和「DHT N 节点」</b>
+  （v1.0.248 的界面上就有，就是为这个排查加的）。</p>
+</div>
+
+<h2>六、修完能达到什么程度（预期表）</h2>
+
+<table>
+  <tr><th style="width:24%">场景</th><th>修完的预期</th><th style="width:30%">夸克 / 迅雷对照</th></tr>
+  <tr>
+    <td><b>热种</b>（有人做种）</td>
+    <td class="yes">列表几十秒内出；速度能到资源的带宽上限（已见到 4-5MB/s）</td>
+    <td>秒出、稳速（服务器缓存）</td>
+  </tr>
+  <tr>
+    <td><b>温种</b>（少数人做种）</td>
+    <td class="part">能出列表；速度慢，但能下</td>
+    <td>秒出（如果库里有）</td>
+  </tr>
+  <tr>
+    <td><b>冷种 / 死种</b>（没人做种）</td>
+    <td class="no">碰运气，可能下不动</td>
+    <td>库里没有，他们也得现抓、一样抓瞎（只是他们库大、命中多）</td>
+  </tr>
+  <tr>
+    <td><b>同一链接第二次下</b></td>
+    <td>（P2 加「本地清单缓存」后）秒出</td>
+    <td>秒出</td>
+  </tr>
+  <tr>
+    <td><b>后台下载</b></td>
+    <td class="no">不行，App 要留在前台</td>
+    <td>行（服务器在下）</td>
+  </tr>
+  <tr>
+    <td><b>边下边播</b></td>
+    <td class="no">未做（当时说好的，它比下载更吃速度）</td>
+    <td>行（服务器边下边给你播）</td>
+  </tr>
+</table>
+
+<h2>七、建议（待你拍板，我不先动手）</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px"><b>P0 —— 建议一版全修，预计显著改善：</b></p>
+  <ol>
+    <li><b>重编 libtorrent：加密开回来</b>（3 分钟，零风险；顺带把「加密需要 OpenSSL」这个错误判断修正）</li>
+    <li><b>引擎常驻化</b>：开新任务不再重建网络（改动中等，<b>收益最大</b>）</li>
+    <li><b>DHT 状态存盘</b>：打开 App 就是「热网络」，不再每次从零爬</li>
+  </ol>
+  <p style="margin:12px 0 4px"><b>P1：</b></p>
+  <ol start="4">
+    <li>tracker 列表扩充 + 动态更新（几十条、定期刷新）</li>
+    <li>（可选）多任务并存</li>
+  </ol>
+  <p style="margin:12px 0 4px"><b>P2 备选</b>：本地清单缓存（同一链接第二次 → 秒出）。</p>
+  <p style="margin:12px 0 0"><b>验证方式</b>：出下一版后，用你的「夸克对照链接」重测一组，
+  看三个指标：① 出列表要多久 ② DHT 节点数 ③ 速度峰值。</p>
+</div>
+
+<div class="box ok">
+  <b>要你配合两件事</b>
+  ① 给我 3-5 条<b>「夸克 / 迅雷能秒出文件列表」的磁力链接</b>（做公平对照的标尺）；<br>
+  ② 下次实测时<b>保持 App 在前台</b>；失败 / 掉速那一刻，截「已连上 N / DHT N 节点」两个数给我。
+</div>
+
+<h2>八、一句话总结</h2>
+
+<div class="card">
+  <p style="margin:0"><b class="big">不是「根本做不到」，是「背着四个沙袋在跟职业选手比」。</b></p>
+  <p style="margin:8px 0 0">先把沙袋卸了（P0 三条），卸完还差的，才是真正属于「纯客户端 vs 服务器」的物理差距 ——
+  那部分不接服务端就追不平，我如实说在前头。</p>
+</div>
+
+<div class="foot">
+  依据：VideoGrab 源码（v1.0.248：<code>MagnetEngine.swift</code> / <code>vendor/ltbridge/ltbridge.cpp</code> /
+  <code>.github/workflows/build-libtorrent.yml</code>）+ libtorrent v2.0.10 官方构建文档（building.rst / CMakeLists.txt）。
+  「加密连接」相关结论以 v2.0.10 的 CMakeLists 源码为准（encryption=ON 仅加编自带的 <code>pe_crypto.cpp</code>，无外部依赖）。<br>
+  诊断日期：2026-10-09 · 本报告只做归因，未改任何代码。
+</div>
+
+</div>
+</body>
+</html>
