@@ -419,6 +419,44 @@ struct ContentView: View {
     /// 地址栏是否正在被编辑 —— 正在打字时，页面导航不能覆盖他输入的内容
     @FocusState private var urlFocused: Bool
 
+    /// ★★ v1.0.243：网页弹窗询问的**软菜单** —— 就近展开在"你点的位置"附近。
+    ///
+    /// 形态按用户给的参考截图定：**不要挡在屏幕正中间的居中对话框**（那是 `.alert` 的样子），
+    /// 要的是"在你点的那块地方冒出来一列选项"。
+    /// ★ 位置规则（照截图）：
+    ///   · 宽度 = 屏宽 × 0.78，左右各留最少 12pt；
+    ///   · x = 以点击点为基准左移 10pt，再夹进屏幕；
+    ///   · y = **优先落在点击点下方**；下面放不下就翻到上方；
+    ///   · 拿不到点击位置（`popupAnchor == nil`）时退到"屏幕上偏 + 靠左"，**反正不居中**。
+    @ViewBuilder
+    private func popupMenuLayer(_ ask: PopupAskInfo) -> some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let menuW = min(w - 24, max(220, w * 0.78))
+            let menuH: CGFloat = 48 + 3 * 47      // 说明区 + 三行（估值，只用于决定往哪边摆）
+            let anchor = model.popupAnchor ?? CGPoint(x: w * 0.10, y: h * 0.32)
+            let x = min(max(8, anchor.x - 10), max(8, w - menuW - 8))
+            let below = anchor.y + 12
+            let y = (below + menuH <= h - 12) ? below : max(12, anchor.y - menuH - 12)
+
+            ZStack(alignment: .topLeading) {
+                // 点外面任意处 = 关掉（截图里没有"取消"那一项，就靠这个）
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.answerPopup(.cancel) }
+
+                PopupMenuCard(info: ask,
+                              onPick: { model.answerPopup($0) },
+                              width: menuW)
+                    .offset(x: x, y: y)
+            }
+        }
+        // ★ 让这一层的坐标系**跟窗口对齐**：`popupAnchor` 存的是窗口坐标
+        //   （见 `BrowserModel.onTapPoint`），不铺满全屏的话会差一个安全区的高度。
+        .ignoresSafeArea()
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -613,22 +651,18 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.18), value: showMenu)
         // （旧版这里是「下载这个视频？」的确认条 —— 已由长按菜单取代，见 LongPressMenuView）
-        // ★★ v1.0.241：**网页开了弹窗 → 问"怎么打开"**。
-        //   为什么挂在这儿、为什么用 SwiftUI 的 `.alert` 而不是 UIKit 的 UIAlertController：
-        //   老写法要"找宿主控制器 present"，而顶层控制器上已经有我们自己的 sheet
-        //   （设置 / 嗅探面板 / 下载页 / 分享都是 sheet）时会**静默失败**，
-        //   连带着 `dialogBusy` 被永久锁死 → 那个菜单**从来没显示过**（用户实测反馈）。
-        //   SwiftUI 的 `.alert` 走另一条路：界面在，就一定能显示。
-        .alert("当前网页触发了弹出式窗口",
-               isPresented: Binding(get: { model.popupAsk != nil },
-                                    set: { if !$0 { model.answerPopup(.cancel) } }),
-               presenting: model.popupAsk) { _ in
-            Button("当前窗口加载") { model.answerPopup(.inPlace) }
-            Button("新窗口打开") { model.answerPopup(.newTab) }
-            Button("后台窗口打开") { model.answerPopup(.background) }
-            Button("取消", role: .cancel) { model.answerPopup(.cancel) }
-        } message: { info in
-            Text(info.url)
+        // ★★ v1.0.243：**网页开了弹窗 → 软菜单（就近展开）**。
+        //   用户 2026-10-09 明确纠正形态：**不要挡在屏幕正中间的居中对话框**
+        //   （v1.0.241 用的 `.alert` 就是那个样子 —— 他拿两张截图对比过），
+        //   要的是"在你点的那块地方冒出来一列选项"。
+        //   位置来自 `model.popupAnchor`（挂在 WebView 上的 tap 手势记的"你最后点在哪"）。
+        //   ★ 为什么不用 UIKit 的 UIAlertController：老写法要"找宿主控制器 present"，
+        //     而顶层控制器上已有我们自己的 sheet 时会**静默失败**（那个菜单因此从没显示过）。
+        //     现在这一层是纯 SwiftUI 的 overlay —— 界面在，就一定能显示。
+        .overlay {
+            if let ask = model.popupAsk {
+                popupMenuLayer(ask)
+            }
         }
         .alert("通过画中画保活后台下载", isPresented: $showPiPAsk) {
             Button("取消", role: .cancel) {}

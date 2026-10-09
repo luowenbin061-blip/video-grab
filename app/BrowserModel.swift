@@ -426,6 +426,12 @@ final class BrowserModel: NSObject, ObservableObject {
     ///   这个菜单从做出来到 v1.0.240 **一次都没显示过**。细节见 `askPopup` 的注释。
     @Published var popupAsk: PopupAskInfo?
 
+    /// ★★ v1.0.243：**你最后一次点在哪**（WebView 坐标）—— 那个软菜单要**就近展开**用它。
+    ///
+    /// 由挂在 WebView 上的 tap 手势记（`onTapPoint`，只旁听、不影响网页）。
+    /// 拿不到（nil）时界面退到"屏幕上偏一点"的兜底位置，**绝不挡正中间**。
+    @Published var popupAnchor: CGPoint?
+
     /// 等用户选的时候，把"这一次的现场"留住（选完要用）。
     /// ★ 不用 weak：菜单显示期间**必须**保证这个 WebView 还在（就几秒，代价可忽略）。
     private var pendingPopupWebView: WKWebView?
@@ -831,6 +837,15 @@ final class BrowserModel: NSObject, ObservableObject {
         longPress.cancelsTouchesInView = false
         longPress.delegate = self
         wv.addGestureRecognizer(longPress)
+        // ★★ v1.0.243：**记住"你最后点在哪"** —— 网页弹窗那个软菜单要**就近展开**
+        //   （用户给的参考截图：菜单出现在点击区域附近，不是屏幕正中间）。
+        //   ★ 只"旁听"：`cancelsTouchesInView = false` + delegate 允许同时识别 →
+        //     绝不影响网页自己的点击与滚动（跟上面那个长按手势一个规矩）。
+        //   ★ 只有"点一下"才记，滚动不记（tap 手势天生如此）。
+        let tap = UITapGestureRecognizer(target: self, action: #selector(onTapPoint(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        wv.addGestureRecognizer(tap)
         // UA：默认是**移动版 Safari** —— 有些站会检测"是不是 App 内置浏览器"，
         // 用 Safari 的串能降低被拒概率。
         // ★ v1.0.119：加了「桌面模式」开关 —— 打开就用 Mac Safari 的串。
@@ -2953,6 +2968,17 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
 // MARK: - 长按视频 → 弹菜单
 
 extension BrowserModel {
+
+    /// ★★ v1.0.243：记一下"你最后点在哪" —— 网页弹窗那个**软菜单要就近展开**（用户给的截图）。
+    ///   只**旁听**（`cancelsTouchesInView = false` + delegate 允许同时识别），
+    ///   绝不干预网页自己的点击与滚动。记不到也无所谓 —— 界面那边有兜底位置。
+    @objc func onTapPoint(_ g: UITapGestureRecognizer) {
+        guard g.state == .ended, let wv = g.view as? WKWebView else { return }
+        // ★ 存**窗口坐标**（`to: nil`），不是 WebView 坐标 ——
+        //   界面那层的 overlay 要拿它比位置；WebView 坐标会少算顶栏/状态栏那一截，
+        //   菜单就会偏到点击点上方去。
+        popupAnchor = wv.convert(g.location(in: wv), to: nil)
+    }
 
     @objc func onLongPress(_ g: UILongPressGestureRecognizer) {
         // 设置里关了「长按视频弹下载菜单」→ 什么都不做（手势还挂着，但是空的）
