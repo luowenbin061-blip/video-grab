@@ -234,4 +234,48 @@ final class BiliParseTests: XCTestCase {
         XCTAssertEqual(BiliParse.qualityName(116), "1080P60")
         XCTAssertEqual(BiliParse.qualityName(1), "清晰度 1")
     }
+
+    // MARK: - v1.0.254：多档清晰度 + 无流分类
+
+    /// 实测样本形态：dash.video 含 2 档 × 多编码 → 要出 2 个可选档（降序、每档 avc1 优先）
+    func testAllQualitiesGroupsAndSorts() {
+        let json = """
+        {"code":0,"data":{"accept_quality":[112,80,64,32,16],"quality":64,"dash":{
+          "video":[
+            {"id":32,"baseUrl":"https://v/480-avc.m4s","codecs":"avc1.640033","width":852,"height":480,"bandwidth":700},
+            {"id":32,"baseUrl":"https://v/480-hev.m4s","codecs":"hvc1.1.6","width":852,"height":480,"bandwidth":900},
+            {"id":16,"baseUrl":"https://v/360-avc.m4s","codecs":"avc1.640033","width":640,"height":360,"bandwidth":350},
+            {"id":16,"baseUrl":"https://v/360-av01.m4s","codecs":"av01.0.08M","width":640,"height":360,"bandwidth":300}],
+          "audio":[{"id":30280,"baseUrl":"https://a/192k.m4s","codecs":"mp4a.40.2","bandwidth":320000}]}}}
+        """
+        let qs = BiliParse.allQualities(playURLJSON: Data(json.utf8))
+        XCTAssertEqual(qs?.count, 2)
+        XCTAssertEqual(qs?.first?.value, 32)        // 降序：480P 在前
+        XCTAssertEqual(qs?.first?.name, "480P")
+        // 每档挑 avc1（哪怕 hev1 带宽更大）
+        XCTAssertEqual(qs?.first?.videoURL.absoluteString, "https://v/480-avc.m4s")
+        XCTAssertEqual(qs?[1].value, 16)
+        XCTAssertEqual(qs?[1].videoURL.absoluteString, "https://v/360-avc.m4s")
+    }
+
+    /// 没有 dash → nil（不许崩，也不许拿空数组冒充"可选档位"）
+    func testAllQualitiesNilWithoutDash() {
+        XCTAssertNil(BiliParse.allQualities(playURLJSON: Data("{\"code\":0,\"data\":{}}".utf8)))
+        XCTAssertNil(BiliParse.allQualities(playURLJSON: Data("nope".utf8)))
+    }
+
+    /// 无流分类："多点几次能成"的真身 = 风控伪装成功（code=0 但 data 只有 v_voucher）
+    func testNoStreamReasonClassifies() {
+        let voucher = Data("{\"code\":0,\"data\":{\"v_voucher\":\"vv-123\"}}".utf8)
+        XCTAssertTrue(BiliParse.noStreamReason(voucher).contains("安全验证"))
+        // data 缺失 / 为 null → 空响应
+        XCTAssertTrue(BiliParse.noStreamReason(Data("{\"code\":0}".utf8)).contains("空响应"))
+        XCTAssertTrue(BiliParse.noStreamReason(Data("{\"code\":0,\"data\":null}".utf8))
+            .contains("空响应"))
+        // 明确错误码 → 原样报
+        XCTAssertTrue(BiliParse.noStreamReason(Data("{\"code\":-352}".utf8)).contains("-352"))
+        // 有 data 但无流 → 带诊断键名
+        XCTAssertTrue(BiliParse.noStreamReason(Data("{\"code\":0,\"data\":{\"play_conf\":1}}".utf8))
+            .contains("play_conf"))
+    }
 }

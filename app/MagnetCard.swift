@@ -182,42 +182,47 @@ struct MagnetCard: View {
     }
 
     private var fileList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(files, id: \.index) { f in
-                HStack(spacing: 8) {
-                    Image(systemName: icon(f.kind))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(f.name)
-                            .font(.system(size: 13))
-                            .lineLimit(1)
-                        Text(MagnetStatus.humanSize(f.size))
-                            .font(.system(size: 11))
+        // ★ v1.0.254：用户实测"199 个文件的列表没法上下滑" —— 根因是这里只有
+        //   VStack + maxHeight + clipped（**没有滚动容器**）：超出的行被直接裁掉、滚不动。
+        //   修复：包一层 ScrollView（LazyVStack 扛大列表 —— 199 行全展开太重）。
+        ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(files, id: \.index) { f in
+                    HStack(spacing: 8) {
+                        Image(systemName: icon(f.kind))
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    // ★ v1.0.250：能边播的文件（mp4 系）给个播放按钮
-                    if canStream(f) {
-                        Button { play(f) } label: {
-                            Image(systemName: "play.circle")
-                                .font(.system(size: 18))
-                                .foregroundStyle(Color.accentColor)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(f.name)
+                                .font(.system(size: 13))
+                                .lineLimit(1)
+                            Text(MagnetStatus.humanSize(f.size))
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.plain)
+                        Spacer()
+                        // ★ v1.0.250：能边播的文件（mp4 系）给个播放按钮
+                        if canStream(f) {
+                            Button { play(f) } label: {
+                                Image(systemName: "play.circle")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Toggle("", isOn: binding(for: f))
+                            .labelsHidden()
+                            .scaleEffect(0.85)
                     }
-                    Toggle("", isOn: binding(for: f))
-                        .labelsHidden()
-                        .scaleEffect(0.85)
+                    .padding(.vertical, 5)
+                    if f.index != files.last?.index { Divider() }
                 }
-                .padding(.vertical, 5)
-                if f.index != files.last?.index { Divider() }
             }
+            .padding(.trailing, 4)   // 给滚动条留位置
         }
-        .frame(maxHeight: 240)
-        .clipped()
-        .id(files.count)          // 文件数变了强制刷新（懒加载列表的老问题）
+        .frame(maxHeight: 240)       // ★ 高度限制放在 ScrollView 上（放 LazyVStack 上滑动会失效）
+        .id(files.count)             // 文件数变了强制刷新（懒加载列表的老问题）
     }
 
     /// ★ v1.0.250：待开始阶段的底部 —— 一条大按钮「开始下载」。

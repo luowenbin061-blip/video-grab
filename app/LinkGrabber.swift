@@ -29,6 +29,16 @@ final class LinkGrabber: ObservableObject {
     @Published var error: String?
     @Published var done = false
 
+    // ★ v1.0.254：B站解析完先停在"选清晰度"（用户实测要求"各个清晰度让我选"）。
+    /// 非空 = 等待用户选档（界面据此显示选择区）。
+    @Published var qualityOptions: [BiliParse.Quality] = []
+    /// 当前选中的档位码（默认最高档）。
+    @Published var selectedQuality: Int = 0
+    /// "登录解锁更高画质"的提示（空 = 不显示）。
+    @Published var qualityHint: String = ""
+    /// 解析成功的完整结果（用户点「下载」后拿它 + 选中档去下载）。
+    private var pendingResolved: BiliParse.Resolved?
+
     // MARK: - 认链接（实现全在 LinkText，这里只是转发）
 
     /// ★ `nonisolated`：这几个是**纯函数**，不碰任何界面状态。
@@ -53,6 +63,11 @@ final class LinkGrabber: ObservableObject {
         progress = 0
         error = nil
         done = false
+        // ★ v1.0.254：选档状态一并清（换链接 / 重开卡片时不许残留上一条的档位）
+        qualityOptions = []
+        selectedQuality = 0
+        qualityHint = ""
+        pendingResolved = nil
     }
 
     func handle(link: String, center: DownloadCenter, model: BrowserModel) {
@@ -100,16 +115,61 @@ final class LinkGrabber: ObservableObject {
                 //   这样用户**不用手抄 Cookie**，在浏览器里登一次就行。
                 let cookie = await Self.biliCookie()
                 let r = try await BiliParse.resolve(link: link, cookie: cookie)
-                try await downloadAndMerge(r, center: center)
+                // ★★ v1.0.254：解析成功**先停在"选清晰度"**（不直接开下）——
+                //   用户实测要求："各个清晰度让我选我要下载的画质"。
+                //   界面据此显示档位选择区 + 「下载」按钮（见 PasteLinkSheet.qualityPicker）。
+                pendingResolved = r
+                qualityOptions = r.qualities
+                selectedQuality = r.qualities.first?.value ?? 0
+                qualityHint = Self.qualityHintText(for: r)
                 busy = false
-                done = true
-                stage = "已加入下载：\(r.title)"
+                stage = "选择清晰度"
             } catch {
                 busy = false
                 self.error = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription
             }
         }
+    }
+
+    /// ★ v1.0.254：用户点「下载」—— 用挑中的档位开始下载。
+    /// （下载的是**解析时已经拿到的流地址**，不再重新请求 —— 快、且避免二次风控。）
+    func downloadSelected(center: DownloadCenter) {
+        guard !busy, let r = pendingResolved, !qualityOptions.isEmpty else { return }
+        let q = qualityOptions.first { $0.value == selectedQuality } ?? qualityOptions[0]
+        var rr = r
+        rr.videoURL = q.videoURL
+        rr.quality = q.value
+        rr.qualityText = q.name
+        busy = true
+        stage = "准备下载…"
+        Task {
+            do {
+                try await downloadAndMerge(rr, center: center)
+                busy = false
+                done = true
+                stage = "已加入下载：\(rr.title)"
+            } catch {
+                busy = false
+                self.error = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// ★ v1.0.254：「为什么没有更高画质 / 怎么解锁」的提示文案（空 = 不提示）。
+    ///   规则：把 `accept_quality` 里**高于实际下发最高档**的档名列出来 ——
+    ///   未登录 → 引导去 App 浏览器登录（一次即可）；已登录 → 说明那是大会员档。
+    nonisolated static func qualityHintText(for r: BiliParse.Resolved) -> String {
+        guard let top = r.qualities.first?.value else { return "" }
+        let higher = r.allowedQualities.filter { $0 > top }.sorted(by: >)
+        guard !higher.isEmpty else { return "" }
+        let names = higher.prefix(3).map { BiliParse.qualityName($0) }.joined(separator: " / ")
+        if r.loggedIn {
+            return "更高的 \(names) 需要大会员。"
+        }
+        return "当前未登录，平台只下发到 \(BiliParse.qualityName(top))；"
+            + "在 App 浏览器里登录 B站 后可下载 \(names)。"
     }
 
     private func downloadAndMerge(_ r: BiliParse.Resolved,

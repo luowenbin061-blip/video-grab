@@ -191,7 +191,8 @@ enum LinkText {
     static func hint(for kind: Kind) -> String {
         switch kind {
         case .magnet: return "BT 下载（先拿文件列表，再挑要下的）"
-        case .bili:   return "解析后下最高清（音视频分开下、自动合并）"
+        // ★ v1.0.254：不再是"下最高清"——解析后会列出可选清晰度让用户自己挑。
+        case .bili:   return "解析后可挑清晰度（音视频分开下、自动合并）"
         case .web(let p): return "\(p.rawValue)：在浏览器打开，播放后在嗅探面板下载"
         }
     }

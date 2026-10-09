@@ -224,6 +224,38 @@ enum BiliParse {
         var bandwidth: Int
     }
 
+    /// ★ v1.0.254：一条**可选清晰度档位** —— 界面给用户挑的就是它。
+    ///   来源 = `dash.video` 里**实际下发**的档位（不是 accept_quality：
+    ///   那个含"账号权限里有、但这次没下发"的档 —— 列出来也下不到，别骗用户）。
+    ///   音频不分档（dash.audio 与清晰度无关），由 `Resolved.audioURL` 统一带。
+    struct Quality: Equatable {
+        var value: Int          // 清晰度码
+        var name: String        // 给人看的名字（1080P / 480P…）
+        var videoURL: URL       // 这一档的视频流地址（已挑好最优编码：avc1 优先）
+    }
+
+    /// ★ v1.0.254：把 dash.video 里实际下发的**全部清晰度档**列出来（降序）。
+    ///   每档挑一条最优编码（avc1 优先、同编码带宽大者 —— 与 `pickVideo` 同规则）。
+    ///   没有 dash / 没有可用流 → nil（调用方走 durl 退路或报错）。
+    static func allQualities(playURLJSON data: Data) -> [Quality]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let d = root["data"] as? [String: Any],
+              let dash = d["dash"] as? [String: Any],
+              let vids = dash["video"] as? [[String: Any]], !vids.isEmpty else { return nil }
+        let videos = vids.compactMap(stream(from:))
+        guard !videos.isEmpty else { return nil }
+        // 按清晰度码分组 → 每组挑最优编码
+        var groups: [Int: [Stream]] = [:]
+        for v in videos { groups[v.quality, default: []].append(v) }
+        var out: [Quality] = []
+        for (q, list) in groups {
+            guard let best = pickVideo(list), let u = URL(string: best.url) else { continue }
+            out.append(Quality(value: q, name: qualityName(q), videoURL: u))
+        }
+        out.sort { $0.value > $1.value }        // 降序：高清在前
+        return out.isEmpty ? nil : out
+    }
+
     /// 从 `playurl` 的响应里挑出**一条视频 + 一条音频**。
     ///
     /// 挑法：
@@ -241,23 +273,8 @@ enum BiliParse {
            let vids = dash["video"] as? [[String: Any]], !vids.isEmpty {
             let videoStreams = vids.compactMap(stream(from:))
             guard let best = pickVideo(videoStreams) else { return nil }
-            let audioStreams = (dash["audio"] as? [[String: Any]] ?? []).compactMap(stream(from:))
-            // ★ 杜比 / 无损单独挂在 dash 下（要会员）—— 能拿到就用，拿不到就算了
-            var audios = audioStreams
-            if let dolby = dash["dolby"] as? [String: Any],
-               let a = (dolby["audio"] as? [[String: Any]] ?? []).compactMap(stream(from:)).first {
-                audios.append(a)
-            }
-            // ★ 这两个的形状**不一样**（照平台实际响应写的，别想当然）：
-            //   · `dash.dolby.audio` 是**数组**
-            //   · `dash.flac.audio`  是**单个对象**
-            //   写成一样的话，`?? []` 会把类型推成字典、直接编译不过（run #244 就栽在这）。
-            if let flac = dash["flac"] as? [String: Any],
-               let fa = flac["audio"] as? [String: Any],
-               let a = stream(from: fa) {
-                audios.append(a)
-            }
-            return (best, pickAudio(audios))
+            // ★ v1.0.254：音频挑选抽到 `bestAudio`（"列档位"那条新路也要它，别写两份）
+            return (best, bestAudio(playURLJSON: data))
         }
 
         // ② 退路：durl（一个完整 mp4，音视频在一起）
@@ -305,6 +322,30 @@ enum BiliParse {
         let mp4a = list.filter { $0.codecs.hasPrefix("mp4a") }
         let pool = mp4a.isEmpty ? list : mp4a
         return pool.max { $0.bandwidth < $1.bandwidth }
+    }
+
+    /// ★ v1.0.254：从 playurl 响应里直接挑一条最优音频。
+    ///   （从原 `streams()` 里抽出来 —— 现在"列全部档位"和"挑最高档"两条路都要它。）
+    static func bestAudio(playURLJSON data: Data) -> Stream? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let d = root["data"] as? [String: Any],
+              let dash = d["dash"] as? [String: Any] else { return nil }
+        var audios = (dash["audio"] as? [[String: Any]] ?? []).compactMap(stream(from:))
+        // ★ 杜比 / 无损单独挂在 dash 下（要会员）—— 能拿到就用，拿不到就算了
+        if let dolby = dash["dolby"] as? [String: Any],
+           let a = (dolby["audio"] as? [[String: Any]] ?? []).compactMap(stream(from:)).first {
+            audios.append(a)
+        }
+        // ★ 这两个的形状**不一样**（照平台实际响应写的，别想当然）：
+        //   · `dash.dolby.audio` 是**数组**
+        //   · `dash.flac.audio`  是**单个对象**
+        //   写成一样的话，`?? []` 会把类型推成字典、直接编译不过（run #244 就栽在这）。
+        if let flac = dash["flac"] as? [String: Any],
+           let fa = flac["audio"] as? [String: Any],
+           let a = stream(from: fa) {
+            audios.append(a)
+        }
+        return pickAudio(audios)
     }
 
     /// `accept_quality`（当前登录状态能拿到哪些清晰度）—— 用来提示"未登录只有 480P"。
@@ -357,11 +398,19 @@ enum BiliParse {
     /// 解析出来的结果 —— 足够发起下载。
     struct Resolved {
         var title: String
+        /// 默认档（最高档）的视频地址 —— 用户选定后会被换成挑中的那档
+        /// （见 `LinkGrabber.downloadSelected`）。
         var videoURL: URL
         var audioURL: URL?      // nil = 这条流本身就是完整的（durl 那条退路）
         var quality: Int
         var qualityText: String
         var loggedIn: Bool
+        /// ★ v1.0.254：全部可选档位（降序；durl 退路时只有一条）。
+        var qualities: [Quality] = []
+        /// ★ v1.0.254：accept_quality（账号权限内可接受的档位池）——
+        ///   只用来生成"登录可解锁更高画质"的提示，**不作为可选项**
+        ///   （池里有的档实际没下发，列出来也下不到）。
+        var allowedQualities: [Int] = []
     }
 
     enum ParseError: LocalizedError {
@@ -404,54 +453,109 @@ enum BiliParse {
         guard let ref = ref(inLink: real) else { throw ParseError.noVideoID }
         let page = page(inLink: real)
 
-        // ② 密钥（★ 未登录时这个接口 code 是 -101，但 wbi_img 照样有 —— 判据里不看 code）
+        // ② ★ v1.0.254：游客指纹 —— cookie 里没有 buvid3 时先补一份（官方 finger/spi）。
+        //   B站 对"完全无指纹"的请求会概率性给风控空响应（用户实测"多点几次才能下"
+        //   的来源之一）。失败就原样返回 —— 绝不因此中断解析。
+        let ck = await ensureBuvid(cookie: cookie, userAgent: userAgent)
+
+        // ③ 密钥（★ 未登录时这个接口 code 是 -101，但 wbi_img 照样有 —— 判据里不看 code）
         let nav = try await get("https://api.bilibili.com/x/web-interface/nav",
-                                cookie: cookie, userAgent: userAgent, referer: nil)
+                                cookie: ck, userAgent: userAgent, referer: nil)
         guard let keys = imgSubKeys(navJSON: nav.data) else { throw ParseError.noWbiKeys }
         let loggedIn = (int64(jsonValue(nav.data, "code")) ?? -101) == 0
 
-        // ③ 视频信息（拿 cid / 标题）
+        // ④ 视频信息（拿 cid / 标题）
         let view = try await get("https://api.bilibili.com/x/web-interface/view?"
                                  + ref.queryItem,
-                                 cookie: cookie, userAgent: userAgent, referer: nil)
+                                 cookie: ck, userAgent: userAgent, referer: nil)
         guard let info = videoInfo(viewJSON: view.data, page: page) else {
             let code = Int(int64(jsonValue(view.data, "code")) ?? -1)
             throw ParseError.apiFailed("view", code)
         }
 
-        // ④ 播放地址（这条接口要 wbi 签名）
-        let params: [String: String] = [
-            "cid": String(info.cid),
-            "qn": "127",            // 要最高；实际给多少由平台的 accept_quality 决定
-            "fnval": "4048",        // 要 DASH（音视频分开的那套）
-            "fnver": "0",
-            "fourk": "1",
-        ]
-        var q = ref.queryItem + "&" + wbiQuery(params: params, imgKey: keys.imgKey,
-                                               subKey: keys.subKey,
-                                               wts: Int(Date().timeIntervalSince1970))
-        if page > 1 { q += "&p=" + String(page) }
-        let play = try await get("https://api.bilibili.com/x/player/wbi/playurl?" + q,
-                                 cookie: cookie, userAgent: userAgent, referer: nil)
+        // ⑤ 播放地址（这条接口要 wbi 签名 —— 每次请求都重新签名）。
+        // ★★ v1.0.254：**自动重试** —— 把用户"多点几次开始才能下载"的痛点一次点掉：
+        //   · code=0 却没流（风控"伪装成功"，data 里只有 v_voucher 之类）；
+        //   · 风控错误码 -352 / -412；
+        //   · 网络层瞬时错误（超时/抖动）。
+        //   以上都自动重试（最多 3 次尝试，间隔 0.8s / 1.6s 指数退避）。
+        //   ★ 重试**不重跑 nav/view** —— 那两个不参与风控判定，重跑只是多两次请求。
+        var lastData = Data()
+        var dashList: [Quality]?
+        var durlPick: (video: Stream, audio: Stream?)?
+        for attempt in 0..<3 {
+            let params: [String: String] = [
+                "cid": String(info.cid),
+                "qn": "127",            // 要最高；实际给多少由平台的权限决定
+                "fnval": "4048",        // 要 DASH（音视频分开的那套）
+                "fnver": "0",
+                "fourk": "1",
+            ]
+            let qq = ref.queryItem + "&" + wbiQuery(params: params, imgKey: keys.imgKey,
+                                                    subKey: keys.subKey,
+                                                    wts: Int(Date().timeIntervalSince1970))
+            let full = "https://api.bilibili.com/x/player/wbi/playurl?"
+                + qq + (page > 1 ? "&p=" + String(page) : "")
 
-        // ⑤ 挑流
-        guard let picked = streams(playURLJSON: play.data) else {
-            let code = Int(int64(jsonValue(play.data, "code")) ?? -1)
-            throw ParseError.noStream(code == 0 ? "响应里既没有 DASH 也没有 durl"
-                                                : "playurl 返回错误码 \(code)")
+            let playData: Data
+            do {
+                playData = try await get(full, cookie: ck, userAgent: userAgent,
+                                         referer: nil).data
+            } catch {
+                // 网络层错误也重试；最后一次仍失败 → 原样抛（那个文案本来就是对的）
+                if attempt < 2 {
+                    try? await Task.sleep(nanoseconds: UInt64(800_000_000) << attempt)
+                    continue
+                }
+                throw error
+            }
+            lastData = playData
+
+            // 拿到 DASH 档位 → 成功
+            if let qs = allQualities(playURLJSON: playData), !qs.isEmpty {
+                dashList = qs
+                break
+            }
+            // durl 退路（老接口 / 只有整段 mp4）→ 也是合法结果，重试没有意义
+            if let picked = streams(playURLJSON: playData), picked.video.codecs == "durl" {
+                durlPick = picked
+                break
+            }
+            // 失败：只有"值得重试的"才重试（code=0 的无流 / 风控码）
+            let code = Int(int64(jsonValue(playData, "code")) ?? -1)
+            let retryable = (code == 0 || code == -352 || code == -412)
+            if !retryable || attempt >= 2 { break }
+            // 风控是概率性的：等一拍再试（立刻重试反而更容易撞上）
+            try? await Task.sleep(nanoseconds: UInt64(800_000_000) << attempt)
         }
-        guard let video = URL(string: picked.video.url) else {
-            throw ParseError.noStream("流地址不是合法 URL")
+
+        // ⑥ 组装结果
+        if let qs = dashList, let top = qs.first {
+            return Resolved(title: info.title.isEmpty ? "B站视频" : info.title,
+                            videoURL: top.videoURL,
+                            audioURL: bestAudio(playURLJSON: lastData)
+                                .flatMap { URL(string: $0.url) },
+                            // ★ 以**实际下发的流**为准 —— data.quality 字段实测不可靠
+                            //   （报 720P 而实际流只有 480P）
+                            quality: top.value,
+                            qualityText: top.name,
+                            loggedIn: loggedIn,
+                            qualities: qs,
+                            allowedQualities: acceptQuality(playURLJSON: lastData))
         }
-        // ★ 拿到的清晰度以**实际给的**为准（未登录会给降级），不是我们要的
-        let gotQuality = (int64(jsonValue(play.data, "quality")).map { Int($0) })
-            ?? picked.video.quality
-        return Resolved(title: info.title.isEmpty ? "B站视频" : info.title,
-                        videoURL: video,
-                        audioURL: picked.audio.flatMap { URL(string: $0.url) },
-                        quality: gotQuality,
-                        qualityText: qualityName(gotQuality),
-                        loggedIn: loggedIn)
+        if let picked = durlPick, let video = URL(string: picked.video.url) {
+            let gq = picked.video.quality
+            return Resolved(title: info.title.isEmpty ? "B站视频" : info.title,
+                            videoURL: video,
+                            audioURL: nil,
+                            quality: gq,
+                            qualityText: qualityName(gq),
+                            loggedIn: loggedIn,
+                            qualities: [Quality(value: gq, name: qualityName(gq), videoURL: video)],
+                            allowedQualities: acceptQuality(playURLJSON: lastData))
+        }
+        // 全失败 → 分类报错（风控伪装成功 / 空响应 / 真·无流，分开说）
+        throw ParseError.noStream(noStreamReason(lastData))
     }
 
     /// 跟一次 302，返回最终地址（拿不到就返回 nil，调用方退回原链接）。
@@ -497,5 +601,52 @@ enum BiliParse {
             return nil
         }
         return root[key]
+    }
+
+    /// ★ v1.0.254：游客指纹（buvid3 / buvid4）—— cookie 里没有时向官方
+    ///   `finger/spi` 接口要一份补上。
+    ///   为什么：B站 对"完全无指纹"的请求会概率性给风控空响应（用户实测
+    ///   "多点几次开始才能下载"的来源之一）。用**真实接口**拿（不自造）。
+    ///   ★ 已有 buvid3 就直接返回（别覆盖用户的登录态指纹）；
+    ///   ★ 请求失败 / 解析不出 → 原样返回，绝不因此中断解析。
+    static func ensureBuvid(cookie: String, userAgent: String) async -> String {
+        if cookie.contains("buvid3=") { return cookie }
+        guard let (data, _) = try? await get("https://api.bilibili.com/x/frontend/finger/spi",
+                                             cookie: cookie, userAgent: userAgent,
+                                             referer: nil),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let d = root["data"] as? [String: Any] else { return cookie }
+        let b3 = (d["b_3"] as? String) ?? ""
+        let b4 = (d["b_4"] as? String) ?? ""
+        if b3.isEmpty && b4.isEmpty { return cookie }
+        var parts: [String] = []
+        if !cookie.isEmpty { parts.append(cookie) }
+        if !b3.isEmpty { parts.append("buvid3=" + b3) }
+        if !b4.isEmpty { parts.append("buvid4=" + b4) }
+        return parts.joined(separator: "; ")
+    }
+
+    /// ★ v1.0.254：playurl"没有流"时的**分类**（纯函数、可单测）。
+    ///   用户实测"多点几次就能成"的真身：B站风控有时返回 code=0 的**伪装成功**
+    ///   （data 里只有 `v_voucher` 验证挑战，没有 dash/durl）。
+    ///   以前一律报"响应里既没有 DASH 也没有 durl"——含糊且吓人；
+    ///   现在分开说：风控验证 / 空响应 / 真·无流（附诊断键名）。
+    static func noStreamReason(_ data: Data) -> String {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "响应不是 JSON（网络截断？）。再点一次「开始」试试。"
+        }
+        let code = int64(root["code"]) ?? -1
+        if code != 0 { return "playurl 返回错误码 \(code)" }
+        let dv = root["data"]
+        if dv == nil || dv is NSNull {
+            return "B站 返回了空响应（可能被限流）。等几秒再点一次「开始」。"
+        }
+        let dataKeys = (dv as? [String: Any]).map { Array($0.keys) } ?? []
+        if dataKeys.contains("v_voucher") {
+            return "B站 要求安全验证（风控拦截）。再点一次「开始」通常能过；"
+                + "还不行就等一分钟再试。"
+        }
+        return "B站 返回的响应里没有可下载的流（诊断：data 键=["
+            + dataKeys.prefix(6).joined(separator: ",") + "]）。"
     }
 }

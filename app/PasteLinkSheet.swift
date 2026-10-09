@@ -77,6 +77,13 @@ struct PasteLinkSheet: View {
                 }
                 .disabled(trimmed.isEmpty || grabber.busy)
 
+                // ── B站：清晰度选择（★ v1.0.254：解析完先让用户挑画质）──
+                //   条件：有可选档位 + 不在干活 + 没完成。
+                //   （下载失败时 busy=false、done=false → 选择区保留，可换个档再点「下载」。）
+                if !grabber.qualityOptions.isEmpty && !grabber.busy && !grabber.done {
+                    qualityPicker
+                }
+
                 // ── 磁力：BT 引擎那一段（找资源 / 列文件 / 勾选 / 进度 / 下完）──
                 //   ★ v1.0.250：认出来是磁力、**或者有任务正在跑**都要显示 ——
                 //   以前只看输入框：重开工具箱时输入框是空的 → 卡片整个消失，
@@ -125,6 +132,52 @@ struct PasteLinkSheet: View {
             Button("不换", role: .cancel) {}
         } message: {
             Text("开始新任务会停掉并清除当前这条磁力（下载页里已保存的文件不受影响）。")
+        }
+    }
+
+    /// ★ v1.0.254：B站 解析完成后的清晰度选择区 —— 档位横排 + 登录提示 + 「下载」。
+    ///   档位只列**实际下发的**（下得到的）；"更高但没下发"的档在提示行里说明怎么解锁。
+    private var qualityPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("选择清晰度")
+                .font(.system(size: 13, weight: .semibold))
+            // 档位横排（最多 5-6 个，自适应换行）
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 8)], spacing: 8) {
+                ForEach(grabber.qualityOptions, id: \.value) { q in
+                    Button {
+                        grabber.selectedQuality = q.value
+                    } label: {
+                        Text(q.name)
+                            .font(.system(size: 13,
+                                          weight: grabber.selectedQuality == q.value
+                                              ? .semibold : .regular))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(grabber.selectedQuality == q.value
+                                        ? Color.accentColor : Color(.secondarySystemBackground))
+                            .foregroundStyle(grabber.selectedQuality == q.value
+                                             ? Color.white : Color.primary)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if !grabber.qualityHint.isEmpty {
+                Text(grabber.qualityHint)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                grabber.downloadSelected(center: center)
+            } label: {
+                Text("下载")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         }
     }
 
