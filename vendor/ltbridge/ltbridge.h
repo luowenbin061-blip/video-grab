@@ -54,6 +54,21 @@ void lt_engine_pause(LTEngine e, int id, int paused);
  * n <= 0 表示"全都下"。 */
 void lt_engine_select_files(LTEngine e, int id, const int *idx, int n);
 
+/* 全部文件都**不下载**（v1.0.250：文件列表出来之后挡"自动开下"；随时可以用
+ * select_files 再打开）。 */
+void lt_engine_select_none(LTEngine e, int id);
+
+/* ── 边下边播（流式读取）── */
+
+/* 把 [fileIndex, off, off+len) 这段字节覆盖的 piece 全部标成「急着要」（插队下载）。
+ * 返回涉及到的 piece 数；负值 = 任务/元数据还没就绪或参数不合法。
+ * ★ 顺手把这些 piece 的优先级从「不下」提回默认 —— 保证边播的文件一定在下载。 */
+int lt_engine_stream_prefer(LTEngine e, int id, int fileIndex, long long off, long long len);
+
+/* 从 off 开始、最多 want 字节，返回「**连续已经下载好**（可直接读磁盘）」的字节数。
+ * 返回 -1 = 任务/元数据不存在或参数不合法。 */
+long long lt_engine_stream_prefix(LTEngine e, int id, int fileIndex, long long off, long long want);
+
 /* ── 轮询 ── */
 
 /* 把这条任务当前的状态写成一段 JSON，塞进 out（UTF-8，带结尾 '\0'）。
@@ -71,7 +86,7 @@ void lt_engine_select_files(LTEngine e, int id, const int *idx, int n);
  *   "name": "种子名",
  *   "meta": true|false,        // 元数据（文件列表）到手没有
  *   "totalBytes": 123456, "doneBytes": 4567, "rateBytes": 1024,
- *   "peers": 3, "progress": 0.37, "trackers": 11,
+ *   "peers": 3, "progress": 0.37, "trackers": 11, "paused": true|false,
  *   "files": [ {"index":0,"path":"a/b.mp4","size":123,"done":0} ]
  * }
  */

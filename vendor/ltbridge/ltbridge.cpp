@@ -9,6 +9,7 @@
  */
 #include "ltbridge.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -158,6 +159,28 @@ const Entry *findEntry(const EngineImpl *e, int id) {
         if (x.id == id) return &x;
     }
     return nullptr;
+}
+
+/// ★ v1.0.250 边下边播：把「文件内的字节区间」映射成「整个种子里的 piece 区间」。
+///   返回 false = 参数越界 / 没元数据。first/last 是**含端**下标，已夹到合法范围。
+bool pieceRangeFor(const lt::torrent_info &ti, int fileIndex,
+                   long long off, long long len, int &first, int &last) {
+    const lt::file_storage &fs = ti.files();
+    if (fileIndex < 0 || fileIndex >= fs.num_files()) return false;
+    const lt::file_index_t fi(fileIndex);
+    const std::int64_t fsize = fs.file_size(fi);
+    if (off < 0 || len <= 0 || off >= fsize) return false;
+    const std::int64_t foff = fs.file_offset(fi);
+    const std::int64_t b0 = foff + off;
+    const std::int64_t b1 = foff + std::min<std::int64_t>(off + len, fsize) - 1;
+    const int pieceLen = ti.piece_length();
+    if (pieceLen <= 0) return false;
+    first = static_cast<int>(b0 / pieceLen);
+    last = static_cast<int>(b1 / pieceLen);
+    const int np = ti.num_pieces();
+    if (first < 0) first = 0;
+    if (last >= np) last = np - 1;
+    return first <= last;
 }
 
 }  // namespace
@@ -369,6 +392,91 @@ void lt_engine_select_files(LTEngine h, int id, const int *idx, int n) {
     th.prioritize_files(pri);
 }
 
+void lt_engine_select_none(LTEngine h, int id) {
+    EngineImpl *e = asImpl(h);
+    if (e == nullptr || !e->ses) return;
+    std::lock_guard<std::mutex> lock(e->mu);
+    const Entry *en = findEntry(e, id);
+    if (en == nullptr) return;
+    lt::torrent_handle th = e->ses->find_torrent(ih1(en->ih));
+    if (!th.is_valid()) return;
+    auto ti = th.torrent_file();
+    if (!ti) return;                       // 元数据还没到手，没得选
+    const int total = ti->files().num_files();
+    const std::vector<lt::download_priority_t> pri(
+        static_cast<std::size_t>(total), lt::dont_download);
+    th.prioritize_files(pri);
+}
+
+/* ── v1.0.250 边下边播 ── */
+
+int lt_engine_stream_prefer(LTEngine h, int id, int fileIndex, long long off, long long len) {
+    EngineImpl *e = asImpl(h);
+    if (e == nullptr || !e->ses) return -1;
+    std::lock_guard<std::mutex> lock(e->mu);
+    const Entry *en = findEntry(e, id);
+    if (en == nullptr) return -1;
+    lt::torrent_handle th = e->ses->find_torrent(ih1(en->ih));
+    if (!th.is_valid()) return -1;
+    auto ti = th.torrent_file();
+    if (!ti) return -1;
+
+    int first = 0, last = 0;
+    if (!pieceRangeFor(*ti, fileIndex, off, len, first, last)) return -2;
+
+    int n = 0;
+    for (int p = first; p <= last; ++p) {
+        const lt::piece_index_t pi(p);
+        // 保险：这个 piece 若被设成「不下」（文件没勾选），先提回默认 —— 不然 deadline 也没用
+        if (th.piece_priority(pi) == lt::dont_download) {
+            th.piece_priority(pi, lt::default_priority);
+        }
+        // 3 秒内希望到手；到期后自动回落普通优先级（不用事后清理）
+        th.set_piece_deadline(pi, 3000);
+        ++n;
+    }
+    return n;
+}
+
+long long lt_engine_stream_prefix(LTEngine h, int id, int fileIndex, long long off, long long want) {
+    EngineImpl *e = asImpl(h);
+    if (e == nullptr || !e->ses) return -1;
+    std::lock_guard<std::mutex> lock(e->mu);
+    const Entry *en = findEntry(e, id);
+    if (en == nullptr) return -1;
+    lt::torrent_handle th = e->ses->find_torrent(ih1(en->ih));
+    if (!th.is_valid()) return -1;
+    auto ti = th.torrent_file();
+    if (!ti) return -1;
+    if (want <= 0) return 0;
+
+    const lt::file_storage &fs = ti->files();
+    if (fileIndex < 0 || fileIndex >= fs.num_files()) return -1;
+    const lt::file_index_t fi(fileIndex);
+    const std::int64_t fsize = fs.file_size(fi);
+    if (off < 0 || off >= fsize) return -1;
+
+    const std::int64_t foff = fs.file_offset(fi);
+    const std::int64_t from = foff + off;
+    const std::int64_t to = foff + std::min<std::int64_t>(off + want, fsize);  // 不含端
+    const int pieceLen = ti->piece_length();
+    if (pieceLen <= 0) return -1;
+    const int np = ti->num_pieces();
+
+    std::int64_t covered = 0;
+    int p = static_cast<int>(from / pieceLen);
+    while (p < np) {
+        if (!th.have_piece(lt::piece_index_t(p))) break;
+        const std::int64_t pEnd = static_cast<std::int64_t>(p + 1) * pieceLen;
+        const std::int64_t segEnd = std::min(pEnd, to);
+        if (segEnd <= from) { ++p; continue; }
+        covered = segEnd - from;
+        if (segEnd >= to) break;           // 想要的都齐了
+        ++p;
+    }
+    return covered < 0 ? 0 : covered;
+}
+
 int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
     EngineImpl *e = asImpl(h);
     if (e == nullptr || out == nullptr || outLen < 64) return -1;
@@ -479,6 +587,13 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
                       static_cast<double>(st.progress),
                       static_cast<int>(th.trackers().size()));
         js += buf2;
+
+        // ★ v1.0.250：把「暂停没有」报上来 —— 界面按钮要跟着它切「暂停 / 继续」。
+        if (th.flags() & lt::torrent_flags::paused) {
+            js += ",\"paused\":true";
+        } else {
+            js += ",\"paused\":false";
+        }
 
         js += ",\"files\":[";
         if (hasMeta) {
