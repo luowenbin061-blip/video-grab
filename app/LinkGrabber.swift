@@ -38,6 +38,9 @@ final class LinkGrabber: ObservableObject {
     @Published var qualityHint: String = ""
     /// 解析成功的完整结果（用户点「下载」后拿它 + 选中档去下载）。
     private var pendingResolved: BiliParse.Resolved?
+    /// ★ v1.0.258：本次解析的**原始链接** —— B站 选完档下载时，要把链接一起带进任务记录
+    ///   （`originLink`），这样文件万一丢失，任务上还留着"重新下载"的线索。
+    private var pendingLink: String?
 
     // MARK: - 认链接（实现全在 LinkText，这里只是转发）
 
@@ -68,6 +71,7 @@ final class LinkGrabber: ObservableObject {
         selectedQuality = 0
         qualityHint = ""
         pendingResolved = nil
+        pendingLink = nil          // ★ v1.0.258
     }
 
     func handle(link: String, center: DownloadCenter, model: BrowserModel) {
@@ -118,12 +122,12 @@ final class LinkGrabber: ObservableObject {
             do {
                 var r = try await ShortVideoParse.resolve(link: link, platform: platform)
                 do {
-                    try await downloadDirect(r, center: center)
+                    try await downloadDirect(r, center: center, originLink: link)
                 } catch {
                     // 没下动（签名过期 / CDN 抖动）→ 重新解析一次换新链，不行才认输
                     stage = "下载没起来，重新解析一次…"
                     r = try await ShortVideoParse.resolve(link: link, platform: platform)
-                    try await downloadDirect(r, center: center)
+                    try await downloadDirect(r, center: center, originLink: link)
                 }
                 busy = false
                 done = true
@@ -143,7 +147,8 @@ final class LinkGrabber: ObservableObject {
     /// 下载直解出来的单个 mp4（复用断点下载器；UA/Referer 与解析保持一致）。
     /// 候选直链（多 CDN）**逐个试** —— 抖音给多条、快手给双镜像。
     private func downloadDirect(_ r: ShortVideoParse.Resolved,
-                                center: DownloadCenter) async throws {
+                                center: DownloadCenter,
+                                originLink: String? = nil) async throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("svgrab", isDirectory: true)
         try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -167,7 +172,8 @@ final class LinkGrabber: ObservableObject {
                 stage = "收尾…"
                 progress = 0.98
                 // 登记进下载中心（它会自己把文件挪进程序目录并做缩略图/体检）
-                _ = center.adoptCompressed(out, title: r.title, kind: .video)
+                _ = center.adoptCompressed(out, title: r.title, kind: .video,
+                                           originLink: originLink)   // ★ v1.0.258
                 progress = 1
                 return
             } catch {
@@ -194,6 +200,7 @@ final class LinkGrabber: ObservableObject {
                 //   用户实测要求："各个清晰度让我选我要下载的画质"。
                 //   界面据此显示档位选择区 + 「下载」按钮（见 PasteLinkSheet.qualityPicker）。
                 pendingResolved = r
+                pendingLink = link          // ★ v1.0.258：记下原始链接（下载时带进任务记录）
                 qualityOptions = r.qualities
                 selectedQuality = r.qualities.first?.value ?? 0
                 qualityHint = Self.qualityHintText(for: r)
@@ -220,7 +227,7 @@ final class LinkGrabber: ObservableObject {
         stage = "准备下载…"
         Task {
             do {
-                try await downloadAndMerge(rr, center: center)
+                try await downloadAndMerge(rr, center: center, originLink: pendingLink)
                 busy = false
                 done = true
                 stage = "已加入下载：\(rr.title)"
@@ -248,7 +255,8 @@ final class LinkGrabber: ObservableObject {
     }
 
     private func downloadAndMerge(_ r: BiliParse.Resolved,
-                                  center: DownloadCenter) async throws {
+                                  center: DownloadCenter,
+                                  originLink: String? = nil) async throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("pastegrab", isDirectory: true)
         try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -296,7 +304,8 @@ final class LinkGrabber: ObservableObject {
         stage = "收尾…"
         progress = 0.95
         // ④ 登记进下载中心（它会自己把文件挪进程序目录并做缩略图/体检）
-        _ = center.adoptCompressed(finalMP4, title: r.title, kind: .video)
+        _ = center.adoptCompressed(finalMP4, title: r.title, kind: .video,
+                                   originLink: originLink)   // ★ v1.0.258
         progress = 1
     }
 
@@ -341,5 +350,53 @@ final class LinkGrabber: ObservableObject {
         out = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if out.isEmpty { out = "B站视频" }
         return String(out.prefix(60))
+    }
+
+    // MARK: - 重新下载（文件丢失后的出路）
+
+    /// ★ v1.0.258：「重新下载」—— B站 / 短链直解的任务文件丢了之后，
+    ///   靠任务里留的原始链接（`originLink`）重新解析、下载一遍。
+    ///   自动选**最高可用档**（找回文件优先，不再停在"选清晰度"那一步）。
+    ///   成败通过 `onDone(成功?, 说明)` 回给调用方 —— 列表层据此删老卡 / 写提示。
+    static func redownload(link: String, center: DownloadCenter,
+                           onDone: @escaping (Bool, String) -> Void) {
+        let g = LinkGrabber()
+        g.runRedownload(link: link, center: center, onDone: onDone)
+    }
+
+    private func runRedownload(link: String, center: DownloadCenter,
+                               onDone: @escaping (Bool, String) -> Void) {
+        Task {
+            do {
+                guard let kind = Self.kind(of: link),
+                      let url = LinkText.normalized(link) else {
+                    onDone(false, "这条原始链接现在认不出来了")
+                    return
+                }
+                switch kind {
+                case .bili:
+                    let cookie = await Self.biliCookie()
+                    let r = try await BiliParse.resolve(link: url, cookie: cookie)
+                    // 自动挑最高可用档（跟手动选档时"默认最高"一个口径）
+                    var rr = r
+                    if let top = r.qualities.first {
+                        rr.videoURL = top.videoURL
+                        rr.quality = top.value
+                        rr.qualityText = top.name
+                    }
+                    try await downloadAndMerge(rr, center: center, originLink: url)
+                    onDone(true, rr.title)
+                case .web(let p):
+                    let r = try await ShortVideoParse.resolve(link: url, platform: p)
+                    try await downloadDirect(r, center: center, originLink: url)
+                    onDone(true, r.title)
+                default:
+                    onDone(false, "这类链接不支持重新下载")
+                }
+            } catch {
+                onDone(false, (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription)
+            }
+        }
     }
 }

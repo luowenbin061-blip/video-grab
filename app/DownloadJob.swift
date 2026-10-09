@@ -68,6 +68,11 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     /// 磁盘上的文件不在了（被系统清理或被用户删掉）
     @Published var fileMissing = false
+    /// ★ v1.0.258：这条任务的**原始来源链接** —— 只对"本地登记"类任务有意义
+    ///   （B站 直解 / 短链直解：下载完 sourceURL 是假的 local://…，没有它的话
+    ///   文件万一丢了就彻底没线索）。界面据此在"文件已不在"时给「重新下载」。
+    ///   老记录没有这个键 → nil，自动兼容。
+    @Published var originLink: String?
     /// 存相册成功过
     @Published var savedToPhotos = false
     /// 界面上的一句话反馈（"已存到相册"这类）
@@ -265,6 +270,7 @@ final class DownloadJob: ObservableObject, Identifiable {
         notes = record.notes
         // ★ v1.0.111：类别跟着记录回来（老记录没这个键 → nil → 退回按扩展名判）
         kindHint = record.kind.flatMap { MediaKind(key: $0) }
+        originLink = record.originLink        // ★ v1.0.258（老记录没这个键 → nil）
 
         // 上次没下完 / 用户暂停过
         //
@@ -315,7 +321,9 @@ final class DownloadJob: ObservableObject, Identifiable {
                   kind: kindHint?.key,
                   // ★ v1.0.127：必须跟在 kind 后面 —— JobRecord 是 memberwise init，
                   //   参数顺序**必须与字段声明顺序一致**（#127 就挂在这里：kind 写在了 cookie 后面）。
-                  cookie: cookie)
+                  cookie: cookie,
+                  // ★ v1.0.258：跟在 cookie 后面（JobRecord 里也是加在 cookie 之后）
+                  originLink: originLink)
     }
 
     // MARK: - 控制
@@ -1366,6 +1374,18 @@ final class DownloadJob: ObservableObject, Identifiable {
     /// ★ **两个入口（外部导入 / 程序内收编）共用这一段，别各写一份** ——
     ///   这个项目最贵的教训就是"加一条新路径时没把收尾动作抄全"，少一项就是一次真机返工。
     private func finishIncoming(dest: URL) async {
+        // ★★ v1.0.258：**落盘校验** —— 文件不在了就别往下走"体检"：
+        //   以前这种情况会被当成"格式播不了"去转码（转码也必然失败），最后给出一句
+        //   含糊的"导入完成；系统播不了"，而记录的产物名却指向一个不存在的文件 ——
+        //   用户当场看不出，**重启后才显示"文件已不在"**（还会误以为是"被系统清理"）。
+        //   现在当场把话说清楚。
+        guard FileManager.default.fileExists(atPath: dest.path) else {
+            phase = "保存失败：文件没有落到程序目录"
+            failed = "文件未找到 —— 没能从临时目录保存进来，或被外部删除"
+            finished = true
+            onUpdate?()
+            return
+        }
         // ★ 图片先分流：AVURLAsset **认不了图**（`loadTracks(.video)` 必然是空），
         //   照视频那条路走会去"转成 MP4" → 把一张好图搞坏。所以先按扩展名判。
         if let k = Self.kind(fromExtension: dest.pathExtension), k == .image {
@@ -1424,7 +1444,8 @@ final class DownloadJob: ObservableObject, Identifiable {
                                                  }
                                              })
         notes.append(contentsOf: log.map(\.line))
-        if ok {
+        // ★ v1.0.258：转出来**要真的在盘上**才算数（"报成功但产物不在"是历史惯犯）
+        if ok, FileManager.default.fileExists(atPath: mp4URL.path) {
             outputName = mp4URL.lastPathComponent
             mp4Ready = true
             fileSize = JobStore.size(of: outputName)

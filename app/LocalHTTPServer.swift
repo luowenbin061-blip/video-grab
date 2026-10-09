@@ -36,6 +36,16 @@ final class LocalHTTPServer {
 
     static let shared = LocalHTTPServer()
 
+    /// ★ v1.0.258：**WebDAV（共享给电脑）删/移走文件后的通知**。
+    ///   背景：电脑端通过共享把文件「剪切（MOVE）/重命名/删除」时，手机上的文件是真的会
+    ///   消失/改位置，而任务记录毫不知情 —— 用户只在**重启 App 后**看到一句
+    ///   "文件已不在（可能被系统清理或删掉）"，完全不知道是电脑端的操作干的。
+    ///   有了这个回调，主界面能给对应任务记一笔（"该文件已通过「共享给电脑」…"），
+    ///   把隐形操作变可见。**由 WebDAV 请求线程调用**，实现方自己切主线程。
+    ///   （只发通知、**不改任务状态**：文件可能只是被移个位置又移回来，状态由重启时的
+    ///   文件检查说了算 —— 见 DP 审查的建议。）
+    static var onExternalFileChange: ((_ name: String, _ action: String) -> Void)?
+
     /// 干活用的并发队列：接受连接和读请求都丢这里
     private let queue = DispatchQueue(label: "vg.localhttp", attributes: .concurrent)
 
@@ -1320,6 +1330,7 @@ extension LocalHTTPServer {
         }
         do {
             try FileManager.default.removeItem(at: target)
+            Self.onExternalFileChange?(target.lastPathComponent, "删除")   // ★ v1.0.258
             sendSimple(fd, status: 204, reason: "No Content")
         } catch {
             sendSimple(fd, status: 500, reason: "Delete Failed")
@@ -1364,6 +1375,8 @@ extension LocalHTTPServer {
         do {
             if move { try fm.moveItem(at: from, to: to) }
             else { try fm.copyItem(at: from, to: to) }
+            // ★ v1.0.258：移走（MOVE）才算"源没了"；COPY 源还在、不通知。
+            if move { Self.onExternalFileChange?(from.lastPathComponent, "移走") }
             if existed { sendSimple(fd, status: 204, reason: "No Content") }
             else { sendSimple(fd, status: 201, reason: "Created") }
         } catch {

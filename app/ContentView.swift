@@ -26,12 +26,33 @@ final class DownloadCenter: ObservableObject {
         if job.failed == nil { Haptics.success() } else { Haptics.warning() }
     }
 
+    /// ★ v1.0.258：电脑端通过「共享给电脑」删/移走了一个文件 → 找到引用它的任务，
+    ///   写一条**可见的说明**（把隐形的电脑端操作变成用户能看到的线索）。
+    ///   ★ 只写提示（notice），**不改任务状态** —— 文件可能被移走又移回来；
+    ///   "文件在不在"的最终判定留给重启时的检查（fileMissing）。
+    private func noteExternalFileChange(name: String, action: String) {
+        var hit = false
+        for j in jobs where j.outputName == name || j.playlistName == name {
+            j.notice = "该文件已通过「共享给电脑」在电脑端\(action)"
+            hit = true
+        }
+        if hit { save() }
+    }
+
     init() {
         // 启动时把上次的记录读回来（文件还在的就还能播、还能存相册）
         jobs = JobStore.load().map { rec in
             let job = DownloadJob(record: rec)
             job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
             return job
+        }
+        // ★ v1.0.258：接住"共享给电脑"端对文件的删除/移走 → 给对应任务记一笔。
+        //   （用户反馈过"重启后视频显示被系统清理了"—— 其中一部分其实是电脑端
+        //   通过共享盘剪切/删除造成的，以前完全无迹可查。）
+        LocalHTTPServer.shared.onExternalFileChange = { [weak self] name, action in
+            Task { @MainActor in
+                self?.noteExternalFileChange(name: name, action: action)
+            }
         }
         // ★ v1.0.160：启动顺手扫掉上次被杀留下的**压缩半成品**（`.partial.` 那种）——
         //   以前**没人清**（cleanupTemp 只认 parts_*/joined_*），它们会一直占着空间。
@@ -76,24 +97,46 @@ final class DownloadCenter: ObservableObject {
     /// · 唯一要处理的是"源在系统临时目录里"（从相册/文件选来的源）→ 那种必须先挪进
     ///   程序目录，否则系统随时会清掉临时目录，记录就成了空壳。
     @discardableResult
-    func adoptCompressed(_ url: URL, title: String, kind: DownloadJob.MediaKind) -> DownloadJob {
+    func adoptCompressed(_ url: URL, title: String, kind: DownloadJob.MediaKind,
+                         originLink: String? = nil) -> DownloadJob {
         var name = url.lastPathComponent
         let inOurDir = url.deletingLastPathComponent().standardizedFileURL ==
                        JobStore.dir.standardizedFileURL
+        var moveError = ""
         if !inOurDir {
             let dest = JobStore.file(named: name)
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try? FileManager.default.removeItem(at: dest)
+            }
             do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
                 try FileManager.default.moveItem(at: url, to: dest)
             } catch {
                 // 挪不动就退回"复制一份"（宁可多占一次，也别把成品丢在临时目录里等着消失）
-                try? FileManager.default.copyItem(at: url, to: dest)
+                do {
+                    try FileManager.default.copyItem(at: url, to: dest)
+                } catch {
+                    moveError = error.localizedDescription
+                }
             }
             name = dest.lastPathComponent
+            // ★★ v1.0.258：**落地校验** —— 以前 move 和 copy 都失败时会"假装成功"：
+            //   记录照建、文件却还在临时目录（随后被调用方的 defer 清掉）→
+            //   用户当场看不出，**重启后才发现"文件已不在"**（还说"被系统清理"）。
+            //   现在失败**当场显形**：建一条明确的失败记录，把原因写清楚。
+            guard FileManager.default.fileExists(atPath: dest.path) else {
+                let bad = DownloadJob(title: title, sourceURL: "local://compressed", kind: kind)
+                bad.phase = "保存失败：文件没有落到程序目录"
+                bad.failed = "文件没能从临时目录保存进来"
+                    + (moveError.isEmpty ? "" : "（\(moveError)）")
+                bad.finished = true
+                bad.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
+                jobs.insert(bad, at: 0)
+                save()
+                return bad
+            }
         }
         let job = DownloadJob.makeAdopted(name: name, title: title, kind: kind)
+        job.originLink = originLink          // ★ v1.0.258：留"重新下载"的线索
         job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
         jobs.insert(job, at: 0)
         save()
@@ -414,6 +457,14 @@ struct ContentView: View {
     ///   **AVPlayer 对"分片名是原生中文的相对路径"那份清单解析错了**，
     ///   把 `<名称>0.ts` 请求成了 `<名称>.ts` → 404。
     @State private var lpPlay: PlaylistRelay.PlayTarget?
+    /// ★ v1.0.258：**最近一次"卡片关闭动作"的时刻**（播放器 / 选择卡 / 长按菜单关闭都会记）。
+    ///
+    /// 为什么需要它：iOS 16 的 SwiftUI 模态状态机有系统性缺陷 —— 在"别的卡片正在做
+    /// 关闭动画"期间发起新的 present，请求会被**静默吞掉**：item 停在非 nil、
+    /// 界面却没弹；之后 item "非 nil→非 nil" 的赋值不会再触发弹出 →
+    /// **所有播放入口全部失效、只能重启**（用户实测："窗口按钮偶现点击无反应"）。
+    /// 修复见 `presentPlayer(_:)`：弹播放器前先等这个时间戳满 0.7 秒。
+    @State private var lastAnyModalDismiss: Date = .distantPast
     /// ★ v1.0.214：本页视频的「选择卡片」开关（多个视频 / 拿不准该播哪条时弹）
     @State private var pageVideoPicker = false
     /// ★ v1.0.119 首页快捷入口（单例：存档 + 图标缓存都在它手里）
@@ -549,6 +600,7 @@ struct ContentView: View {
                                   //   两张卡片同时在屏幕上会看着像卡住（overlay 的淡出要 0.12s）
                                   onPickQuality: {
                                       model.closeLongPressMenu()
+                                      lastAnyModalDismiss = Date()   // ★ v1.0.258
                                       let m = info
                                       Task { @MainActor in
                                           try? await Task.sleep(nanoseconds: 160_000_000)
@@ -560,6 +612,7 @@ struct ContentView: View {
                                   // ★ v1.0.138：中间多一步**清单本地化**（异步，见 PlaylistRelay）。
                                   onPlay: {
                                       model.closeLongPressMenu()
+                                      lastAnyModalDismiss = Date()   // ★ v1.0.258：记下"卡片开始关闭"
                                       let m = info
                                       Task { @MainActor in
                                           try? await Task.sleep(nanoseconds: 160_000_000)
@@ -574,7 +627,7 @@ struct ContentView: View {
                                                   page: model.address,
                                                   title: m.title,
                                                   video: m.url)
-                                              lpPlay = t
+                                              presentPlayer(t)   // ★ v1.0.258：统一走"防吞"入口
                                           } else {
                                               model.showToast("这个地址读不懂，播不了。可以换个源，或者直接下载试试。")
                                           }
@@ -615,7 +668,11 @@ struct ContentView: View {
         // 播不出来怎么办（用户原话「实在播不出来就给提示」）：
         // PlayerSheet 自身就有明确报错路径 —— 拿不到 ready 会走 `.failed` 分支显示
         // "具体错误 + 地址"，另有 60 秒超时兜底。地址拼不出来时在 onPlay 里给一句 toast。
-        .fullScreenCover(item: $lpPlay) { t in
+        .fullScreenCover(item: $lpPlay, onDismiss: {
+            // ★ v1.0.258：记下"播放器关闭完成"的时刻 —— presentPlayer 靠它避开
+            //   "关闭动画期间 present 被吞"的死区（关完太快再点也不会卡死）。
+            lastAnyModalDismiss = Date()
+        }) { t in
             PlayerSheet(url: t.url,
                         title: t.title,
                         // 键固定成 "lp"：跟"预览"同一个道理 —— 长按随手点开不该污染
@@ -694,6 +751,7 @@ struct ContentView: View {
                               // ★ v1.0.226：视频历史的「直接播放」。
                               //   **先把这张卡片关掉** —— 播放器是另一个 sheet，两个不能同时开。
                               showBookmarks = false
+                              lastAnyModalDismiss = Date()   // ★ v1.0.258：记下"卡片开始关闭"
                               playFromHistory(e)
                           })
         }
@@ -708,12 +766,14 @@ struct ContentView: View {
                 hasCandidates: model.items.contains { $0.kind == "hls" || $0.kind == "file" },
                 onPlay: { v in
                     pageVideoPicker = false
+                    lastAnyModalDismiss = Date()   // ★ v1.0.258：记下"卡片开始关闭"
                     // ★ v1.0.217：跟「窗口」按钮走**同一条路**（都经 PlaylistRelay → 本机代理），
                     //   不再各自拼一个裸地址的 PlayTarget —— 那样分片不带 Referer，防盗链的站播不了。
                     playPageVideo(v)
                 },
                 onOpenSniff: {
                     pageVideoPicker = false
+                    lastAnyModalDismiss = Date()   // ★ v1.0.258
                     model.showToast("去「≡ → 嗅探结果」里看，那里能下载")
                 }
             )
@@ -1031,10 +1091,45 @@ struct ContentView: View {
                     title: v.vtitle.isEmpty ? model.pageTitle : v.vtitle,
                     video: t.url,
                     poster: v.poster, shot: v.shot, dur: v.dur)
-                lpPlay = target
+                presentPlayer(target)          // ★ v1.0.258：统一走"防吞"入口
             } else {
                 model.showToast("这个地址读不出来，播不了。")
             }
+        }
+    }
+
+    /// ★★ v1.0.258：**播放器的唯一弹出入口** —— 全部 4 个入口（窗口按钮 / 本页视频选择卡 /
+    /// 长按菜单 / 视频历史）都必须走这里，不许直接给 `lpPlay` 赋值。
+    ///
+    /// ══ 修的是什么（用户实测 + DP 复核确认）══
+    /// 症状：浏览器左上角「窗口」按钮**偶现点击完全无反应**，且之后所有播放入口
+    /// 都跟着死掉，**必须重启 App 才能恢复**。
+    ///
+    /// 根因：iOS 16 的 SwiftUI 模态状态机在"别的卡片（sheet/选择卡/菜单）正在做关闭
+    /// 动画"期间收到 present 请求时，会**把请求静默吞掉**：
+    ///   · `lpPlay` 停留在非 nil，但播放器根本没弹出来；
+    ///   · 之后任何入口再赋值（非 nil → 非 nil）都不再触发弹出（SwiftUI 只在
+    ///     "nil → 非 nil" 的转换时才发起呈现）；
+    ///   · 于是整体表现 = "点了没反应，重启才能好"。
+    ///
+    /// 这里做两件事：
+    ///   ① **等关闭动画走完**：距最近一次卡片关闭不足 0.7 秒就补足等待
+    ///      （选择卡是 sheet、长按菜单是 overlay，关闭动画都可能吃掉 present）；
+    ///   ② **残留自愈**：发现 `lpPlay` 残留非 nil（说明上次被吞了、或播放器已关但
+    ///      状态没清）→ 先置 nil、隔 300ms 再设 —— 保证这次是一次真正的
+    ///      "nil → 非 nil" 转换，**不用重启就能把死掉的状态救回来**。
+    private func presentPlayer(_ t: PlaylistRelay.PlayTarget) {
+        Task { @MainActor in
+            let since = Date().timeIntervalSince(lastAnyModalDismiss)
+            if since < 0.7 {
+                try? await Task.sleep(nanoseconds: UInt64((0.7 - since) * 1_000_000_000))
+            }
+            if lpPlay != nil {
+                lpPlay = nil
+                // 换片 / 自愈：等上一张播放器的关闭动画彻底走完（~0.35s）
+                try? await Task.sleep(nanoseconds: 350_000_000)
+            }
+            lpPlay = t
         }
     }
 
@@ -1065,7 +1160,7 @@ struct ContentView: View {
                 //   新口径"播放 = 该记"，从历史进来这次也算"点开过"。
                 WatchHistory.shared.markPlayed(page: page, title: pTitle, video: video,
                                                poster: pPoster, dur: pDur)
-                lpPlay = t
+                presentPlayer(t)           // ★ v1.0.258：统一走"防吞"入口
             } else {
                 model.showToast("这个地址读不出来，播不了。可以「打开原网页」再试。")
             }
@@ -2167,6 +2262,8 @@ struct DownloadList: View {
     @AppStorage("dlSort") private var sortRaw = DownloadSort.timeDesc.rawValue
     /// ★ v1.0.191：「过程记录」展开了哪些（按**任务 id** 记，不放在行里 —— 见 JobRow.logExpanded）
     @State private var expandedLog = Set<UUID>()
+    /// ★ v1.0.258：正在"重新下载"的任务 id（同上放列表层 —— 行内 @State 会被滚动重建弄掉）
+    @State private var redownloading = Set<UUID>()
 
     // ── ★ v1.0.127 多选与批量 ──
     /// 多选模式（长按任意一条、或右上角「选择」进入）
@@ -2307,6 +2404,23 @@ struct DownloadList: View {
                                     JobRow(job: job, pip: center.pip,
                                            onDelete: { center.remove(job) },
                                            onResume: { center.resume(job) },
+                                           redownloading: redownloading.contains(job.id),
+                                           onRedownload: (job.originLink?.isEmpty == false) ? {
+                                               // ★ v1.0.258：用任务里留的原始链接重新解析下载
+                                               guard !redownloading.contains(job.id),
+                                                     let link = job.originLink else { return }
+                                               redownloading.insert(job.id)
+                                               LinkGrabber.redownload(link: link, center: center) { ok, msg in
+                                                   redownloading.remove(job.id)
+                                                   if ok {
+                                                       // 新卡已自动出现在列表顶部（adopt 插入）——
+                                                       // 老卡这条"文件已不在"的空壳删掉（进回收站留底）
+                                                       center.remove(job)
+                                                   } else {
+                                                       job.notice = "重新下载没成功：\(msg)。原始链接还在，可以再试"
+                                                   }
+                                               }
+                                           } : nil,
                                            logExpanded: expandedLog.contains(job.id),
                                            onSetLog: { open in setLog(job.id, open: open) })
                                         .padding(.vertical, 9)
@@ -2798,6 +2912,12 @@ struct JobRow: View {
     var onDelete: (() -> Void)? = nil
     /// 「继续 / 重试」也走回调 —— 要过"同时下载数"那道闸门（DownloadCenter.resume）
     var onResume: (() -> Void)? = nil
+    /// ★ v1.0.258：正在"重新下载"的标记（列表层按任务 id 记，行重建不丢 ——
+    ///   同 `logExpanded` 放到列表层的理由：行内 @State 会被滚动/重建弄掉）。
+    var redownloading: Bool = false
+    /// ★ v1.0.258：「重新下载」—— 文件丢了且任务里存有原始链接（originLink）时
+    ///   给的一条出路。nil = 这条任务没有可用的原始链接（不显示按钮）。
+    var onRedownload: (() -> Void)? = nil
     /// ★ v1.0.118：**订阅"看到哪儿了"** —— 进度记录以前是纯静态的，写进去没有任何通知，
     ///   这一行的 body 不会重画 → 缩略图底部那条进度线永远不出现（用户实测报的就是这个）。
     ///   这里只是订阅（值本身不参与布局），线照旧从 `watch.fraction(...)` 取。
@@ -2903,6 +3023,28 @@ struct JobRow: View {
                 Label("文件已经不在了（可能被系统清理或删掉）", systemImage: "xmark.octagon")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.red)
+                // ★ v1.0.258：原始链接还在 → 给一条"重新下载"的出路
+                //   （B站/短链直解的任务把用户当初贴的链接存进了 originLink）
+                if let onRedownload {
+                    Button {
+                        onRedownload()
+                    } label: {
+                        if redownloading {
+                            HStack(spacing: 6) {
+                                ProgressView().scaleEffect(0.7)
+                                Text("正在重新下载…")
+                            }
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Label("用原始链接重新下载", systemImage: "arrow.clockwise")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(redownloading)
+                }
             } else if job.finished && job.failed == nil && !job.mp4Ready && job.mediaKind == .video {
                 // ★ v1.0.110：加 `mediaKind == .video` —— 图片/音频/文档本来就不转码，
                 //   以前图片下载成功也会挂这条黄字（"MP4 没转出来"），纯误报。
