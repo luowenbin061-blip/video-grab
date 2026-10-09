@@ -12,6 +12,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -25,8 +28,9 @@
 #include <libtorrent/info_hash.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/session.hpp>
-#include <libtorrent/session_params.hpp>
+#include <libtorrent/session_params.hpp>   // read/write_session_params + dht_state
 #include <libtorrent/session_status.hpp>   // ses->status().dht_nodes —— 不 include 会报 incomplete type
+#include <libtorrent/span.hpp>             // read_session_params 的入参是 span
 #include <libtorrent/settings_pack.hpp>
 #include <libtorrent/string_view.hpp>
 #include <libtorrent/torrent_flags.hpp>
@@ -67,8 +71,11 @@ struct Entry {
 };
 
 /// 磁力链接里自带的 tracker 经常全是死的 —— 再补一份公共 tracker。
-/// ★ 这份单子是各客户端通用的那几条；重复 announce 没坏处，死掉的会被自动淘汰。
+/// ★ v1.0.249：从 11 条扩到 27 条（新增的来自社区维护的活跃列表 ngosang/trackerslist）。
+///   重复 announce 没坏处，死掉的会被自动淘汰；多条并发的意义是"广撒网捞 peer"。
+/// ★ 里面 https 的两条要靠协议加密支持（v1.0.249 起 libtorrent 按加密支持编译）。
 const char *kPublicTrackers[] = {
+    // —— 老一批（v1.0.248 就有，保留）——
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.tracker.cl:1337/announce",
     "udp://open.demonii.com:1337/announce",
@@ -80,6 +87,24 @@ const char *kPublicTrackers[] = {
     "udp://explodie.org:6969/announce",
     "udp://tracker1.bt.moack.co.kr:80/announce",
     "http://tracker.openbittorrent.com:80/announce",
+    // —— v1.0.249 新增（ngosang/trackerslist 的 best 榜）——
+    "udp://tracker.skynetcloud.site:6969/announce",
+    "udp://tracker.qu.ax:6969/announce",
+    "udp://tracker.corpscorp.online:80/announce",
+    "udp://tracker.bittor.pw:1337/announce",
+    "udp://tracker-udp.gbitt.info:80/announce",
+    "udp://tracker.nyaa.vc:6969/announce",
+    "udp://tracker.ducks.party:1984/announce",
+    "udp://tracker2.dler.org:80/announce",
+    "udp://tracker.gmi.gd:6969/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "http://tracker.dler.com:6969/announce",
+    "udp://retracker01-msk-virt.corbina.net:80/announce",
+    "http://tracker.renfei.net:8080/announce",
+    "udp://tracker.farted.net:6969/announce",
+    // —— https（协议加密开回来之后才用得上 TLS tracker）——
+    "https://tracker.tamersunion.org:443/announce",
+    "https://tracker.gbitt.info:443/announce",
 };
 
 struct EngineImpl {
@@ -88,9 +113,38 @@ struct EngineImpl {
     std::vector<Entry> entries;
     int nextId = 1;
     std::mutex mu;
+    /// ★ v1.0.249：上次把 DHT 状态存盘的时刻（poll 里节流用）。
+    std::time_t lastStateSave = 0;
 };
 
 EngineImpl *asImpl(LTEngine e) { return static_cast<EngineImpl *>(e); }
+
+/// ★ v1.0.249：把 DHT 路由表存盘（原子写：先 .tmp、成功改名才算数）。
+///   目的：下次启动**热启动** —— 直接回到上次的网络位置，而不是从 5 个引导节点从零爬
+///   （那几十秒到几分钟里基本找不到任何 peer，是「找不到资源」的一大来源）。
+///   · 调用方必须已持 e->mu（poll / free 两处都在锁内调）；
+///   · dht_nodes <= 0 时不存 —— 免得拿一份「空路由表」把磁盘上的好状态覆盖掉；
+///   · 默认节流 120 秒一次；force=true（关闭引擎前）跳过节流。
+void saveDhtStateLocked(EngineImpl *e, bool force) {
+    if (e == nullptr || !e->ses || e->savePath.empty()) return;
+    if (e->ses->status().dht_nodes <= 0) return;
+    const std::time_t now = std::time(nullptr);
+    if (!force && now - e->lastStateSave < 120) return;
+
+    const lt::session_params st = e->ses->session_state();
+    const std::vector<char> buf = lt::write_session_params_buf(st);
+    if (buf.empty()) return;
+
+    const std::string tmpPath = e->savePath + "/dht_state.bin.tmp";
+    const std::string finPath = e->savePath + "/dht_state.bin";
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    out.close();
+    if (!out.good()) return;                 // 写坏了就不改名 —— 磁盘上旧的还在
+    std::rename(tmpPath.c_str(), finPath.c_str());
+    e->lastStateSave = now;
+}
 
 /* ★ `session::find_torrent` 只认老的 `sha1_hash`（v1 哈希），
  *   2.0.10 里**没有** `info_hash_t` 的重载 —— 实测编译报
@@ -139,6 +193,16 @@ LTEngine lt_engine_new(const char *saveDir) {
     sp.set_bool(lt::settings_pack::enable_upnp, true);
     sp.set_bool(lt::settings_pack::enable_natpmp, true);
     sp.set_str(lt::settings_pack::user_agent, "VideoGrab/1.0");
+
+    // ★★ v1.0.249：**协议加密开满**（pe_enabled = 优先加密、也接受明文）。
+    //   相当一部分做种服务器（seedbox / PT 圈）只接受加密握手 ——
+    //   以前库是按 encryption=OFF 编的，这批 peer 直接就握不上手，
+    //   同伴池少掉一块（表现为「找不到资源 / 拿不到文件列表」）。
+    //   pe_enabled 的语义：能加密就加密，对方不支持就回退明文 —— 最兼容的一档。
+    sp.set_int(lt::settings_pack::out_enc_policy,
+               static_cast<int>(lt::settings_pack::pe_enabled));
+    sp.set_int(lt::settings_pack::in_enc_policy,
+               static_cast<int>(lt::settings_pack::pe_enabled));
     // ★ 监听端口用 2.0 的写法（listen_interfaces）。原来那个 listen_on() 已经废弃。
     sp.set_str(lt::settings_pack::listen_interfaces, "0.0.0.0:6881,[::]:6881");
 
@@ -169,6 +233,28 @@ LTEngine lt_engine_new(const char *saveDir) {
 
     lt::session_params params;
     params.settings = sp;
+
+    // ★★ v1.0.249：把上次存下来的 **DHT 路由表**捞回来（有的话）。
+    //   没有它：每次冷启动都要从 5 个引导节点从零爬，头一两分钟基本「一个节点都连不上」；
+    //   有它：直接回到上次的网络位置 = 热启动。
+    //   （文件坏了 / 版本不兼容 → 当没有，照常冷启动，不报错。）
+    if (!e->savePath.empty()) {
+        std::ifstream f(e->savePath + "/dht_state.bin", std::ios::binary);
+        if (f) {
+            std::vector<char> buf((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+            if (!buf.empty()) {
+                try {
+                    lt::session_params loaded =
+                        lt::read_session_params(lt::span<char const>(buf));
+                    params.dht_state = std::move(loaded.dht_state);
+                } catch (...) {
+                    // 文件坏了 → 照常冷启动
+                }
+            }
+        }
+    }
+
     e->ses.reset(new (std::nothrow) lt::session(params));
     if (!e->ses) {
         delete e;
@@ -182,7 +268,10 @@ void lt_engine_free(LTEngine h) {
     if (e == nullptr) return;
     {
         std::lock_guard<std::mutex> lock(e->mu);
-        if (e->ses) e->ses->pause();     // 先把会话停掉，再析构（析构会等线程收尾）
+        if (e->ses) {
+            saveDhtStateLocked(e, true); // 关闭前最后存一次 DHT 状态（force）
+            e->ses->pause();             // 先把会话停掉，再析构（析构会等线程收尾）
+        }
     }
     delete e;
 }
@@ -199,6 +288,13 @@ int lt_engine_add_magnet(LTEngine h, const char *uri) {
     for (const char *t : kPublicTrackers) atp.trackers.emplace_back(t);
 
     std::lock_guard<std::mutex> lock(e->mu);
+    // ★ v1.0.249：同一个 info-hash 已经在会话里（比如又粘了一次同一条链接）→
+    //   先把旧的移掉。不然 libtorrent 会把重复添加**静默忽略**，
+    //   界面看起来像「卡住不动」。
+    {
+        lt::torrent_handle old = e->ses->find_torrent(ih1(atp.info_hashes));
+        if (old.is_valid()) e->ses->remove_torrent(old);
+    }
     int id = e->nextId++;
     Entry en;
     en.id = id;
@@ -316,6 +412,12 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
     //   "引擎没接进网络" 还是 "这个种没人做种" —— 有这几个字段就能分辨。
     char buf[512];
     const int dhtNodes = e->ses ? e->ses->status().dht_nodes : 0;
+
+    // ★★ v1.0.249：每 120 秒把 DHT 状态存一次盘（让下次启动热启动）。
+    //   放在 poll 里做是图省事：这里每 0.5 秒被叫一次，又不依赖 Swift 的时机
+    //   （App 随时可能被系统挂起/杀掉，靠「退出时保存」根本不可靠）。
+    saveDhtStateLocked(e, false);
+
     std::string js = "{";
     js += "\"hasHandle\":";
     js += th.is_valid() ? "true" : "false";
