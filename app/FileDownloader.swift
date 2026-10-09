@@ -114,8 +114,10 @@ struct FileDownloader {
                        let slash = cr.range(of: "/"),
                        let t = Int64(cr[slash.upperBound...].trimmingCharacters(in: .whitespaces)) {
                         total = t
-                    } else if code == 200, let t = http.expectedContentLength, t > 0 {
-                        total = t
+                    } else if code == 200 {
+                        // ★ expectedContentLength 是**非可选 Int64**（未知时 -1，不能 let 绑定）
+                        let t = http.expectedContentLength
+                        if t > 0 { total = t }
                     }
                 }
 
