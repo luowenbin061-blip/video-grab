@@ -17,6 +17,13 @@ struct PasteLinkSheet: View {
     let model: BrowserModel
     @Binding var isPresented: Bool
 
+    /// ★ v1.0.250：观察磁力引擎 —— ①"有任务在跑"时下面那张卡要一直显示
+    ///   （哪怕输入框是空的：重开工具箱也能看到它、暂停它、删它）；
+    ///   ②换任务前要弹一句确认。
+    @ObservedObject private var magnet = MagnetEngine.shared
+    /// ★ v1.0.250：换任务确认（当前还有任务在下载时点了「开始」）。
+    @State private var showReplaceConfirm = false
+
     private var trimmed: String {
         grabber.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -71,9 +78,11 @@ struct PasteLinkSheet: View {
                 .disabled(trimmed.isEmpty || grabber.busy)
 
                 // ── 磁力：BT 引擎那一段（找资源 / 列文件 / 勾选 / 进度 / 下完）──
-                //   只在认出来是磁力时出现。引擎是单例，关掉这张卡下载也在跑。
-                if kind == .magnet {
-                    MagnetCard(engine: MagnetEngine.shared, center: center)
+                //   ★ v1.0.250：认出来是磁力、**或者有任务正在跑**都要显示 ——
+                //   以前只看输入框：重开工具箱时输入框是空的 → 卡片整个消失，
+                //   任务明明还在后台跑却找不到入口（用户实测"任务没了"就是这么来的）。
+                if kind == .magnet || magnet.running {
+                    MagnetCard(engine: magnet, center: center)
                     Divider()
                 }
 
@@ -108,10 +117,24 @@ struct PasteLinkSheet: View {
         }
         // ★ 每次打开都是干净的：上一次的进度/错误不该跟着进来
         .onAppear { grabber.reset() }
+        // ★ v1.0.250：换任务确认（还有任务在下载时点「开始」）
+        .alert("有任务正在下载", isPresented: $showReplaceConfirm) {
+            Button("换新任务", role: .destructive) {
+                grabber.handle(link: trimmed, center: center, model: model)
+            }
+            Button("不换", role: .cancel) {}
+        } message: {
+            Text("开始新任务会停掉并清除当前这条磁力（下载页里已保存的文件不受影响）。")
+        }
     }
 
     private func start() {
         guard !trimmed.isEmpty, !grabber.busy else { return }
+        // ★ v1.0.250：还有任务在下载 → 换新任务会把旧任务顶掉，先问一句。
+        if kind == .magnet, magnet.hasActiveTask {
+            showReplaceConfirm = true
+            return
+        }
         grabber.handle(link: trimmed, center: center, model: model)
     }
 }

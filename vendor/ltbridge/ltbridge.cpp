@@ -69,6 +69,21 @@ struct Entry {
     std::string name;       // 磁力里的 dn=（元数据到手后会换成真名）
     bool added = false;     // 会话里登记成功没有（靠 add_torrent_alert 判定）
     std::string err;        // 引擎报的错（add 失败 / torrent_error_alert）
+    // ★ v1.0.253：诊断计数（DP 审查建议）——「找不到资源」必须能看出是哪一层断了：
+    //   tracker 回话几次（活着并回了）/ tracker 报错几次（死条、拒绝）/ peer 连接报错几次。
+    int trReplies = 0;      // tracker_reply_alert
+    int trErrors = 0;       // tracker_error_alert
+    int peerErrors = 0;     // peer_error_alert
+};
+
+/// ★ v1.0.253：等旧任务"清理完"再补加的挂起项（DP 审查的 P1 修复）。
+///   坑：remove_torrent 是**异步**的 —— 同一个 info-hash 刚移完马上 add，
+///   会撞上 duplicate_torrent，新任务永远登记不上（用户重试同一条链接就中招）。
+///   所以发现"会话里还有同 ih 的旧任务（移除排队中）"时，先挂这儿，
+///   poll 里确认清干净（find_torrent 找不到）再真正补 add。
+struct PendingAdd {
+    int id = 0;
+    lt::add_torrent_params atp;
 };
 
 /// 磁力链接里自带的 tracker 经常全是死的 —— 再补一份公共 tracker。
@@ -116,6 +131,8 @@ struct EngineImpl {
     std::mutex mu;
     /// ★ v1.0.249：上次把 DHT 状态存盘的时刻（poll 里节流用）。
     std::time_t lastStateSave = 0;
+    /// ★ v1.0.253：挂起中的 add（旧任务还在异步移除，等清完再补 —— 见 PendingAdd 注释）。
+    std::vector<PendingAdd> pendingAdds;
 };
 
 EngineImpl *asImpl(LTEngine e) { return static_cast<EngineImpl *>(e); }
@@ -244,15 +261,23 @@ LTEngine lt_engine_new(const char *saveDir) {
     //   表现为"几十秒一个 peer 都没有"）。
     sp.set_bool(lt::settings_pack::announce_to_all_trackers, true);
     sp.set_bool(lt::settings_pack::announce_to_all_tiers, true);
-    // 主动外连的速度上限（默认偏保守，冷门种子要等很久才凑够 peer）
-    sp.set_int(lt::settings_pack::connection_speed, 100);
+    // 主动外连的速度上限。★ v1.0.253：100 → 30 —— DP 审查指出 iOS 上每秒 100 个
+    // 连接尝试过于激进，30/秒 足够把候选 peer 连完，顺便降低功耗。
+    sp.set_int(lt::settings_pack::connection_speed, 30);
+    // ★ v1.0.253：PEX（从已连上的 peer 换 peer 名单 —— 磁力找 metadata 的关键补充路径）
+    //   在 2.0 里**没有单独开关、恒定启用**（查证过 2.0.10 头文件：settings_pack 里
+    //   根本没有 enable_pex / extensions 这两个枚举）—— 所以这里不做任何设置，保持默认。
 
     // ★★ alert 队列**必须有人排空**，否则会一直涨到把内存吃光。
     //   v1.0.248：掩码放宽到 error + status —— 我们要从 `add_torrent_alert` /
     //   `torrent_error_alert` 里读「这条任务到底登记上没有 / 报没报错」。
+    // ★★ v1.0.253：再加上 peer + tracker —— 之前这两类 alert 被直接丢弃，
+    //   "tracker 回没回话 / peer 连接报没报错"完全看不到（DP 审查点名）。
     sp.set_int(lt::settings_pack::alert_mask,
                static_cast<int>(lt::alert_category::error)
-               | static_cast<int>(lt::alert_category::status));
+               | static_cast<int>(lt::alert_category::status)
+               | static_cast<int>(lt::alert_category::peer)
+               | static_cast<int>(lt::alert_category::tracker));
 
     lt::session_params params;
     params.settings = sp;
@@ -311,20 +336,33 @@ int lt_engine_add_magnet(LTEngine h, const char *uri) {
     for (const char *t : kPublicTrackers) atp.trackers.emplace_back(t);
 
     std::lock_guard<std::mutex> lock(e->mu);
-    // ★ v1.0.249：同一个 info-hash 已经在会话里（比如又粘了一次同一条链接）→
-    //   先把旧的移掉。不然 libtorrent 会把重复添加**静默忽略**，
-    //   界面看起来像「卡住不动」。
-    {
-        lt::torrent_handle old = e->ses->find_torrent(ih1(atp.info_hashes));
-        if (old.is_valid()) e->ses->remove_torrent(old);
-    }
     int id = e->nextId++;
     Entry en;
     en.id = id;
     en.ih = atp.info_hashes;
     en.name = atp.name;
     e->entries.push_back(en);
-    e->ses->async_add_torrent(std::move(atp));
+
+    // ★★ v1.0.253：同一个 info-hash 已经在会话里（重试同一条链接）时，
+    //   不能"移掉旧的、马上加新的" —— remove_torrent 是**异步**的，
+    //   新 add 会撞上 duplicate_torrent 而失败（任务永远登记不上，界面卡"找资源"）。
+    //   正确做法：先挂起（pendingAdds），等 poll 里确认旧任务清干净了再补 add。
+    lt::torrent_handle old = e->ses->find_torrent(ih1(atp.info_hashes));
+    if (old.is_valid()) {
+        e->ses->remove_torrent(old);        // 幂等：继续排队移除旧任务
+        for (auto it = e->pendingAdds.begin(); it != e->pendingAdds.end(); ++it) {
+            if (ih1(it->atp.info_hashes) == ih1(atp.info_hashes)) {
+                e->pendingAdds.erase(it);   // 同 ih 的旧挂起作废，只留最新
+                break;
+            }
+        }
+        PendingAdd pa;
+        pa.id = id;
+        pa.atp = std::move(atp);
+        e->pendingAdds.push_back(std::move(pa));
+    } else {
+        e->ses->async_add_torrent(std::move(atp));
+    }
     return id;
 }
 
@@ -354,10 +392,16 @@ void lt_engine_pause(LTEngine h, int id, int paused) {
     lt::torrent_handle th = e->ses->find_torrent(ih1(en->ih));
     if (!th.is_valid()) return;
     if (paused) {
+        // ★ 先关自动管理、再暂停 —— 顺序不能反：auto-managed 的种子会被
+        //   会话队列机制自动拉起，用户的"暂停"会被无声覆盖（DP 审查确认）。
         th.unset_flags(lt::torrent_flags::auto_managed);
         th.pause();
     } else {
-        th.set_flags(lt::torrent_flags::auto_managed);
+        // ★★ v1.0.253：`set_flags(x)` 单参重载的默认 mask 是 all() ——
+        //   会把**其他所有 flag 都冲掉**（DP 审查实锤的 bug）。
+        //   必须用双参形式：只把 auto_managed 这一位设回去，别的不碰。
+        th.set_flags(lt::torrent_flags::auto_managed,
+                     lt::torrent_flags::auto_managed);
         th.resume();
     }
 }
@@ -482,6 +526,20 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
     if (e == nullptr || out == nullptr || outLen < 64) return -1;
 
     std::lock_guard<std::mutex> lock(e->mu);
+
+    // ★★ v1.0.253：先把挂起的 add 补上（挂起的原因见 add_magnet 里的注释）。
+    //   判据：会话里已经找不到这个 ih（旧任务清干净了）→ 补 add。
+    if (e->ses && !e->pendingAdds.empty()) {
+        for (auto it = e->pendingAdds.begin(); it != e->pendingAdds.end();) {
+            if (!e->ses->find_torrent(ih1(it->atp.info_hashes)).is_valid()) {
+                e->ses->async_add_torrent(std::move(it->atp));
+                it = e->pendingAdds.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     // ★ 排空 alert 队列（不排会无限涨），顺便把「登记成功没有 / 报错没有」记到任务上。
     //   ★★ v1.0.248：以前只排空、不看内容 → 任务要是压根没登记上，
     //   界面就只会一直显示"正在找资源…0 个"，完全看不出是引擎的问题。
@@ -504,6 +562,24 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
                 const lt::sha1_hash h = ih1(te->handle.info_hashes());
                 for (auto &en : e->entries) {
                     if (ih1(en.ih) == h) en.err = te->error.message();
+                }
+            } else if (auto *tr = lt::alert_cast<lt::tracker_reply_alert>(a)) {
+                // ★ v1.0.253：tracker 回话（"为什么找不到 peer"的正面证据）
+                const lt::sha1_hash h = ih1(tr->handle.info_hashes());
+                for (auto &en : e->entries) {
+                    if (ih1(en.ih) == h) en.trReplies++;
+                }
+            } else if (auto *tx = lt::alert_cast<lt::tracker_error_alert>(a)) {
+                // ★ v1.0.253：tracker 报错（死条 / 拒绝）
+                const lt::sha1_hash h = ih1(tx->handle.info_hashes());
+                for (auto &en : e->entries) {
+                    if (ih1(en.ih) == h) en.trErrors++;
+                }
+            } else if (auto *pe = lt::alert_cast<lt::peer_error_alert>(a)) {
+                // ★ v1.0.253：peer 连接报错
+                const lt::sha1_hash h = ih1(pe->handle.info_hashes());
+                for (auto &en : e->entries) {
+                    if (ih1(en.ih) == h) en.peerErrors++;
                 }
             }
         }
@@ -563,7 +639,20 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
             break;
         case lt::torrent_status::finished:
         case lt::torrent_status::seeding:
-            state = "finished";
+            // ★★ v1.0.253：这个分支要分三种情况 —— 用户实测"文件列表一出来
+            //   就显示下载完成"的根因就在这：
+            //   · 全部文件被设为"不下"（等用户点开始）时 total_wanted == 0，
+            //     libtorrent 认为"没有任何想要的数据 = 已就绪"，state 同样报 finished/seeding。
+            //     那不是"下载完成"，是"还没有想要的数据" → 报 idle 让界面等用户操作。
+            //   · 真想要的数据都齐了 → finished（真的下载完成）。
+            //   · 极少见的边界（想要的数据没齐却进了这个分支）→ 当 downloading。
+            if (st.total_wanted <= 0) {
+                state = "idle";
+            } else if (st.total_wanted_done >= st.total_wanted) {
+                state = "finished";
+            } else {
+                state = "downloading";
+            }
             break;
         default:
             state = "downloading";
@@ -594,6 +683,13 @@ int lt_engine_poll(LTEngine h, int id, char *out, int outLen) {
         } else {
             js += ",\"paused\":false";
         }
+
+        // ★ v1.0.253：诊断计数（DP 审查建议）——"找不到资源"时能看出
+        //   tracker 到底有没有回应、peer 连接有没有在报错。
+        std::snprintf(buf2, sizeof(buf2),
+                      ",\"trReplies\":%d,\"trErrors\":%d,\"peerErrors\":%d",
+                      en->trReplies, en->trErrors, en->peerErrors);
+        js += buf2;
 
         js += ",\"files\":[";
         if (hasMeta) {

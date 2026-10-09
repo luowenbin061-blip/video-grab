@@ -190,4 +190,27 @@ final class MagnetStatusTests: XCTestCase {
         XCTAssertEqual(s.trackers, 12)
         XCTAssertEqual(s.peers, 7)
     }
+
+    // MARK: - v1.0.250：暂停状态 + 边播格式
+
+    /// 暂停标记要能解析出来（界面按钮靠它切「暂停 / 继续」）
+    func testParsePaused() {
+        let s = MagnetStatus.parse("{\"state\":\"downloading\",\"meta\":true,\"paused\":true,\"files\":[]}")
+        XCTAssertEqual(s?.paused, true)
+        // 老引擎没这个字段 → false（不许因此报错吓人）
+        let t = MagnetStatus.parse("{\"state\":\"downloading\",\"meta\":true,\"files\":[]}")
+        XCTAssertEqual(t?.paused, false)
+    }
+
+    /// 能不能「边下边播」：只认 mp4 系（AVPlayer 的硬边界 —— mkv/avi 装什么都没用）
+    func testStreamable() {
+        XCTAssertTrue(MagnetStatus.streamable(path: "剧集/01.mp4"))
+        XCTAssertTrue(MagnetStatus.streamable(path: "a.M4V"))    // 大小写不敏感
+        XCTAssertTrue(MagnetStatus.streamable(path: "a.mov"))
+        XCTAssertFalse(MagnetStatus.streamable(path: "a.mkv"))
+        XCTAssertFalse(MagnetStatus.streamable(path: "a.avi"))
+        XCTAssertFalse(MagnetStatus.streamable(path: "a.ts"))
+        XCTAssertFalse(MagnetStatus.streamable(path: "a.txt"))
+        XCTAssertFalse(MagnetStatus.streamable(path: "noext"))
+    }
 }

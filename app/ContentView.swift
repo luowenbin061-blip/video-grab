@@ -220,12 +220,18 @@ final class DownloadCenter: ObservableObject {
 
     /// 有任务在跑时每 2 秒自动刷一次；都停了就退出（**空闲时零开销**）。
     /// 只允许存在一条循环链，重复调用不会叠加。
+    /// ★ v1.0.250：**磁力任务也算** —— 以前只认下载页的任务，磁力下载期间
+    ///   占用数字根本不刷新（用户实测"占用显示不对"的一半原因）。
+    private var anyTaskRunning: Bool {
+        jobs.contains(where: { $0.isActive }) || MagnetEngine.shared.running
+    }
+
     func keepUsedSpaceFreshWhileBusy() {
         guard !usedSpaceLoop else { return }
-        guard jobs.contains(where: { $0.isActive }) else { return }
+        guard anyTaskRunning else { return }
         usedSpaceLoop = true
         Task { @MainActor in
-            while jobs.contains(where: { $0.isActive }) {
+            while anyTaskRunning {
                 refreshUsedSpace()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }

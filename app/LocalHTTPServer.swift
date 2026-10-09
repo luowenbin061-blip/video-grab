@@ -551,6 +551,14 @@ final class LocalHTTPServer {
             return
         }
 
+        // ★★ v1.0.250 磁力「边下边播」：把正在下载的 torrent 文件当 HTTP 流喂给播放器。
+        //   路径形如 `__torrent/<任务号>/<文件下标>.<扩展名>`；磁盘上没有这个路径，
+        //   数据来自"边等边读"（见 serveTorrentStream）。
+        if path.hasPrefix("__torrent/") {
+            serveTorrentStream(fd, path: path, lines: lines, isHead: isHead, isLocal: isLocal)
+            return
+        }
+
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir) else {
             sendSimple(fd, status: 404, reason: "Not Found")
@@ -663,6 +671,135 @@ final class LocalHTTPServer {
             guard let d = try? fh.read(upToCount: want), !d.isEmpty else { break }
             guard writeAll(fd, d) else { break }
             remain -= d.count
+        }
+    }
+
+    /// ★★ v1.0.250：磁力「边下边播」的 HTTP 流 —— 把正在下载的 torrent 文件喂给播放器。
+    ///
+    /// 路径：`__torrent/<任务号>/<文件下标>.<扩展名>`（任务号 / 下标对不上 = 404，
+    /// 换任务后旧链接自然失效）。请求到的位置还没下完时：**先催 libtorrent 优先下这段**，
+    /// 边等边查；等到多少发多少（206 的 Content-Range 按实际发，播放器会接着要下一段）。
+    private func serveTorrentStream(_ fd: Int32, path: String, lines: [String],
+                                    isHead: Bool, isLocal: Bool) {
+        // 只服务本机播放器（回环）；局域网访客不给看"正在下载"的内容
+        guard isLocal else {
+            sendForbiddenPage(fd)
+            return
+        }
+        let rest = String(path.dropFirst("__torrent/".count))
+        let segs = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+        guard segs.count == 2, let tid = Int32(String(segs[0])) else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+        let filePart = String(segs[1])
+        let idxStr = filePart.split(separator: ".").first.map(String.init) ?? ""
+        guard let fIndex = Int(idxStr),
+              let ctx = MagnetEngine.torrentStreamContext(tid: tid, fileIndex: fIndex) else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+        let total = Int(ctx.size)
+        guard total > 0 else {
+            sendSimple(fd, status: 404, reason: "Not Found")
+            return
+        }
+
+        // Range 解析（和本地文件那套同一张 RFC 7233 的严格表；流只支持单范围 ——
+        // 播放器本来就是单范围发的）
+        var start = 0
+        var end = total - 1
+        var partial = false
+        if let l = lines.first(where: { $0.lowercased().hasPrefix("range:") }) {
+            let v = l.dropFirst("range:".count).trimmingCharacters(in: .whitespaces)
+            guard let r = v.range(of: "bytes=") else {
+                sendRangeNotSatisfiable(fd, total: total); return
+            }
+            let spec = v[r.upperBound...].trimmingCharacters(in: .whitespaces)
+            guard !spec.contains(",") else {
+                sendRangeNotSatisfiable(fd, total: total); return
+            }
+            let comps = spec.split(separator: "-", omittingEmptySubsequences: false)
+            guard comps.count == 2 else {
+                sendRangeNotSatisfiable(fd, total: total); return
+            }
+            let sStr = comps[0].trimmingCharacters(in: .whitespaces)
+            let eStr = comps[1].trimmingCharacters(in: .whitespaces)
+            if sStr.isEmpty {
+                guard let n = Int(eStr), n > 0 else {
+                    sendRangeNotSatisfiable(fd, total: total); return
+                }
+                start = max(0, total - n)
+                end = total - 1
+            } else {
+                guard let s = Int(sStr), s >= 0, s < total else {
+                    sendRangeNotSatisfiable(fd, total: total); return
+                }
+                start = s
+                if eStr.isEmpty {
+                    end = total - 1
+                } else {
+                    guard let e = Int(eStr), e >= s else {
+                        sendRangeNotSatisfiable(fd, total: total); return
+                    }
+                    end = min(e, total - 1)
+                }
+            }
+            partial = true
+        }
+        if start >= total || start > end {
+            sendRangeNotSatisfiable(fd, total: total)
+            return
+        }
+
+        // ── 等这段数据（边下边播的核心）──
+        let want = Int64(end - start + 1)
+        guard let ready = waitForTorrentData(tid: tid, index: fIndex,
+                                             off: Int64(start), want: want) else {
+            sendSimple(fd, status: 503, reason: "Service Unavailable")   // 暂无数据，播放器会重试
+            return
+        }
+        let length = Int(ready)
+
+        let full = (start == 0 && length == total)
+        var header = full ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 206 Partial Content\r\n"
+        header += "Content-Type: \(Self.mimeType(for: (ctx.path as NSString).pathExtension))\r\n"
+        header += "Content-Length: \(length)\r\n"
+        header += "Accept-Ranges: bytes\r\n"
+        header += "Cache-Control: no-store\r\n"
+        if !full { header += "Content-Range: bytes \(start)-\(start + length - 1)/\(total)\r\n" }
+        header += "Connection: close\r\n\r\n"
+        guard writeAll(fd, Data(header.utf8)) else { return }
+        if isHead { return }
+
+        // 从磁盘把这段读出来发（和普通文件一样的 256KB 分段）
+        guard let fh = try? FileHandle(forReadingFrom: ctx.url) else { return }
+        defer { try? fh.close() }
+        try? fh.seek(toOffset: UInt64(start))
+        var remain = length
+        while remain > 0 {
+            let chunk = min(remain, 256 * 1024)
+            guard let d = try? fh.read(upToCount: chunk), !d.isEmpty else { break }
+            guard writeAll(fd, d) else { break }
+            remain -= d.count
+        }
+    }
+
+    /// ★ v1.0.250：等到 [off, off+want) 里至少有一小段"连续可读"。
+    ///   返回实际可读的字节数（> 0）；任务没了 / 超时且一字节都没有 → nil。
+    ///   等待期间每 0.25 秒催一次 libtorrent（把这段标成"急着要"）。
+    private func waitForTorrentData(tid: Int32, index: Int, off: Int64, want: Int64) -> Int64? {
+        let t0 = Date()
+        let floorBytes = min(want, Int64(1 << 20))       // 先凑到 1MB 再发，播放器缓冲更稳
+        while true {
+            _ = MagnetEngine.torrentPrefer(tid: tid, fileIndex: index, off: off, len: want)
+            let have = MagnetEngine.torrentPrefix(tid: tid, fileIndex: index, off: off, want: want)
+            if have < 0 { return nil }                   // 任务没了
+            if have >= floorBytes { return have }
+            let el = Date().timeIntervalSince(t0)
+            if have > 0, el >= 6 { return have }         // 等到 6 秒：有多少先发多少
+            if el >= 30 { return have > 0 ? have : nil } // 30 秒硬上限
+            Thread.sleep(forTimeInterval: 0.25)
         }
     }
 
