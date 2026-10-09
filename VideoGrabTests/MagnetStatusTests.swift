@@ -132,4 +132,62 @@ final class MagnetStatusTests: XCTestCase {
         XCTAssertEqual(MagnetStatus.humanRate(1024), "1.0 KB/s")
         XCTAssertEqual(MagnetStatus.humanRate(2_400_000), "2.3 MB/s")
     }
+
+    // MARK: - 「到底卡在哪」（v1.0.248：用户实测"一直已连上 0 个"换来的）
+
+    /// 引擎接受了任务、DHT 也连上了节点，只是没有 peer → 那才是"没人做种"
+    func testWaitReasonNoPeers() {
+        let s = MagnetStatus.parse("""
+        {"state":"metadata","meta":false,"peers":0,"dhtNodes":128,"hasHandle":true,
+         "added":true,"trackers":11}
+        """)!
+        XCTAssertEqual(MagnetStatus.waitReason(s), .noPeers)
+    }
+
+    /// DHT 一个节点都没有 → 引擎根本没接进 BT 网络（**不是**"没人做种"）
+    func testWaitReasonNoDht() {
+        let s = MagnetStatus.parse("""
+        {"state":"metadata","meta":false,"peers":0,"dhtNodes":0,"hasHandle":true,
+         "added":true,"trackers":11}
+        """)!
+        XCTAssertEqual(MagnetStatus.waitReason(s), .noDht)
+    }
+
+    /// 有 peer 了 → 正在取文件列表
+    func testWaitReasonFetching() {
+        let s = MagnetStatus.parse("""
+        {"state":"metadata","meta":false,"peers":3,"dhtNodes":40,"hasHandle":true,"added":true}
+        """)!
+        XCTAssertEqual(MagnetStatus.waitReason(s), .fetching)
+    }
+
+    /// 引擎压根没接受这条任务 → 真错，要明确报出来
+    func testWaitReasonEngineRejected() {
+        let s = MagnetStatus.parse("""
+        {"state":"metadata","meta":false,"peers":0,"dhtNodes":0,
+         "hasHandle":false,"added":false,"err":"加入任务失败：xxx"}
+        """)!
+        XCTAssertEqual(MagnetStatus.waitReason(s), .engineRejected)
+        XCTAssertEqual(s.engineError, "加入任务失败：xxx")
+    }
+
+    /// 老引擎（没这几个字段）→ 当成"正常"，不许因此报错吓人
+    func testNewFieldsDefaultToOptimistic() {
+        let s = MagnetStatus.parse("{\"state\":\"metadata\",\"peers\":0,\"dhtNodes\":5}")!
+        XCTAssertTrue(s.hasHandle)
+        XCTAssertTrue(s.added)
+        XCTAssertEqual(s.engineError, "")
+        XCTAssertEqual(s.trackers, 0)
+        XCTAssertEqual(MagnetStatus.waitReason(s), .noPeers)
+    }
+
+    func testParsesFullDiagnosticFields() {
+        let s = MagnetStatus.parse("""
+        {"state":"downloading","meta":true,"peers":7,"dhtNodes":300,"trackers":12,
+         "hasHandle":true,"added":true,"err":"","files":[]}
+        """)!.self
+        XCTAssertEqual(s.dhtNodes, 300)
+        XCTAssertEqual(s.trackers, 12)
+        XCTAssertEqual(s.peers, 7)
+    }
 }
