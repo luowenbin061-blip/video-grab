@@ -83,11 +83,10 @@ final class LinkGrabber: ObservableObject {
         switch kind {
         case .bili:
             runBili(link: url, center: center)
-        case .web:
-            // ★ 不算签名那条路：把网页打开就行，剩下交给已有的嗅探器
-            _ = model.newTab(load: url)
-            done = true
-            stage = "已在浏览器打开，页面开始播放后去嗅探面板找它"
+        case .web(let p):
+            // ★ v1.0.257：这三家改成"直解"主路 —— 贴链接直接解析出直链下载（对齐 B站 体验）；
+            //   解析不通自动回落"开网页 + 嗅探"（旧路变兜底，体验不倒退）。见 runShortVideo。
+            runShortVideo(platform: p, link: url, center: center, model: model)
         case .magnet:
             // ★ 磁力交给 BT 引擎（**单例**，关掉卡片下载也不会断；状态由卡片上的
             //   `MagnetCard` 显示）。引擎自己会：拉元数据 → 列文件 → **等用户点开始** →
@@ -101,6 +100,82 @@ final class LinkGrabber: ObservableObject {
                 error = MagnetEngine.shared.error ?? "BT 引擎起不来"
             }
         }
+    }
+
+    // MARK: - 抖音 / 小红书 / 快手（直解主路，失败回落嗅探）
+
+    /// ★ v1.0.257：三家的"直解" —— 贴链接直接解析出直链下载；解析/下载失败**自动回落**
+    ///   "开网页 + 嗅探"（旧路保留当兜底，体验不倒退）。
+    ///   机制细节见 `ShortVideoParse` 文件头（全部 PC 实测过；DP 复核收据
+    ///   ac-6ac8ecf1f8c66794d2addcf5）。失败口径：
+    ///   · 解析失败 → 重试**一次**（在 ShortVideoParse 里就是"抓两遍"）→ 再失败回落；
+    ///   · 直解成功但**下载失败**（直链带签名会过期）→ 重新解析一次换新链 → 再失败回落。
+    private func runShortVideo(platform: LinkText.Kind.Platform, link: String,
+                               center: DownloadCenter, model: BrowserModel) {
+        busy = true
+        stage = "解析中…"
+        Task {
+            do {
+                var r = try await ShortVideoParse.resolve(link: link, platform: platform)
+                do {
+                    try await downloadDirect(r, center: center)
+                } catch {
+                    // 没下动（签名过期 / CDN 抖动）→ 重新解析一次换新链，不行才认输
+                    stage = "下载没起来，重新解析一次…"
+                    r = try await ShortVideoParse.resolve(link: link, platform: platform)
+                    try await downloadDirect(r, center: center)
+                }
+                busy = false
+                done = true
+                stage = "已加入下载：\(r.title)"
+            } catch {
+                // 兜底：开网页 + 嗅探（原体验保留）
+                busy = false
+                let why = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+                _ = model.newTab(load: link)
+                done = true
+                stage = "直解没成功（\(why)）。已改用网页方式打开：播放后去嗅探面板下载"
+            }
+        }
+    }
+
+    /// 下载直解出来的单个 mp4（复用断点下载器；UA/Referer 与解析保持一致）。
+    /// 候选直链（多 CDN）**逐个试** —— 抖音给多条、快手给双镜像。
+    private func downloadDirect(_ r: ShortVideoParse.Resolved,
+                                center: DownloadCenter) async throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("svgrab", isDirectory: true)
+        try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+
+        let name = Self.safeFileName(r.title)
+        let out = tmp.appendingPathComponent(name + ".mp4")
+        var lastError: Error = ShortVideoParse.SVError.noData("下载失败")
+
+        for (i, u) in r.videoURLs.enumerated() {
+            do {
+                stage = r.videoURLs.count > 1
+                    ? "下载中…（线路 \(i + 1)/\(r.videoURLs.count)）" : "下载中…"
+                progress = 0
+                _ = try await fetch(u, to: out, part: tmp.appendingPathComponent("v.part"),
+                                    referer: r.referer, cookie: nil,
+                                    userAgent: r.userAgent) { [weak self] d, t in
+                    guard let self, t > 0 else { return }
+                    self.progress = min(0.95, 0.95 * Double(d) / Double(t))
+                }
+                stage = "收尾…"
+                progress = 0.98
+                // 登记进下载中心（它会自己把文件挪进程序目录并做缩略图/体检）
+                _ = center.adoptCompressed(out, title: r.title, kind: .video)
+                progress = 1
+                return
+            } catch {
+                lastError = error
+                try? fm.removeItem(at: out)   // 换下一条线前先清掉上一份
+            }
+        }
+        throw lastError
     }
 
     // MARK: - B站
@@ -226,10 +301,13 @@ final class LinkGrabber: ObservableObject {
     }
 
     /// 断点续传的单个文件下载（复用工程里那套 FileDownloader）。
+    /// ★ v1.0.257：`userAgent` 参数化 —— 短链直解下载要用手机 UA（与解析保持一致）；
+    ///   B站 那条路不传就还是原来的默认值，行为不变。
     private func fetch(_ url: URL, to out: URL, part: URL,
                        referer: String, cookie: String?,
+                       userAgent: String = BiliParse.defaultUA,
                        onProgress: @escaping (Int64, Int64) -> Void) async throws -> Int64 {
-        var opt = FileDownloader.Options(userAgent: BiliParse.defaultUA,
+        var opt = FileDownloader.Options(userAgent: userAgent,
                                          referer: referer,
                                          cookie: cookie,
                                          outputURL: out,

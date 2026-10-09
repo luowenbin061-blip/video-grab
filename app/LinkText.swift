@@ -163,11 +163,15 @@ enum LinkText {
             return .web(.douyin)
         }
         if host == "xiaohongshu.com" || host.hasSuffix(".xiaohongshu.com")
-            || host == "xhslink.com" || host.hasSuffix(".xhslink.com") {
+            || host == "xhslink.com" || host.hasSuffix(".xhslink.com")
+            // ★ v1.0.257：iOS 新版分享用的是 .cn 域名（老识别只认 .com —— 实测真漏洞）
+            || host == "xhslink.cn" || host.hasSuffix(".xhslink.cn") {
             return .web(.xiaohongshu)
         }
         if host == "kuaishou.com" || host.hasSuffix(".kuaishou.com")
-            || host == "gifshow.com" || host.hasSuffix(".gifshow.com") {
+            || host == "gifshow.com" || host.hasSuffix(".gifshow.com")
+            // ★ v1.0.257：老/移动分享域名（短链最终会落到 m.chenzhongtech.com 的分享页）
+            || host == "chenzhongtech.com" || host.hasSuffix(".chenzhongtech.com") {
             return .web(.kuaishou)
         }
         return nil
@@ -193,7 +197,8 @@ enum LinkText {
         case .magnet: return "BT 下载（先拿文件列表，再挑要下的）"
         // ★ v1.0.254：不再是"下最高清"——解析后会列出可选清晰度让用户自己挑。
         case .bili:   return "解析后可挑清晰度（音视频分开下、自动合并）"
-        case .web(let p): return "\(p.rawValue)：在浏览器打开，播放后在嗅探面板下载"
+        // ★ v1.0.257：这三家改成"直解"主路（解析不通才回落"开网页 + 嗅探"，见 LinkGrabber）
+        case .web(let p): return "\(p.rawValue)：解析后直接下载（不行会自动改用网页方式）"
         }
     }
 }

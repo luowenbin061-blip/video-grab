@@ -81,7 +81,11 @@ final class LinkTextTests: XCTestCase {
         XCTAssertEqual(LinkText.kind(of: "https://www.douyin.com/video/7123456789"), .web(.douyin))
         XCTAssertEqual(LinkText.kind(of: "https://www.xiaohongshu.com/explore/abcdef"), .web(.xiaohongshu))
         XCTAssertEqual(LinkText.kind(of: "https://xhslink.com/a/abcdef"), .web(.xiaohongshu))
+        // ★ v1.0.257：iOS 新版分享用 .cn 域名（老识别只认 .com —— 实测真漏洞，别删这两行）
+        XCTAssertEqual(LinkText.kind(of: "https://xhslink.cn/o/AxnRePgIokn"), .web(.xiaohongshu))
         XCTAssertEqual(LinkText.kind(of: "https://v.kuaishou.com/abcdef"), .web(.kuaishou))
+        // ★ v1.0.257：快手老/移动分享域名（短链最终会落到它，实测）
+        XCTAssertEqual(LinkText.kind(of: "https://m.chenzhongtech.com/fw/photo/3xabc"), .web(.kuaishou))
     }
 
     func testRejectsLookalikeDomains() {
