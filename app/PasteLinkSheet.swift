@@ -70,6 +70,13 @@ struct PasteLinkSheet: View {
                 }
                 .disabled(trimmed.isEmpty || grabber.busy)
 
+                // ── 磁力：BT 引擎那一段（找资源 / 列文件 / 勾选 / 进度 / 下完）──
+                //   只在认出来是磁力时出现。引擎是单例，关掉这张卡下载也在跑。
+                if kind == .magnet {
+                    MagnetCard(engine: MagnetEngine.shared, center: center)
+                    Divider()
+                }
+
                 // ── 状态 ──
                 if grabber.busy {
                     VStack(alignment: .leading, spacing: 8) {

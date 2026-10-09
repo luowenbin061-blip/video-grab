@@ -153,7 +153,10 @@ jobs:
       # ── 编我们自己的桥接层，并跟 libtorrent 合并成一个 .a ─────────────
       - name: Build LT bridge
         run: |
-          set -e
+          # ★★ 同样必须 pipefail：上一次就是这里没开，clang 报错被 tee 吞掉、
+          #   步骤显示 ✓，直到下一步 libtool 才报 "can't open file: ltbridge.o"，
+          #   把真正原因（源码里的编译错误）埋在后面。
+          set -eo pipefail
           BOOST="$PWD/third_party/${BOOST_DIRNAME}"
           xcrun -sdk iphoneos clang++ -c vendor/ltbridge/ltbridge.cpp \
             -o build-lt/ltbridge.o \
@@ -171,7 +174,7 @@ jobs:
 
       - name: Merge into one static library
         run: |
-          set -e
+          set -eo pipefail
           LT_A=$(find build-lt -maxdepth 2 -name "libtorrent-rasterbar.a" | head -1)
           echo "libtorrent archive: $LT_A" | tee -a build-lt.log
           test -n "$LT_A"

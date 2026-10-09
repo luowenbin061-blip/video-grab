@@ -74,7 +74,15 @@ final class LinkGrabber: ObservableObject {
             done = true
             stage = "已在浏览器打开，页面开始播放后去嗅探面板找它"
         case .magnet:
-            error = "磁力这条还在打通 BT 引擎，先放一放"
+            // ★ 磁力交给 BT 引擎（**单例**，关掉卡片下载也不会断；状态由卡片上的
+            //   `MagnetCard` 显示）。引擎自己会：拉元数据 → 列文件 → 按默认勾选只下视频 →
+            //   下完登记进下载中心。
+            if MagnetEngine.shared.start(magnet: url) {
+                done = true
+                stage = "已交给 BT 引擎"
+            } else {
+                error = MagnetEngine.shared.error ?? "BT 引擎起不来"
+            }
         }
     }
 

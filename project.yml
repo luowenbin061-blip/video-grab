@@ -103,6 +103,14 @@ targets:
           - "$(PROJECT_DIR)/vendor/FFmpeg/swscale.xcframework/ios-arm64"
           - "$(PROJECT_DIR)/vendor/FFmpeg/swresample.xcframework/ios-arm64"
           - "$(PROJECT_DIR)/vendor/FFmpeg/avutil.xcframework/ios-arm64"
+          # ★ v1.0.247 磁力（BT）引擎 —— libtorrent 预编译静态库
+          #   （CI 从固定 tag `lt-prebuilt` 的 release 下下来解到这儿，见 build.yml）
+          - "$(PROJECT_DIR)/vendor/libtorrent/lib"
+        # ★ v1.0.247：自研桥接层的 C 头（app/VideoGrab-Bridging-Header.h 里 include 它）。
+        #   ★ 注意：Swift 侧**只碰得到这个纯 C 头**，碰不到 libtorrent / boost 的头 ——
+        #     所以**不用**给 boost 加头文件搜索路径（boost 头只在编 libtorrent 时才要用）。
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/vendor/ltbridge"
         OTHER_LDFLAGS:
           - "-lfftools"
           - "-lavdevice"
@@ -125,6 +133,16 @@ targets:
           - "AudioToolbox"
           - "-framework"
           - "CoreVideo"
+          # ★ v1.0.247 磁力（BT）引擎：桥接层 + libtorrent 静态库。
+          #   · `-lc++` **必须加** —— 那个静态库里是 C++ 目标文件，而 Swift 的运行时**不含** libc++。
+          #   · SystemConfiguration / CoreFoundation 是 libtorrent 在 Apple 平台上
+          #     探测网络变化要用的（它自己的构建文件里就写着这两条）。
+          - "-lvideoGrabLT"
+          - "-lc++"
+          - "-framework"
+          - "SystemConfiguration"
+          - "-framework"
+          - "CoreFoundation"
         # FFmpeg 转码用的 C 入口（app/Hook.m）经桥接头暴露给 Swift
         SWIFT_OBJC_BRIDGING_HEADER: app/VideoGrab-Bridging-Header.h
 
@@ -164,6 +182,10 @@ targets:
       #   没有 BV 号**，老判据两条都过不了 → 用户实测"粘 B站 一律认不出"。
       #   抠链接 + 认类型这两件事必须跑起来才算数，光看代码看不出对错（依赖 BiliParse，已在上面）。
       - path: app/LinkText.swift
+      # ★ v1.0.247：磁力引擎返回的那段 JSON 的解析与判断（纯逻辑，只 Foundation）——
+      #   "默认该下哪些文件""扩展名算不算视频""大小怎么显示""元数据没到别显示空列表"
+      #   这几件事光看代码看不出对错，必须跑。★ 它**不能引用** DownloadJob（不在白名单里）。
+      - path: app/MagnetStatus.swift
       - path: VideoGrabTests
     settings:
       base:
