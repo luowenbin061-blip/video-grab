@@ -72,6 +72,12 @@ final class LinkGrabber: ObservableObject {
         qualityHint = ""
         pendingResolved = nil
         pendingLink = nil          // ★ v1.0.258
+        // ★ v1.0.260：进度/速度状态一并清
+        speedSamples = []
+        speedLine = ""
+        progressKnown = true
+        progressFrom = 0
+        progressTo = 1
     }
 
     func handle(link: String, center: DownloadCenter, model: BrowserModel) {
@@ -160,15 +166,14 @@ final class LinkGrabber: ObservableObject {
 
         for (i, u) in r.videoURLs.enumerated() {
             do {
-                stage = r.videoURLs.count > 1
-                    ? "下载中…（线路 \(i + 1)/\(r.videoURLs.count)）" : "下载中…"
+                // ★ v1.0.260：进度/速度/预计剩余统一由 noteProgress 组装
+                let line = r.videoURLs.count > 1 ? "（线路 \(i + 1)/\(r.videoURLs.count)）" : ""
+                setProgressRange(0, 0.95)
                 progress = 0
                 _ = try await fetch(u, to: out, part: tmp.appendingPathComponent("v.part"),
                                     referer: r.referer, cookie: nil,
-                                    userAgent: r.userAgent) { [weak self] d, t in
-                    guard let self, t > 0 else { return }
-                    self.progress = min(0.95, 0.95 * Double(d) / Double(t))
-                }
+                                    userAgent: r.userAgent,
+                                    label: "下载中\(line)")
                 stage = "收尾…"
                 progress = 0.98
                 // 登记进下载中心（它会自己把文件挪进程序目录并做缩略图/体检）
@@ -269,25 +274,24 @@ final class LinkGrabber: ObservableObject {
         let merged = tmp.appendingPathComponent(safeName + ".mp4")
 
         // ① 视频流
+        // ★ v1.0.260：进度/速度/预计剩余统一由 noteProgress 组装（label 标明在下哪段）
+        setProgressRange(0, 0.6)
         stage = "下载画面（\(r.qualityText)）…"
         progress = 0
         let vBytes = try await fetch(r.videoURL, to: vOut, part: tmp.appendingPathComponent("v.part"),
-                                     referer: BiliParse.mediaReferer, cookie: nil) { [weak self] d, t in
-            guard let self, t > 0 else { return }
-            self.progress = min(0.6, 0.6 * Double(d) / Double(t))
-        }
+                                     referer: BiliParse.mediaReferer, cookie: nil,
+                                     label: "下载画面（\(r.qualityText)）")
 
         // ② 音频流（B站 DASH 一定是分开的两条；没有就说明是 durl 退路 → 直接就是完整文件）
         var finalMP4 = vOut
         if let aURL = r.audioURL {
+            setProgressRange(0.6, 0.85)
             stage = "下载声音…"
             let aBytes = try await fetch(aURL, to: aOut, part: tmp.appendingPathComponent("a.part"),
-                                         referer: BiliParse.mediaReferer, cookie: nil) { [weak self] d, t in
-                guard let self, t > 0 else { return }
-                self.progress = 0.6 + min(0.25, 0.25 * Double(d) / Double(t))
-            }
+                                         referer: BiliParse.mediaReferer, cookie: nil,
+                                         label: "下载声音")
             // ③ 合并（-c copy，不重编码 → 画质不掉）
-            stage = "合并画面和声音…"
+            stage = "合并画面和声音…（大文件要几秒）"
             progress = 0.88
             _ = try await AVRemux.merge(video: vOut, audio: aOut, out: merged,
                                         faststart: AVRemux.shouldFaststart(videoBytes: vBytes,
@@ -309,13 +313,81 @@ final class LinkGrabber: ObservableObject {
         progress = 1
     }
 
+    // MARK: - 下载进度 / 速度 / 预计剩余（★ v1.0.260）
+
+    /// 字节采样（近 10 秒滑窗 —— 256KB 一采，慢网采样点稀，窗口放宽防跳变）
+    private var speedSamples: [(t: Date, b: Int64)] = []
+    /// 当前下载段的进度区间（多段流各占一段：B站 画面 0~0.6、声音 0.6~0.85）
+    private var progressFrom: Double = 0
+    private var progressTo: Double = 1
+    /// 总长知不知道 —— 不知道时进度条换**不确定型转圈**（诚实：没有比例可显示），
+    /// 靠 stage 的"已下 X MB"表达在动（DP 审查建议，避免"永远 2%"的卡死感）
+    @Published var progressKnown = true
+    /// 速度 / 预计剩余那一行（主信息在 stage，UI 里单独一行显示）
+    @Published var speedLine: String = ""
+
+    /// 下载前先声明这一段的进度区间
+    private func setProgressRange(_ from: Double, _ to: Double) {
+        progressFrom = from
+        progressTo = to
+    }
+
+    /// 下载进度一揽子更新：比例 / 已下字节 / 速度 / 预计剩余 —— 全部就地组装。
+    /// ★ 以前这里只有一句 `guard t > 0 else { return }` —— 服务器不给总长时
+    ///   进度更新被整个吞掉，界面永远停在 1%（用户实测"像卡住了"的根因）。
+    private func noteProgress(_ d: Int64, _ t: Int64, label: String) {
+        let now = Date()
+        speedSamples.append((now, d))
+        while speedSamples.count > 2, now.timeIntervalSince(speedSamples[0].t) > 10 {
+            speedSamples.removeFirst()
+        }
+        var speed: Double = 0
+        if let first = speedSamples.first, speedSamples.count >= 3 {
+            let dt = now.timeIntervalSince(first.t)
+            if dt > 1 { speed = Double(d - first.b) / dt }
+        }
+        if t > 0 {
+            progressKnown = true
+            let frac = min(0.999, max(0, Double(d) / Double(t)))
+            progress = progressFrom + (progressTo - progressFrom) * frac
+            stage = "\(label) \(Int(frac * 100))%（\(DownloadJob.mb(d))/\(DownloadJob.mb(t))MB）"
+        } else {
+            progressKnown = false
+            stage = "\(label) 已下 \(DownloadJob.mb(d))MB"
+        }
+        var aux: [String] = []
+        if speed > 1 {
+            let mb = speed / 1_048_576
+            aux.append(mb >= 1 ? String(format: "%.1f MB/s", mb)
+                               : String(format: "%.0f KB/s", speed / 1024))
+            if t > d {
+                // 预计剩余 = 剩余字节 / 速度；单位规则对齐 CompressPlan.etaText（v1.0.162）
+                let left = Double(t - d) / speed
+                if left.isFinite {
+                    if left < 60 { aux.append("还要 \(max(1, Int(left.rounded()))) 秒") }
+                    else {
+                        let m = Int((left / 60).rounded())
+                        if m < 60 { aux.append("还要 \(m) 分钟") }
+                        else {
+                            let h = m / 60, mm = m % 60
+                            aux.append(mm == 0 ? "还要 \(h) 小时" : "还要 \(h) 小时 \(mm) 分")
+                        }
+                    }
+                }
+            }
+        }
+        speedLine = aux.joined(separator: " · ")
+    }
+
     /// 断点续传的单个文件下载（复用工程里那套 FileDownloader）。
     /// ★ v1.0.257：`userAgent` 参数化 —— 短链直解下载要用手机 UA（与解析保持一致）；
     ///   B站 那条路不传就还是原来的默认值，行为不变。
+    /// ★ v1.0.260：进度不再由调用方各自拼闭包 —— 统一走 `noteProgress`
+    ///   （label 标明当前在下哪段），速度 / 预计剩余 / 已下字节全在这一条里。
     private func fetch(_ url: URL, to out: URL, part: URL,
                        referer: String, cookie: String?,
                        userAgent: String = BiliParse.defaultUA,
-                       onProgress: @escaping (Int64, Int64) -> Void) async throws -> Int64 {
+                       label: String) async throws -> Int64 {
         var opt = FileDownloader.Options(userAgent: userAgent,
                                          referer: referer,
                                          cookie: cookie,
@@ -323,7 +395,11 @@ final class LinkGrabber: ObservableObject {
                                          partURL: part)
         opt.acceptsRange = true
         var fd = FileDownloader(options: opt)
-        fd.onProgress = onProgress
+        fd.onProgress = { [weak self] d, t in
+            Task { @MainActor in
+                self?.noteProgress(d, t, label: label)
+            }
+        }
         return try await fd.run(url: url)
     }
 

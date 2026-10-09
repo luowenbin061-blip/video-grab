@@ -96,10 +96,21 @@ struct PasteLinkSheet: View {
                 // ── 状态 ──
                 if grabber.busy {
                     VStack(alignment: .leading, spacing: 8) {
-                        ProgressView(value: max(0.02, grabber.progress))
+                        // ★ v1.0.260：总长未知时换**不确定型转圈** —— 诚实：没有比例可显示；
+                        //   进度多少靠下面两行字跳（已下字节 / 速度 / 预计剩余）。
+                        if grabber.progressKnown {
+                            ProgressView(value: max(0.02, grabber.progress))
+                        } else {
+                            ProgressView()
+                        }
                         Text(grabber.stage)
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
+                        if !grabber.speedLine.isEmpty {
+                            Text(grabber.speedLine)
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 } else if let e = grabber.error {
                     Text(e)

@@ -75,7 +75,11 @@ struct FileDownloader {
             fm.createFile(atPath: options.partURL.path, contents: nil)
         }
 
-        let total = options.expectedLength
+        // ★ v1.0.260：总长**优先用调用方传的**；没传（=0）就从响应头自取 ——
+        //   Range 段（206）的 `Content-Range: bytes X-Y/总长` 自带总长、200 用
+        //   expectedContentLength。以前 total=0 时调用方算不出比例，进度条永远不动
+        //   （用户实测"工具箱直解下载一直显示 1%"的根因之一）。
+        var total = options.expectedLength
         // ★ 这里**故意**是固定的 16MB 段，别再改成"自适应小段"。
         //   2026-09-27 试过 v1.0.114：段长 = 总长/10（夹 1MB~16MB），
         //   好处是小文件也能看到进度（16MB 一段时，<16MB 的文件全程只有 1 次回调）；
@@ -89,8 +93,12 @@ struct FileDownloader {
                 let start = done
                 var req = request(for: url)
                 req.setValue("bytes=\(start)-\(start + chunk - 1)", forHTTPHeaderField: "Range")
-                let (data, resp) = try await Self.session.data(for: req)
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                // ★ v1.0.260：流式收数据时把"空闲超时"放宽（DP 审查建议）——
+                //   30s 的 resource 超时对"等下一个数据包"太紧，CDN 首字节慢会被切。
+                req.timeoutInterval = 90
+                let (stream, resp) = try await Self.session.bytes(for: req)
+                let http = resp as? HTTPURLResponse
+                let code = http?.statusCode ?? 0
 
                 if code == 200 && start > 0 {
                     // 服务端忽略了我们带 Range 的请求、直接把整份发回来 → 只能从头再来
@@ -100,22 +108,57 @@ struct FileDownloader {
                 } else if code != 206 && code != 200 {
                     throw Fail.badStatus(code)
                 }
-                guard !data.isEmpty else { break }
+                // ★ v1.0.260：响应头自取总长（容错：解析不出就保持 0，绝不给假总长）
+                if total <= 0, let http {
+                    if code == 206, let cr = http.value(forHTTPHeaderField: "Content-Range"),
+                       let slash = cr.range(of: "/"),
+                       let t = Int64(cr[slash.upperBound...].trimmingCharacters(in: .whitespaces)) {
+                        total = t
+                    } else if code == 200, let t = http.expectedContentLength, t > 0 {
+                        total = t
+                    }
+                }
 
+                // ★★ v1.0.260：**流式收 + 批量落盘** —— 以前 `data(for:)` 要等整段
+                //   16MB 到齐才返回、才回调一次进度（快网 3-5 秒一跳、慢网几十秒一跳，
+                //   用户看到的就是"不动了"）。现在边收边写、每 256KB 报一次。
+                //   断点语义不变：.part 追加写；服务端截断（segGot < 期望段长）且
+                //   总长未到 → 不退出，循环里接着 Range 拉（原来直接 break 会把
+                //   不完整的文件当成功）。
+                let fh = try FileHandle(forWritingTo: options.partURL)
+                try fh.seekToEnd()
+                var buf = Data()
+                buf.reserveCapacity(256 * 1024)
+                let segStart = done
                 do {
-                    let fh = try FileHandle(forWritingTo: options.partURL)
-                    try fh.seekToEnd()
-                    try fh.write(contentsOf: data)
+                    for try await b in stream {
+                        try Task.checkCancellation()      // ★ v1.0.260：AsyncBytes 的取消传播有缺陷，显式检查
+                        buf.append(b)
+                        if buf.count >= 256 * 1024 {
+                            try fh.write(contentsOf: buf)
+                            done += Int64(buf.count)
+                            buf.removeAll(keepingCapacity: true)
+                            onProgress(done, total)
+                        }
+                    }
+                    if !buf.isEmpty {
+                        try fh.write(contentsOf: buf)
+                        done += Int64(buf.count)
+                        onProgress(done, total)
+                    }
                     try fh.close()
                 } catch {
+                    try? fh.close()
                     if Self.isNoSpace(error) { throw Fail.noSpace }
                     throw error
                 }
 
-                done += Int64(data.count)
-                onProgress(done, total)
                 if total > 0 && done >= total { break }
-                if data.count < Int(chunk) { break }     // 最后一段
+                let segGot = done - segStart
+                if segGot == 0 { break }                  // ★ 服务端这次一个字节都没给（原 data 版的空段防护，别死循环）
+                if code == 200 { break }                  // 服务端不支持 Range，这份就是完整的
+                if total <= 0 && segGot < chunk { break } // 没总长时，段没拉满 = 最后一段
+                // 总长已知但段没拉满 → 服务端截断，循环继续接着拉
             }
         } else {
             // ★★ v1.0.101（会诊两家都点了这条，属"必崩点"）：
@@ -131,6 +174,10 @@ struct FileDownloader {
             let (tmp, resp) = try await Self.session.download(for: request(for: url))
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard (200...299).contains(code) else { throw Fail.badStatus(code) }
+            // ★ v1.0.260：这条退路也顺手把总长补上（一致性；虽然此刻下载已完成）
+            if total <= 0, let t = (resp as? HTTPURLResponse)?.expectedContentLength, t > 0 {
+                total = t
+            }
             // download(for:) 给的临时文件在回调返回后会被系统删掉 → 必须立刻挪走
             try? fm.removeItem(at: options.partURL)
             do {
