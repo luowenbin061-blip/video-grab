@@ -90,19 +90,28 @@ enum JobStore {
     ///   界面上那个「占用」只反映了临时分片 → 下载完成后分片一清，数字几乎归零。
     ///   （v1.0.101 我加递归的**本意**是「把分片也算上」，结果反而把成品踢出去了。）
     private static func sizeOfItem(_ u: URL, fm: FileManager) -> Int64 {
-        // 先分清「这是文件还是目录」—— 文件直接读大小，别走枚举器
-        let own = try? u.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-        if own?.isRegularFile == true {
-            return Int64(own?.fileSize ?? 0)
+        // ★★ v1.0.250：改用「**实际占盘**」的字节数（totalFileAllocatedSize）——
+        //   磁力下载的文件是 libtorrent **预分配**的（逻辑大小 = 完整尺寸，
+        //   实际只占已下载的块），拿 fileSize 统计会**虚高到全尺寸**：
+        //   用户看到"下了 5% 却显示占用好几 GB"。
+        //   物理分配数才是"占了我多少盘"的真答案（普通文件两者一致，不受影响）。
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]
+        func bytes(_ v: URLResourceValues?) -> Int64 {
+            if let a = v?.totalFileAllocatedSize { return Int64(a) }
+            return Int64(v?.fileSize ?? 0)
         }
-        guard let e = fm.enumerator(at: u,
-                                    includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
+        // 先分清「这是文件还是目录」—— 文件直接读大小，别走枚举器
+        let own = try? u.resourceValues(forKeys: keys)
+        if own?.isRegularFile == true {
+            return bytes(own)
+        }
+        guard let e = fm.enumerator(at: u, includingPropertiesForKeys: Array(keys)) else {
             return 0
         }
         var s: Int64 = 0
         for case let f as URL in e {
-            let v = try? f.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            if v?.isRegularFile == true { s += Int64(v?.fileSize ?? 0) }
+            let v = try? f.resourceValues(forKeys: keys)
+            if v?.isRegularFile == true { s += bytes(v) }
         }
         return s
     }

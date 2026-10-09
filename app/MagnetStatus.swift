@@ -86,6 +86,8 @@ enum MagnetStatus {
         var trackers: Int = 0
         /// 引擎报的错（加入失败 / torrent_error_alert）。
         var engineError: String = ""
+        /// ★ v1.0.250：任务暂停没有 —— 界面的「暂停 / 继续」按钮和"已暂停"字样跟着它切。
+        var paused: Bool = false
     }
 
     /// 「等元数据的时候到底卡在哪」—— 界面按这个换文案，而不是一律说"没人做种"。
@@ -132,6 +134,7 @@ enum MagnetStatus {
         s.dhtNodes = Int(int64(root["dhtNodes"]))
         s.trackers = Int(int64(root["trackers"]))
         s.engineError = (root["err"] as? String) ?? ""
+        s.paused = (root["paused"] as? Bool) ?? false
         if let arr = root["files"] as? [[String: Any]] {
             s.files = arr.compactMap { o in
                 guard let path = o["path"] as? String else { return nil }
@@ -160,6 +163,15 @@ enum MagnetStatus {
     }
 
     // MARK: - 默认下哪些
+
+    /// ★ v1.0.250：这个文件能不能「边下边播」。
+    ///   iOS 的 AVPlayer 只吃 mp4 系容器（mp4 / m4v / mov）——
+    ///   mkv / avi 这类（哪怕里面装的是 h264）它天生不认，边不边播都一样播不了。
+    ///   所以界面上只给这几个格式出「播放」按钮。
+    static func streamable(path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ["mp4", "m4v", "mov"].contains(ext)
+    }
 
     /// 默认该勾哪些文件。
     ///

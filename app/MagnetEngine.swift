@@ -1,5 +1,19 @@
 import Foundation
 
+/// ★ v1.0.250：磁力「边下边播」的**流快照** ——
+///   主线程（MagnetEngine）负责写，HTTP 后台线程（LocalHTTPServer 读文件那段）负责读，
+///   所以它得待在两边都够得着的中立位置（文件级类型 + 一把自己的小锁）。
+final class TorrentStreamBox {
+    let lock = NSLock()
+    var engine: LTEngine?
+    var tid: Int32 = -1
+    var files: [MagnetStatus.File] = []
+    var root: String = ""
+}
+
+/// 全局唯一实例（文件级不可变引用，不受任何 actor 隔离 —— 后台线程能直接拿）。
+let torrentStreamBox = TorrentStreamBox()
+
 /// 磁力（BT）引擎的 Swift 包装：拿住 C 句柄、定时轮询、把状态变成 `@Published`。
 ///
 /// ★ 为什么是**单例**：BT 下载动辄十几分钟，用户不可能一直开着那张卡。
@@ -38,6 +52,9 @@ final class MagnetEngine: ObservableObject {
     private var appliedDefault = false
     /// 下完只登记一次。
     private var adopted = false
+    /// ★ v1.0.250：用户点过「开始下载」没有 —— 没点之前只把文件列表列出来，**不自动下载**。
+    ///   （@Published：界面要从"待开始"切到"下载中"）
+    @Published private(set) var userStarted = false
 
     /// 文件落到哪 —— 单独一个子目录，免得跟"下载页"的东西混在一起。
     /// （下完会由 `adopt` 把它们正式登记进下载中心，那时才挪进主目录。）
@@ -65,10 +82,14 @@ final class MagnetEngine: ObservableObject {
         //   用户实测"测了好多链接大多失败"，很大一部分就栽在这儿。
         //   现在：只把**上一个任务**移除；引擎（DHT / 连接）一直养着 ——
         //   测的链接越多，网络越热。
+        // ★ v1.0.250：先清掉上一条任务留在 torrent 目录里的半成品（换任务 = 放弃它），
+        //   免得"孤儿文件"越堆越多、还没入口能删。
+        cleanupCurrentFiles()
         stopCurrent()
         error = nil
         adopted = false
         appliedDefault = false
+        userStarted = false
         snap = MagnetStatus.Snapshot()
         selected = []
 
@@ -107,6 +128,12 @@ final class MagnetEngine: ObservableObject {
         }
         tid = -1
         startedAt = nil
+        // ★ v1.0.250：流快照一并失效 —— 旧播放器的 HTTP 请求自然 404（tid 对不上）。
+        torrentStreamBox.lock.lock()
+        torrentStreamBox.engine = nil
+        torrentStreamBox.tid = -1
+        torrentStreamBox.files = []
+        torrentStreamBox.lock.unlock()
     }
 
     private func startPump() {
@@ -135,11 +162,25 @@ final class MagnetEngine: ObservableObject {
         error = nil
         snap = s
 
+        // ★ v1.0.250：把最新快照放进流盒（后台线程给播放器「边等边读」用）。
+        torrentStreamBox.lock.lock()
+        torrentStreamBox.engine = h
+        torrentStreamBox.tid = tid
+        torrentStreamBox.files = s.metaReady ? s.files : []
+        torrentStreamBox.root = saveRoot.path
+        torrentStreamBox.lock.unlock()
+
         // 元数据刚到 → 按默认规则勾一次（只下视频，种子里那些广告图/说明文件不碰）
+        // ★ v1.0.250：**先别自动开下** —— 列表列出来，等用户点「开始下载」。
+        //   （以前这里直接 applySelection = 立刻开下，用户反馈「只是看看也会自动下」。）
         if s.metaReady && !appliedDefault {
             appliedDefault = true
             selected = MagnetStatus.defaultSelection(in: s.files)
-            applySelection()
+            if userStarted {
+                applySelection()
+            } else {
+                lt_engine_select_none(h, tid)   // 全挡下：连接 / DHT 照常跑着，只是不拉数据
+            }
         }
     }
 
@@ -150,26 +191,100 @@ final class MagnetEngine: ObservableObject {
         guard let h = handle, tid >= 0 else { return }
         let idx = selected.sorted()
         if idx.isEmpty {
-            lt_engine_select_files(h, tid, nil, 0)          // 空 = 全都下
+            // ★ v1.0.250：空勾选 = **全都不下**（旧语义"空 = 全都下"是个坑：
+            //   点「都不选」反而全部开下）。「开始下载」那边会挡住空选的情况。
+            lt_engine_select_none(h, tid)
         } else {
             var arr = idx.map { Int32($0) }
             lt_engine_select_files(h, tid, &arr, Int32(arr.count))
         }
     }
 
+    /// ★ v1.0.250：勾选变化时调 —— **只有"已经开始下载"才真的下发优先级**；
+    ///   还没开始时只改本地勾选（不然"点一下勾选框"就等于偷偷开始下载了）。
+    func applySelectionIfStarted() {
+        guard userStarted else { return }
+        applySelection()
+    }
+
     func selectAll() {
         selected = Set(snap.files.map(\.index))
-        applySelection()
+        applySelectionIfStarted()
     }
 
     func selectNone() {
         selected = []
-        applySelection()
+        applySelectionIfStarted()
     }
 
     func pause(_ p: Bool) {
         guard let h = handle, tid >= 0 else { return }
         lt_engine_pause(h, tid, p ? 1 : 0)
+    }
+
+    // MARK: - v1.0.250：开始 / 暂停 / 删除 / 边播
+
+    /// 用户点了「开始下载」—— 从现在起数据开始拉、勾选变化实时生效。
+    func beginDownload() {
+        guard snap.metaReady, !selected.isEmpty else { return }
+        userStarted = true
+        applySelection()
+    }
+
+    /// 暂停 / 继续（toggle）。★ 以前按钮只会暂停、恢复不了 —— 这次修掉。
+    func togglePause() {
+        guard let h = handle, tid >= 0 else { return }
+        lt_engine_pause(h, tid, snap.paused ? 0 : 1)
+    }
+
+    /// 这条任务还"在干"吗（在跑、且没完成）—— 换新任务前的确认弹窗用它判断。
+    var hasActiveTask: Bool {
+        running && snap.state != .finished
+    }
+
+    /// 播放器要拼流地址用的任务号（换任务后会变 → 旧播放链接自然失效）。
+    var streamTag: Int32 { tid }
+
+    /// 点某个文件的「播放」时调：把该文件加进下载、给文件**头尾各预取一小段**
+    /// （mp4 的 moov 通常在头或尾，把这两块先拉下来，播放器一开就能读）。
+    func prepareStream(index: Int) {
+        guard snap.metaReady else { return }
+        selected.insert(index)
+        userStarted = true
+        applySelection()
+        guard let h = handle, tid >= 0 else { return }
+        let size = snap.files.first { $0.index == index }?.size ?? 0
+        let chunk: Int64 = 2 * 1024 * 1024
+        _ = lt_engine_stream_prefer(h, tid, Int32(index), 0, chunk)
+        if size > chunk * 2 {
+            _ = lt_engine_stream_prefer(h, tid, Int32(index), size - chunk, chunk)
+        }
+    }
+
+    /// ★ 删除这条任务（连同它下到一半的文件）。
+    ///   下载页里"已保存"的成品不受影响（它们早被挪走了）。
+    func removeTask() {
+        cleanupCurrentFiles()
+        stopCurrent()
+        selected = []
+        snap = MagnetStatus.Snapshot()
+        error = nil
+        userStarted = false
+        appliedDefault = false
+        adopted = false
+    }
+
+    /// 清掉当前任务在 torrent 目录里的文件（删除任务 / 换新任务时用）。
+    /// ★ 已 adopt 进下载页的成品早就被**挪走**了，这里不会误伤。
+    private func cleanupCurrentFiles() {
+        let files = snap.files
+        let fm = FileManager.default
+        let rootPath = saveRoot.standardizedFileURL.path
+        for f in files {
+            let u = saveRoot.appendingPathComponent(f.path).standardizedFileURL
+            guard u.path.hasPrefix(rootPath + "/") else { continue }   // 防越界
+            try? fm.removeItem(at: u)
+        }
     }
 
     // MARK: - 下完 → 登记进下载中心
@@ -196,5 +311,43 @@ final class MagnetEngine: ObservableObject {
             count += 1
         }
         return count
+    }
+
+    // MARK: - v1.0.250：边下边播（给 LocalHTTPServer 的后台线程调）
+
+    /// 校验「(tid, fileIndex) 还是不是当前任务的文件」并给出磁盘路径 / 大小。
+    /// ★ `nonisolated static`：HTTP 后台线程直接调 —— 只碰全局流盒（自己加锁），
+    ///   不碰主线程状态。
+    nonisolated static func torrentStreamContext(tid: Int32, fileIndex: Int)
+        -> (url: URL, path: String, size: Int64)? {
+        let box = torrentStreamBox
+        box.lock.lock()
+        defer { box.lock.unlock() }
+        guard box.tid >= 0, box.tid == tid else { return nil }
+        guard let f = box.files.first(where: { $0.index == fileIndex }) else { return nil }
+        let url = URL(fileURLWithPath: box.root).appendingPathComponent(f.path)
+        return (url, f.path, f.size)
+    }
+
+    /// 把这段字节标成「急着要」。返回 false = 任务不在 / 参数不对。
+    nonisolated static func torrentPrefer(tid: Int32, fileIndex: Int, off: Int64, len: Int64) -> Bool {
+        let box = torrentStreamBox
+        box.lock.lock()
+        let h = box.engine
+        let t = box.tid
+        box.lock.unlock()
+        guard let h, t == tid else { return false }
+        return lt_engine_stream_prefer(h, t, Int32(fileIndex), off, len) > 0
+    }
+
+    /// 从 off 起「连续已经能读」的字节数（≤ want）。负值 = 任务不在 / 参数不对。
+    nonisolated static func torrentPrefix(tid: Int32, fileIndex: Int, off: Int64, want: Int64) -> Int64 {
+        let box = torrentStreamBox
+        box.lock.lock()
+        let h = box.engine
+        let t = box.tid
+        box.lock.unlock()
+        guard let h, t == tid else { return -1 }
+        return lt_engine_stream_prefix(h, t, Int32(fileIndex), off, want)
     }
 }

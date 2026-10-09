@@ -3,7 +3,8 @@ import SwiftUI
 
 /// 「粘贴链接」卡里**磁力那一段**的界面。
 ///
-/// 三个阶段：找资源（还没元数据）→ 列文件 + 勾选 + 下 → 下完自动进下载页。
+/// 四个阶段：找资源（没元数据）→ **选文件（等点「开始下载」）** → 下载中 → 下完自动进下载页。
+/// 可边播的文件行还有「播放」入口（v1.0.250）。
 /// ★ 状态全在 `MagnetEngine.shared` 里（单例）—— 关掉卡片下载不会断，再打开还在。
 struct MagnetCard: View {
 
@@ -14,6 +15,17 @@ struct MagnetCard: View {
     @State private var adopted: Int?
     /// ★ v1.0.248：每秒走一下，用来算"已经等了多久"（见 waited）。
     @State private var now = Date()
+    /// ★ v1.0.250：删除确认弹窗。
+    @State private var showDeleteConfirm = false
+    /// ★ v1.0.250：正在播放的文件（非 nil 时弹播放器）。
+    @State private var playItem: PlayTarget?
+
+    /// 播放器要的 URL + 标题（包一层，给 `.sheet(item:)` 用）。
+    private struct PlayTarget: Identifiable {
+        let id = UUID()
+        let url: URL
+        let title: String
+    }
 
     private var files: [MagnetStatus.File] { engine.snap.files }
 
@@ -26,12 +38,20 @@ struct MagnetCard: View {
             if engine.running {
                 header
                 if engine.snap.metaReady {
-                    if engine.snap.state != .finished {
-                        progressBar
-                        fileList
-                        footer
-                    } else {
+                    if engine.snap.state == .finished {
                         finishedNote
+                    } else {
+                        if engine.userStarted {
+                            progressBar
+                        } else {
+                            readyHint
+                        }
+                        fileList
+                        if engine.userStarted {
+                            runFooter
+                        } else {
+                            prepFooter
+                        }
                     }
                 } else {
                     waiting
@@ -51,6 +71,20 @@ struct MagnetCard: View {
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { t in
             now = t
         }
+        // ★ v1.0.250：删除这条任务（带确认 —— 会清掉没保存的部分）
+        .alert("删除这条磁力任务？", isPresented: $showDeleteConfirm) {
+            Button("删除任务和文件", role: .destructive) {
+                engine.removeTask()
+                center.refreshUsedSpace()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("还没保存到下载页的部分会一并清除。下载页里已有的文件不受影响。")
+        }
+        // ★ v1.0.250：边下边播
+        .sheet(item: $playItem) { t in
+            PlayerSheet(url: t.url, title: t.title, pip: nil, key: "torrent-stream")
+        }
     }
 
     /// 这条任务已经等了多久（秒）。
@@ -68,6 +102,13 @@ struct MagnetCard: View {
                 .font(.system(size: 14, weight: .semibold))
                 .lineLimit(2)
             Spacer()
+            Button { showDeleteConfirm = true } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .padding(4)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -114,15 +155,23 @@ struct MagnetCard: View {
         }
     }
 
+    /// ★ v1.0.250：文件列表已就绪，**等用户确认**（改掉了"自动开下"）。
+    private var readyHint: some View {
+        Text("文件列表已就绪 —— 勾好要下的内容，点下面「开始下载」。")
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+    }
+
     private var progressBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             ProgressView(value: max(0.01, engine.snap.progress))
             Text("已下 \(MagnetStatus.humanSize(engine.snap.doneBytes)) / "
                  + "\(MagnetStatus.humanSize(engine.snap.totalBytes)) · "
-                 + "\(MagnetStatus.humanRate(engine.snap.rateBytes)) · "
-                 + "连接 \(engine.snap.peers) 个")
+                 + (engine.snap.paused ? "已暂停"
+                                       : MagnetStatus.humanRate(engine.snap.rateBytes))
+                 + " · 连接 \(engine.snap.peers) 个")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(engine.snap.paused ? Color.orange : Color.secondary)
         }
     }
 
@@ -143,6 +192,15 @@ struct MagnetCard: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    // ★ v1.0.250：能边播的文件（mp4 系）给个播放按钮
+                    if canStream(f) {
+                        Button { play(f) } label: {
+                            Image(systemName: "play.circle")
+                                .font(.system(size: 18))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
                     Toggle("", isOn: binding(for: f))
                         .labelsHidden()
                         .scaleEffect(0.85)
@@ -156,23 +214,52 @@ struct MagnetCard: View {
         .id(files.count)          // 文件数变了强制刷新（懒加载列表的老问题）
     }
 
-    private var footer: some View {
+    /// ★ v1.0.250：待开始阶段的底部 —— 一条大按钮「开始下载」。
+    private var prepFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("共 \(files.count) 个 · 已选 \(engine.selected.count) 个"
-                 + "（\(MagnetStatus.humanSize(chosenSize))）")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            countLine
             HStack(spacing: 10) {
                 Button("全选") { engine.selectAll() }
                 Button("都不选") { engine.selectNone() }
                 Spacer()
-                Button(engine.snap.state == .finished ? "已完成" : "暂停") {
-                    engine.pause(true)
-                }
-                .disabled(engine.snap.state == .finished)
+            }
+            .font(.system(size: 13))
+            Button {
+                engine.beginDownload()
+                center.keepUsedSpaceFreshWhileBusy()   // 开下 = 占用开始变，刷新循环得起来
+            } label: {
+                Text("开始下载")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(engine.selected.isEmpty
+                                ? Color(.tertiarySystemFill) : Color.accentColor)
+                    .foregroundStyle(engine.selected.isEmpty ? Color.secondary : .white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .disabled(engine.selected.isEmpty)
+        }
+    }
+
+    /// ★ v1.0.250：下载中的底部 —— 暂停/继续（toggle，修掉"只能暂停不能恢复"）。
+    private var runFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            countLine
+            HStack(spacing: 10) {
+                Button("全选") { engine.selectAll() }
+                Button("都不选") { engine.selectNone() }
+                Spacer()
+                Button(engine.snap.paused ? "继续" : "暂停") { engine.togglePause() }
             }
             .font(.system(size: 13))
         }
+    }
+
+    private var countLine: some View {
+        Text("共 \(files.count) 个 · 已选 \(engine.selected.count) 个"
+             + "（\(MagnetStatus.humanSize(chosenSize))）")
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
     }
 
     private var finishedNote: some View {
@@ -188,7 +275,8 @@ struct MagnetCard: View {
         Binding(get: { engine.selected.contains(f.index) },
                 set: { on in
                     if on { engine.selected.insert(f.index) } else { engine.selected.remove(f.index) }
-                    engine.applySelection()     // 勾一下立刻生效（已下的数据不会丢）
+                    // ★ v1.0.250：没点「开始下载」时只改勾选 —— 不偷跑数据
+                    engine.applySelectionIfStarted()
                 })
     }
 
@@ -199,5 +287,23 @@ struct MagnetCard: View {
         case .image: return "photo"
         case .doc:   return "doc"
         }
+    }
+
+    // MARK: - 边下边播（v1.0.250）
+
+    /// 这一行的文件能不能边播：mp4 系才行（AVPlayer 天生不认 mkv / avi）。
+    private func canStream(_ f: MagnetStatus.File) -> Bool {
+        f.kind == .video && MagnetStatus.streamable(path: f.path)
+    }
+
+    /// 点「播放」：把这个文件加入下载并开始（顺带给头尾各预取一小段），
+    /// 然后打开播放器读本机 HTTP 流 —— 播放器边读，我们边把读到的位置优先下载。
+    private func play(_ f: MagnetStatus.File) {
+        engine.prepareStream(index: f.index)
+        guard LocalHTTPServer.shared.ensureAlive() != nil else { return }
+        let ext = (f.path as NSString).pathExtension
+        guard let u = LocalHTTPServer.shared
+            .url("__torrent/\(engine.streamTag)/\(f.index).\(ext)") else { return }
+        playItem = PlayTarget(url: u, title: f.name)
     }
 }
