@@ -1321,6 +1321,18 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     // MARK: - 本地导入（工具箱「导入视频」）
 
+    /// ★★ v1.0.268：相册导入的**"准备中"占位卡** —— 用户选完视频、系统开始导出
+    ///   （转码 / iCloud 下载原片）的那几秒到几十秒里，列表里要先**有一张卡**，
+    ///   而不是什么都没有（实测原话："不显示进度，隔几秒才发现文件已经在下载页里了"）。
+    ///   ★ 卡是"占位"的：拿到文件后**删掉它、建一张真卡** —— **不改 title**。
+    ///     title 是 `let`，而且 baseName（文件名）/ 缓存键 / 搜索都依赖它，
+    ///     中途改会连锁出问题（DP 复核结论：宁可删旧建新）。
+    static func makePreparing() -> DownloadJob {
+        let j = DownloadJob(title: "正在准备…", sourceURL: "local://import", kind: .video)
+        j.phase = "正在从相册准备原片…（大视频会久一点）"
+        return j
+    }
+
     /// 从相册/「文件」导入的任务卡。跟下载不同：没有网络阶段，
     /// 直接进入「拷进程序内 → 探测能不能播 → 播不了才转码」。
     /// ★ v1.0.266：多带一个**源文件 URL** —— 用它算"大小"（文案要显示，让用户知道

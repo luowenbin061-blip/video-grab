@@ -46,6 +46,11 @@ final class FileBox {
 /// 相册多选
 struct PhotoPickerBox: UIViewControllerRepresentable {
     var onPicked: ([SavedFile]) -> Void
+    /// ★★ v1.0.268：**开始导出之前**先报个数 —— 上层据此**立刻建"准备中"的占位卡**。
+    ///   为什么必须有：相册导出（转码 / iCloud 下载原片）可能要几秒到几十秒，
+    ///   而建卡时机以前在"导出完成之后"——这段时间**连卡都没有**，
+    ///   用户以为点了没反应（实测原话："不显示进度，隔几秒发现文件已经在下载页里了"）。
+    var onWillLoad: ((Int) -> Void)?
     /// ★ v1.0.158：默认**只收视频**（原来就是这样，调用点一行都不用改）；
     ///   「压画质省空间」的图片模式传 `.image` 就变成只收图片。
     var kind: UTType = .movie
@@ -56,6 +61,11 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
         var cfg = PHPickerConfiguration()
         cfg.filter = isImage ? .images : .videos    // 只要这类
         cfg.selectionLimit = 10       // 批量导入
+        // ★★ v1.0.268：**要"当前（原始）表示"，不要让系统转码** ——
+        //   用户实测：相册里 15M 的视频，导入后显示 114M（HEVC 原片被转成 H.264）。
+        //   `.current` 是"尽力而为"（Apple 原话 avoids transcoding, if possible），
+        //   所以下面**还要**配合"按系统实际注册的类型请求"（见 `bestVideoTypeID`）。
+        cfg.preferredAssetRepresentationMode = .current
         let vc = PHPickerViewController(configuration: cfg)
         vc.delegate = context.coordinator
         return vc
@@ -64,39 +74,81 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: PHPickerViewController, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onPicked: onPicked, typeID: kind.identifier,
+        Coordinator(onPicked: onPicked, onWillLoad: onWillLoad,
+                    typeID: kind.identifier,
                     defaultExt: isImage ? "jpg" : "mov")
     }
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
         let onPicked: ([SavedFile]) -> Void
+        let onWillLoad: ((Int) -> Void)?
         /// ★ 请求的类型必须跟 picker 的类型一致 —— 选图时用 `UTType.movie` 会一个都拿不到
         let typeID: String
         let defaultExt: String
 
-        init(onPicked: @escaping ([SavedFile]) -> Void, typeID: String, defaultExt: String) {
+        init(onPicked: @escaping ([SavedFile]) -> Void,
+             onWillLoad: ((Int) -> Void)?,
+             typeID: String, defaultExt: String) {
             self.onPicked = onPicked
+            self.onWillLoad = onWillLoad
             self.typeID = typeID
             self.defaultExt = defaultExt
+        }
+
+        /// ★★ v1.0.268：**优先请求"原始格式"的 UTI**。
+        ///   系统在 `registeredTypeIdentifiers` 里注册了什么，就可能给什么 ——
+        ///   只注册了通用的 `public.movie` 时，拿到的就是**转码后的兼容版**
+        ///   （体积能大好几倍）。所以按"越原始越优先"的顺序挑：HEVC → QuickTime
+        ///   （mov）/ MPEG-4（mp4）→ 才退通用 movie。图片不走这里。
+        static func bestVideoTypeID(for provider: NSItemProvider,
+                                    fallback: String) -> String {
+            let ids = provider.registeredTypeIdentifiers
+            for want in ["public.hevc", "com.apple.quicktime-movie", "public.mpeg-4"] {
+                if ids.contains(want) { return want }
+            }
+            return fallback
         }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             picker.dismiss(animated: true)
             guard !results.isEmpty else { onPicked([]); return }
 
+            // ★ v1.0.268：**先报个数**（上层立刻建占位卡），下一拍再开始导出 ——
+            //   这样占位卡一定先渲染出来，不会"点了没反应"。
+            onWillLoad?(results.count)
+
             let box = FileBox()
             let group = DispatchGroup()
+            // ★ v1.0.268：多选时回调是**并发**的，`box.take` 会同时 append
+            //   （既有的数据竞争隐患）→ 用一条串行队列串起来（sync 保证
+            //   "take 真的完成"才算这一条 done，否则 group.notify 可能早于复制完成）。
+            let takeQ = DispatchQueue(label: "vg.import.take")
             let typeID = self.typeID, defaultExt = self.defaultExt
-            for p in results.map(\.itemProvider) {
-                group.enter()
-                _ = p.loadFileRepresentation(forTypeIdentifier: typeID) { url, _ in
-                    defer { group.leave() }
-                    guard let url else { return }
-                    box.take(from: url, suggestedName: p.suggestedName, defaultExt: defaultExt)
+
+            DispatchQueue.main.async {
+                for p in results.map(\.itemProvider) {
+                    group.enter()
+                    // 视频：优先原始 UTI；导出失败（该类型其实不可用）再用通用类型兜一次
+                    let wantID = PhotoPickerBox.Coordinator.bestVideoTypeID(for: p, fallback: typeID)
+                    let fallbackID = typeID
+                    _ = p.loadFileRepresentation(forTypeIdentifier: wantID) { url, err in
+                        if url == nil, wantID != fallbackID {
+                            // 兜底：换通用类型再试一次（不嵌套 group.enter，复用同一次）
+                            _ = p.loadFileRepresentation(forTypeIdentifier: fallbackID) { u2, _ in
+                                defer { group.leave() }
+                                guard let u2 else { return }
+                                takeQ.sync { box.take(from: u2, suggestedName: p.suggestedName, defaultExt: defaultExt) }
+                            }
+                            return
+                        }
+                        defer { group.leave() }
+                        guard let url else { return }
+                        takeQ.sync { box.take(from: url, suggestedName: p.suggestedName, defaultExt: defaultExt) }
+                    }
                 }
-            }
-            group.notify(queue: .main) { [onPicked] in
-                onPicked(box.saved)
+                group.notify(queue: .main) { [onPicked] in
+                    onPicked(box.saved)
+                }
             }
         }
     }

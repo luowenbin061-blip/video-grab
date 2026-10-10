@@ -230,10 +230,15 @@ struct ToolboxView: View {
                 })
             }
             .sheet(isPresented: $showPhotoPicker) {
-                PhotoPickerBox { files in
-                    center.addImported(files)
-                    if !files.isEmpty { isPresented = false }   // 收起卡片，让用户看到导入进度
-                }
+                // ★★ v1.0.268：**选完先建"准备中"的卡、立刻收起选择器** ——
+                //   相册导出原片（转码 / iCloud 下载）可能要几秒到几十秒，
+                //   以前是"导出完成才建卡"→ 这段时间列表空白，用户以为没反应。
+                PhotoPickerBox(onPicked: { files in
+                    center.finishPhotoImport(files)
+                }, onWillLoad: { n in
+                    center.beginPhotoImport(count: n)
+                    isPresented = false          // 收起卡片，让用户回列表看"正在准备…"
+                })
             }
             .sheet(isPresented: $showFilePicker) {
                 FilePickerBox { files in

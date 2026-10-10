@@ -84,6 +84,43 @@ final class DownloadCenter: ObservableObject {
         return job
     }
 
+    /// ★★ v1.0.268：相册导入的**"准备中"占位卡**（见 `DownloadJob.makePreparing`）。
+    ///   用户选完视频、系统开始导出（转码 / iCloud 下载原片）时**立刻建**；
+    ///   导出完成后**删掉占位卡、换成真卡**（真卡走 `addImported` 原路）。
+    private var preparingJobs: [UUID] = []
+
+    /// 选完视频、开始导出 —— 立刻建 N 张"准备中"的卡（这一步以前没有，
+    /// 所以导出期间列表一片空白，用户以为点了没反应）
+    func beginPhotoImport(count: Int) {
+        preparingJobs = (0..<max(0, count)).map { _ in
+            let j = DownloadJob.makePreparing()
+            j.onUpdate = { [weak self] in self?.save() }
+            jobs.insert(j, at: 0)
+            return j.id
+        }
+        save()
+        // ★ 超时兜底：iCloud 上的原片下载卡住时回调可能一直不回 ——
+        //   60 秒后把还没被换掉的占位卡清掉并说明原因（不让它永久挂着）
+        let ids = preparingJobs
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            let stale = ids.filter { preparingJobs.contains($0) }
+            if !stale.isEmpty {
+                jobs.removeAll { stale.contains($0.id) }
+                preparingJobs.removeAll { stale.contains($0) }
+                importNotice = "有 \(stale.count) 个视频没能从相册取出来（可能还在 iCloud 上，先在相册里下载一份再试）"
+                save()
+            }
+        }
+    }
+
+    /// 导出完成 —— 清掉占位卡，再用真文件走正常导入（去重 / 串行 / 提示都在那儿）
+    func finishPhotoImport(_ files: [SavedFile]) {
+        jobs.removeAll { preparingJobs.contains($0.id) }
+        preparingJobs = []
+        addImported(files)
+    }
+
     /// 工具箱「导入视频」：相册/文件选来的视频进这里。
     /// 立刻建卡（用户看得到「正在导入」），复制/探测/转码在后台走。
     ///
