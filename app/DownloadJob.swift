@@ -1462,8 +1462,9 @@ final class DownloadJob: ObservableObject, Identifiable {
         if playable {
             // ★ v1.0.270：把**实际编码**记一笔（排障用）—— "导入后体积变大"就是靠它定案：
             //   `hvc1` = HEVC 原片（体积小）／`avc1` = H.264（多半是系统转的兼容版）。
-            if let t = tracks?.first, let fd = t.formatDescriptions.first,
-               let desc = fd as? CMFormatDescription {
+            //   ★ CoreFoundation 类型不能 `as?`（编译报"条件转换必然成功"）→ 用 bitCast。
+            if let t = tracks?.first, let fd = t.formatDescriptions.first {
+                let desc = unsafeBitCast(fd, to: CMFormatDescription.self)
                 let sub = CMFormatDescriptionGetMediaSubType(desc)
                 let b = [UInt8((sub >> 24) & 0xFF), UInt8((sub >> 16) & 0xFF),
                          UInt8((sub >> 8) & 0xFF), UInt8(sub & 0xFF)]

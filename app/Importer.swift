@@ -88,6 +88,7 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(onPicked: onPicked, onWillLoad: onWillLoad,
                     typeID: kind.identifier,
+                    isImage: isImage,          // ★ v1.0.270：Coordinator 要用（原片路径只给视频）
                     defaultExt: isImage ? "jpg" : "mov")
     }
 
@@ -96,14 +97,17 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
         let onWillLoad: ((Int) -> Void)?
         /// ★ 请求的类型必须跟 picker 的类型一致 —— 选图时用 `UTType.movie` 会一个都拿不到
         let typeID: String
+        /// ★ v1.0.270：是不是"选图"模式（图片不走原片路径）
+        let isImage: Bool
         let defaultExt: String
 
         init(onPicked: @escaping ([SavedFile]) -> Void,
              onWillLoad: ((Int) -> Void)?,
-             typeID: String, defaultExt: String) {
+             typeID: String, isImage: Bool, defaultExt: String) {
             self.onPicked = onPicked
             self.onWillLoad = onWillLoad
             self.typeID = typeID
+            self.isImage = isImage
             self.defaultExt = defaultExt
         }
 
