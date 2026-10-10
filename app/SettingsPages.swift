@@ -743,10 +743,38 @@ struct SettingsSharePage: View {
 
 /// 关于：版本 / 网络权限 / 项目仓库
 struct SettingsAboutPage: View {
+    /// ★ v1.0.265：主题机制自检用（见下面「外观」那行）
+    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.system.rawValue
+    @Environment(\.colorScheme) private var scheme
+
+    /// ★ v1.0.265：一行诊断 —— **"选了什么 / 现在实际是什么 / 窗口强制了什么"**。
+    ///   深色模式那两个现象排查时，这三个值一眼就能看出机制跑没跑：
+    ///   · 三项都跟随变化 = 正常；
+    ///   · "当前"不变 = SwiftUI 层没刷新；"窗口"是"未设置" = 底层强制没生效。
+    private var appearanceDiag: String {
+        let picked = AppTheme(rawValue: themeRaw)?.title ?? "?"
+        let actual = scheme == .dark ? "深色" : "浅色"
+        var win = "未设置"
+        outer: for scene in UIApplication.shared.connectedScenes {
+            guard let ws = scene as? UIWindowScene else { continue }
+            for w in ws.windows {
+                switch w.overrideUserInterfaceStyle {
+                case .dark: win = "深色"
+                case .light: win = "浅色"
+                default: win = "未设置"
+                }
+                break
+            }
+            break outer
+        }
+        return "\(picked) · 当前\(actual) · 窗口\(win)"
+    }
+
     var body: some View {
         Form {
             Section {
                 settingsKVRow("版本", SettingsMeta.version)
+                settingsKVRow("外观", appearanceDiag)
                 Button {
                     if let u = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(u)

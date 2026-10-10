@@ -857,6 +857,19 @@ final class BrowserModel: NSObject, ObservableObject {
         }
 
         let wv = WKWebView(frame: .zero, configuration: cfg)
+        // ★★ v1.0.265：**底色透明化** —— 修用户实测"拖着弹出的面板往下收起时，
+        //   背后页面跟着缩小、四周闪几下白光"。
+        //   根因：WKWebView **默认是白色不透明底**（这份代码从来没配过 —— 系统默认），
+        //   而首页（快捷入口）就盖在它上面；面板一拖，背后视图跟着变形，
+        //   边缘就把这层白露出来了。
+        //   现在：视图层透明 + 页面外区域（回弹 / 空白）用当前主题色 ——
+        //   再配合 ContentView 里内容区的衬底（`Color(.systemBackground)`），
+        //   **无论怎么露底，露出来的都是当前主题的深/浅色**。
+        wv.isOpaque = false
+        wv.backgroundColor = .clear
+        wv.scrollView.backgroundColor = .clear
+        // iOS 15+：下拉回弹 / 页面范围之外那圈的颜色（动态色，跟随外观）
+        wv.underPageBackgroundColor = .systemBackground
         // 工具箱的「页内查找」：iOS 16 起 WKWebView 自带系统的 UIFindInteraction，
         // 但**默认是关的** —— 不打开这个开关，wv.findInteraction 就是 nil。
         if #available(iOS 16.0, *) {

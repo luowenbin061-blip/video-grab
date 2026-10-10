@@ -523,6 +523,12 @@ struct ContentView: View {
             Divider()
 
             ZStack(alignment: .bottomTrailing) {
+                // ★★ v1.0.265：**内容区衬底** —— 修"拖面板收起时四周闪白"。
+                //   WebView 已做透明化（见 BrowserModel），这层是它的底：
+                //   无论 WebView 露出哪一块，露出来的都是当前主题色
+                //   （深色=黑 / 浅色=白），不会闪系统默认的白。
+                Color(.systemBackground).ignoresSafeArea()
+
                 BrowserView(model: model)
                     // 切标签时整体重建 → 挂上新标签的 WebView。
                     // 少了这个 .id，SwiftUI 会复用旧视图，画面还是上一个标签的。
@@ -651,6 +657,7 @@ struct ContentView: View {
                               kind: .video)
                 model.showToast(v == nil ? "已加入下载（自动选档）" : "已加入下载")
             }
+            .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         // ★ v1.0.134：长按 → 点预览卡 = **用内置播放器播这条视频**（不走网页那个播放器）。
         //
@@ -683,7 +690,7 @@ struct ContentView: View {
         }
         // ★ v1.0.119：系统分享面板（当前网页 / 拼好的长图 / 下载好的文件都走它）
         .sheet(item: $shareBundle) { b in
-            ActivityView(items: b.items)
+            ActivityView(items: b.items).themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         // ★ v1.0.122：PDF 导好了 → 立刻抬分享面板（存文件 / 发微信 / 存相册都从这里走）
         //   v1.0.124：选了"顺带转图片"时这里会带两份（PDF + JPG）
@@ -735,11 +742,13 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showPanel) {
             SniffPanel(model: model, downloads: downloads, isPresented: $showPanel)
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         .sheet(isPresented: $showDownloads) {
             DownloadList(center: downloads, isPresented: $showDownloads)
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
-        .sheet(isPresented: $showShare) { LanShareView(downloads: downloads) }
+        .sheet(isPresented: $showShare) { LanShareView(downloads: downloads).themeBound() }
         .sheet(isPresented: $showBookmarks) {
             BookmarksView(store: store, isPresented: $showBookmarks,
                           onOpen: { url in
@@ -754,10 +763,12 @@ struct ContentView: View {
                               lastAnyModalDismiss = Date()   // ★ v1.0.258：记下"卡片开始关闭"
                               playFromHistory(e)
                           })
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(model: model, downloads: downloads, store: store,
                          isPresented: $showSettings)
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         // ★ v1.0.214：本页视频的「选择卡片」（有多个 / 拿不准该播哪条时才弹）
         .sheet(isPresented: $pageVideoPicker) {
@@ -777,6 +788,7 @@ struct ContentView: View {
                     model.showToast("去「≡ → 嗅探结果」里看，那里能下载")
                 }
             )
+            .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         .sheet(isPresented: $showToolbox) {
             ToolboxView(model: model, center: downloads, store: store,
@@ -785,10 +797,12 @@ struct ContentView: View {
                             showToolbox = false
                             showPanel = true
                         })
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         // 标签页网格：Safari 那个是**全屏**盖上来，不是半屏卡片 → 用 fullScreenCover
         .fullScreenCover(isPresented: $showTabs) {
             TabGridView(model: model, isPresented: $showTabs)
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         // （这里原来挂了一条：网页层 900ms 兜底 → 自动弹嗅探面板。已删 ——
         //   长按只弹下载菜单，嗅探面板只由右下角按钮/底栏入口打开。）
@@ -1811,6 +1825,7 @@ struct SniffPanel: View {
         .sheet(item: $variantItem) { it in
             VariantPickerSheet(model: model, url: it.url,
                                referrer: it.referrer, ua: it.ua, cookie: it.cookie)
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
     }
 
@@ -2534,6 +2549,7 @@ struct DownloadList: View {
                                   showCompressTiers = false
                                   batchCompress()
                               })
+                .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         .sheet(item: $exportBatch) { batch in
             DocumentExporter(urls: batch.urls, onFinish: { ok in
@@ -2543,6 +2559,7 @@ struct DownloadList: View {
                 selecting = false
                 picked.removeAll()
             })
+            .themeBound()          // ★ v1.0.265：面板自己声明主题
         }
         // ★ v1.0.187：没有「完成」按钮了，关页面靠往下滑 —— 那就在收起时补一次落盘，
         //   别让「列表记录的保存」只挂在那个已经不存在的按钮上（防丢数据）。

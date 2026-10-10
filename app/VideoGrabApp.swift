@@ -74,6 +74,27 @@ enum ThemeApplier {
     }
 }
 
+/// ★★ v1.0.265：**面板（sheet / fullScreenCover）自己声明主题**。
+///
+/// 为什么必须逐层挂（用户实测第二轮逼出来的答案）：sheet 是**独立的呈现
+/// （presentation）**，它有自己的外观环境 —— 挂在根视图上的 `preferredColorScheme`
+/// **管不到它**（现象：在设置里切深色，**只有设置这张卡片不变**，退出去主页已经是深色）。
+/// 上一版试过从 `window.overrideUserInterfaceStyle` 全局强制，实测**没救回来**
+/// （被 SwiftUI 对每个呈现自己的外观管理盖掉）—— 所以改用这条**确定性**的路：
+/// 每个面板的内容根上都挂一层，它自己有 `@AppStorage`，改主题必然当场生效。
+struct ThemeBound: ViewModifier {
+    @AppStorage(AppTheme.key) private var themeRaw = AppTheme.system.rawValue
+
+    func body(content: Content) -> some View {
+        content.preferredColorScheme(AppTheme(rawValue: themeRaw)?.scheme)
+    }
+}
+
+extension View {
+    /// 给面板内容根挂主题（见 `ThemeBound` 的说明）
+    func themeBound() -> some View { modifier(ThemeBound()) }
+}
+
 @main
 struct VideoGrabApp: App {
 
