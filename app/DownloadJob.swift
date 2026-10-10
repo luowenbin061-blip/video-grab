@@ -73,6 +73,10 @@ final class DownloadJob: ObservableObject, Identifiable {
     ///   文件万一丢了就彻底没线索）。界面据此在"文件已不在"时给「重新下载」。
     ///   老记录没有这个键 → nil，自动兼容。
     @Published var originLink: String?
+    /// ★ v1.0.266：**导入去重键**（`原文件名|源文件大小`）—— 只对"导入"类任务有。
+    ///   导入前扫 jobs 比对它，拦住"以为没成功 → 反复导入 → 好几条一样的"。
+    ///   老记录没有这个键 → nil，自动兼容。
+    @Published var importKey: String?
     /// 存相册成功过
     @Published var savedToPhotos = false
     /// 界面上的一句话反馈（"已存到相册"这类）
@@ -271,6 +275,7 @@ final class DownloadJob: ObservableObject, Identifiable {
         // ★ v1.0.111：类别跟着记录回来（老记录没这个键 → nil → 退回按扩展名判）
         kindHint = record.kind.flatMap { MediaKind(key: $0) }
         originLink = record.originLink        // ★ v1.0.258（老记录没这个键 → nil）
+        importKey = record.importKey          // ★ v1.0.266（老记录没这个键 → nil）
 
         // 上次没下完 / 用户暂停过
         //
@@ -323,7 +328,9 @@ final class DownloadJob: ObservableObject, Identifiable {
                   //   参数顺序**必须与字段声明顺序一致**（#127 就挂在这里：kind 写在了 cookie 后面）。
                   cookie: cookie,
                   // ★ v1.0.258：跟在 cookie 后面（JobRecord 里也是加在 cookie 之后）
-                  originLink: originLink)
+                  originLink: originLink,
+                  // ★ v1.0.266：跟在 originLink 后面（JobRecord 里也是加在它之后）
+                  importKey: importKey)
     }
 
     // MARK: - 控制
@@ -1316,14 +1323,21 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     /// 从相册/「文件」导入的任务卡。跟下载不同：没有网络阶段，
     /// 直接进入「拷进程序内 → 探测能不能播 → 播不了才转码」。
-    static func makeImported(originalName: String) -> DownloadJob {
+    /// ★ v1.0.266：多带一个**源文件 URL** —— 用它算"大小"（文案要显示，让用户知道
+    ///   这是个大家伙、要等）和**去重键**（`原文件名|源大小`，见 `importKey`）。
+    static func makeImported(originalName: String, sourceURL: URL) -> DownloadJob {
         // 去扩展名用 NSString 的现成方法 —— 正则写在 Swift 字符串里
         // 反斜杠转义是个坑（\.\w 会直接编译不过）
         let name = (originalName as NSString).deletingPathExtension
         let j = DownloadJob(title: name.isEmpty ? "导入的视频" : name,
                             sourceURL: "local://import",
                             kind: .video)
-        j.phase = "正在导入…"
+        let size = (try? FileManager.default.attributesOfItem(atPath: sourceURL.path))?[.size] as? Int64 ?? 0
+        j.importKey = "\(originalName)|\(size)"
+        // 导入这段**不给百分比**（复制走系统内核级、APFS 上可能瞬间完成，
+        // 硬报百分比会"0% 直接跳 100%"）—— 用"大小 + 不确定态转圈"表达在干活
+        //（DP 复核结论；卡片的进度条在 total=0 时本来就是不确定态动画）。
+        j.phase = size > 0 ? "正在导入 \(sizeText(size))…" : "正在导入…"
         return j
     }
 
@@ -1349,6 +1363,11 @@ final class DownloadJob: ObservableObject, Identifiable {
         }
         notes.append("✓ 已复制进程序内（\(DownloadJob.sizeText(JobStore.size(of: dest.lastPathComponent)))）")
         await finishIncoming(dest: dest)
+        // ★ v1.0.266：导入完成的**可见反馈** —— 以前只有一下震动（用户没感知，
+        //   以为没成功就反复导）。现在完成时给一句明确的话。
+        if finished, failed == nil {
+            show("导入完成")
+        }
     }
 
     /// ★ v1.0.158：把**程序目录里已经存在的一个成品**登记成一条任务
@@ -1408,7 +1427,24 @@ final class DownloadJob: ObservableObject, Identifiable {
         //    有的 .mp4 其实是系统不认的编码，有的 .mkv 里装的是认的）──
         phase = "正在识别视频…"
         let asset = AVURLAsset(url: dest)
-        let tracks = try? await asset.loadTracks(withMediaType: .video)
+        // ★★ v1.0.266：**区分"读取出错"和"真的不可播"** ——
+        //   原来这里一句 `try?` 把两者混成一类：**一次临时的加载失败（文件刚落地、
+        //   系统索引还没跟上、相册导出的 MOV 形态特殊…）会被当成"系统播不了"**
+        //   → 白去转码（转码一个本来能播的文件又慢又可能失败）→ 用户点播放时还没就绪。
+        //   用户实测的原话就是"第一次导入播不了、第二次再导就能播" —— 正是这个。
+        //   现在：**出错等 0.4 秒重试一次**，仍出错才当不可播（原因记进过程记录）。
+        var tracks: [AVAssetTrack]?
+        do {
+            tracks = try await asset.loadTracks(withMediaType: .video)
+        } catch {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            do {
+                tracks = try await asset.loadTracks(withMediaType: .video)
+            } catch {
+                notes.append("· 识别出错（已重试一次）：\(error.localizedDescription)")
+                tracks = nil
+            }
+        }
         let playable = (tracks?.isEmpty == false)
 
         if playable {

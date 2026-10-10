@@ -7,6 +7,14 @@ import UIKit
 final class DownloadCenter: ObservableObject {
     @Published var jobs: [DownloadJob] = []
 
+    /// ★ v1.0.266：导入相关的一句轻提示（列表顶部显示 3 秒）——
+    ///   主要是"有 N 个刚才已经导入过了"（用户实测：以为没成功反复导 → 重复卡）。
+    @Published var importNotice: String?
+
+    /// ★ v1.0.266：导入**串行链** —— 反复点导入时，后一个等前一个跑完再开始，
+    ///   不会同时跑好几个大文件的复制/转码（DP 复核建议：大文件并发限 1）。
+    private var importChain: Task<Void, Never>?
+
     /// ★ v1.0.224：上一次看到的「已结束」状态（按任务 id）。
     ///   只在**我们看着它从"没结束"变成"结束"**时才震 ——
     ///   所以从回收站恢复出来的老任务（一进来就是已完成）不会平白震一下。
@@ -78,14 +86,39 @@ final class DownloadCenter: ObservableObject {
 
     /// 工具箱「导入视频」：相册/文件选来的视频进这里。
     /// 立刻建卡（用户看得到「正在导入」），复制/探测/转码在后台走。
+    ///
+    /// ★★ v1.0.266：**同一个文件不许重复导**（用户实测：导入大文件时没有进度、
+    ///   以为没成功 → 反复导入 → 列表里好几条一模一样的视频）。
+    ///   判据 = `原文件名|源大小`（见 `DownloadJob.importKey`，会落盘 —— 跨重启也算数）。
+    /// ★ 导入**串行**：反复点也不会同时跑多个大文件的复制/转码。
     func addImported(_ files: [SavedFile]) {
         guard !files.isEmpty else { return }
+        var skipped = 0
         for f in files {
-            let job = DownloadJob.makeImported(originalName: f.originalName)
+            // 去重键的算法必须与 `makeImported` 里的一致（原名|大小）
+            let size = (try? FileManager.default.attributesOfItem(atPath: f.url.path))?[.size] as? Int64 ?? 0
+            let key = "\(f.originalName)|\(size)"
+            if jobs.contains(where: { $0.importKey == key && ($0.isActive || $0.finished) }) {
+                skipped += 1
+                continue
+            }
+
+            let job = DownloadJob.makeImported(originalName: f.originalName, sourceURL: f.url)
             job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
             jobs.insert(job, at: 0)
             let src = f.url
-            Task { await job.runImport(from: src) }
+            let prev = importChain
+            importChain = Task { @MainActor in
+                _ = await prev?.value            // 排队：上一个导入完了再跑这一个
+                await job.runImport(from: src)
+            }
+        }
+        if skipped > 0 {
+            importNotice = "有 \(skipped) 个刚才已经导入过了，没有重复添加"
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                importNotice = nil
+            }
         }
         save()
     }
@@ -521,6 +554,17 @@ struct ContentView: View {
             //   已经换成 Safari 式的整屏缩略图网格（功能卡片 →「标签页」），
             //   那条横条跟它重复、而且名字挤在一起认不出谁是谁 → 删掉。
             Divider()
+            // ★ v1.0.266：导入轻提示（"有 N 个刚才已经导入过了"）—— 用户反复导入时
+            //   让他**当场知道为什么没有新卡**，而不是继续以为没成功。
+            if let n = center.importNotice {
+                Text(n)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Color(.secondarySystemBackground))
+            }
 
             ZStack(alignment: .bottomTrailing) {
                 // ★★ v1.0.265：**内容区衬底** —— 修"拖面板收起时四周闪白"。
@@ -3474,6 +3518,21 @@ struct JobRow: View {
             playSheet = SheetURL(url: u)
             return
         }
+        // ★★ v1.0.266：**本地任务（导入 / 压缩收编）永远不走"地址体检"** ——
+        //   它们的 sourceURL 是假的 `local://…`，而体检只认 http/https，
+        //   以前会回一句「这条地址不完整，读不出来」（用户实测：导入的 MOV 播不了时
+        //   看到的就是它 —— 一个**本地文件**被当成"地址有问题"，完全误导）。
+        //   现在按状态说真话：还在导入/转码 → 让用户等；格式真播不了 → 说清是格式问题。
+        if job.sourceURL.hasPrefix("local://") {
+            if job.isActive {
+                job.show("还在导入/转码中，完成之后就能播")
+            } else if job.finished, job.failed == nil, !job.mp4Ready {
+                job.show("这个文件的格式系统播不了 —— 可以「存文件夹」出去用别的播放器")
+            } else {
+                job.show("文件不在了")
+            }
+            return
+        }
         let hs = job.playbackHeaders
         let src = job.sourceURL
         job.show("正在检查这个地址…")
@@ -3491,6 +3550,12 @@ struct JobRow: View {
                 job.show("地址不合法")
             }
         }
+    }
+
+    /// 本地任务「已完成但拿不到可播成品」= 探测/转码没成（格式系统不认）
+    private func finishedWithoutPlayable() -> Bool {
+        guard job.finished, job.failed == nil else { return false }
+        return !job.mp4Ready
     }
 
     private func doViewImage() {
