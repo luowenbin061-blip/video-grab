@@ -49,7 +49,16 @@ final class DownloadCenter: ObservableObject {
 
     init() {
         // 启动时把上次的记录读回来（文件还在的就还能播、还能存相册）
-        jobs = JobStore.load().map { rec in
+        jobs = JobStore.load().compactMap { rec -> DownloadJob? in
+            // ★★ v1.0.272：**导入类任务、未完成的，一律不恢复**（用户实测：闪退重启后
+            //   下载页留一张"正在导入"的卡，进度永远 0%、暂停也没用，只能干瞪眼）。
+            //   为什么必须丢：导入靠的是"相册/文件导出的**临时副本**"（在 tmp 目录），
+            //   重启后那份副本早被系统清了 —— 恢复了也**没有任何代码会继续它**，
+            //   只会变成永远 0% 的僵尸卡。（含"正在从相册准备原片…"的占位卡。）
+            //   ★ 已导入完成的（finished = true）**照常保留** —— 用户的视频不能丢。
+            if rec.sourceURL == "local://import" && !rec.finished && rec.failed == nil {
+                return nil
+            }
             let job = DownloadJob(record: rec)
             job.onUpdate = { [weak self, weak job] in self?.save(); if let job { self?.noticeFinish(job) } }
             return job
@@ -134,7 +143,7 @@ final class DownloadCenter: ObservableObject {
         if files.isEmpty {
             onToast?("没能从相册取出视频，可以再试一次")
         } else if fallback > 0 {
-            onToast?("已导入 \(files.count) 个视频（其中 \(fallback) 个是系统兼容格式，在「下载页」里）")
+            onToast?("已导入 \(files.count) 个视频，其中 \(fallback) 个是系统兼容格式（体积会偏大；在系统设置里允许本 App 访问相册可拿原片）")
         } else {
             onToast?("已导入 \(files.count) 个视频（在「下载页」里）")
         }

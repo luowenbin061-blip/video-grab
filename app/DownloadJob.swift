@@ -1462,9 +1462,15 @@ final class DownloadJob: ObservableObject, Identifiable {
         if playable {
             // ★ v1.0.270：把**实际编码**记一笔（排障用）—— "导入后体积变大"就是靠它定案：
             //   `hvc1` = HEVC 原片（体积小）／`avc1` = H.264（多半是系统转的兼容版）。
-            //   ★ CoreFoundation 类型不能 `as?`（编译报"条件转换必然成功"）→ 用 bitCast。
-            if let t = tracks?.first, let fd = t.formatDescriptions.first {
-                let desc = unsafeBitCast(fd, to: CMFormatDescription.self)
+            // ★★ v1.0.272 崩溃修复：原来这里用 `unsafeBitCast(fd, to: CMFormatDescription.self)`
+            //    把 `formatDescriptions.first`（Swift 桥接的 `Any`）**当指针**解释 ——
+            //    这是未定义行为，导入能播的视频（走这个分支）**必闪退**（用户实测）。
+            //    改用官方 async 属性 `load(.formatDescriptions)` —— 它直接给出
+            //    `[CMFormatDescription]`，**全程零转换**，类型安全；再包一层 try? 兜底，
+            //    任何取不到的情况只是少记一行字，绝不影响功能区。
+            if let t = tracks?.first,
+               let fds = try? await t.load(.formatDescriptions),
+               let desc = fds.first {
                 let sub = CMFormatDescriptionGetMediaSubType(desc)
                 let b = [UInt8((sub >> 24) & 0xFF), UInt8((sub >> 16) & 0xFF),
                          UInt8((sub >> 8) & 0xFF), UInt8(sub & 0xFF)]

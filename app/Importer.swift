@@ -194,46 +194,58 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
             let typeID = self.typeID, defaultExt = self.defaultExt
             let pickedCB = self.onPicked
             let imageMode = self.isImage
-            // ★★ v1.0.270：相册**读取**权限 —— **静默检查**（DP：不要主动弹窗，
-            //   那样会在"选视频之前"突兀地弹一次）；没有权限就静默走降级路径。
-            //   `.limited` 也算有权限（对用户已授权的资产集 fetch 是能用的）。
-            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-            let canReadOriginal = (status == .authorized || status == .limited)
+            // ★★ v1.0.272：**主动请求相册读取权限**。
+            //   上一版只做"静默检查"（`authorizationStatus` + 有就用、没有就降级）——
+            //   结果是**首次使用的人永远看不到授权提示**，也就**永远拿不到原片**
+            //   （用户实测原话："直接闪退没有提示获取授权"）。
+            //   现在：已授权 → 回调立即返回、**不弹窗**；`.notDetermined`（首次）→
+            //   弹一次系统授权框。拒绝 / 受限 → 静默走 provider 降级。
+            //   ★ 拿不到原片只是"体积可能偏大"，**绝不能因此卡住导入** —— 所以
+            //     权限请求即使异常也照样按 `false` 往下走。
+            let beginExport: (Bool) -> Void = { canRead in
+                DispatchQueue.main.async {
+                    for r in results {
+                        let p = r.itemProvider
+                        group.enter()
+                        let wantID = PhotoPickerBox.Coordinator.bestVideoTypeID(for: p, fallback: typeID)
 
-            DispatchQueue.main.async {
-                for r in results {
-                    let p = r.itemProvider
-                    group.enter()
-                    let wantID = PhotoPickerBox.Coordinator.bestVideoTypeID(for: p, fallback: typeID)
-                    let fallbackID = typeID
-
-                    // ① 首选：**原始资源**（原片、不转码）—— 仅视频、且拿得到 assetIdentifier
-                    if canReadOriginal, !imageMode, let aid = r.assetIdentifier {
-                        let tmp = FileManager.default.temporaryDirectory
-                            .appendingPathComponent("orig_" + UUID().uuidString.prefix(8) + ".mov")
-                        PhotoPickerBox.Coordinator.loadOriginal(assetID: aid, dest: tmp) { ok in
-                            if ok {
-                                takeQ.sync {
-                                    box.take(from: tmp, suggestedName: nil, defaultExt: defaultExt)
+                        // ① 首选：**原始资源**（原片、不转码）—— 仅视频、且拿得到 assetIdentifier
+                        if canRead, !imageMode, let aid = r.assetIdentifier {
+                            let tmp = FileManager.default.temporaryDirectory
+                                .appendingPathComponent("orig_" + UUID().uuidString.prefix(8) + ".mov")
+                            PhotoPickerBox.Coordinator.loadOriginal(assetID: aid, dest: tmp) { ok in
+                                if ok {
+                                    takeQ.sync {
+                                        box.take(from: tmp, suggestedName: nil, defaultExt: defaultExt)
+                                    }
+                                    try? FileManager.default.removeItem(at: tmp)   // 临时文件立刻清
+                                    group.leave()
+                                } else {
+                                    // ② 原片拿不到（iCloud 出错 / 资源异常 / 权限受限）
+                                    //    → 降级 provider 路径
+                                    PhotoPickerBox.Coordinator.loadViaProvider(
+                                        p, wantID: wantID, fallbackID: typeID,
+                                        takeQ: takeQ, box: box, defaultExt: defaultExt) { group.leave() }
                                 }
-                                try? FileManager.default.removeItem(at: tmp)   // 临时文件立刻清
-                                group.leave()
-                            } else {
-                                // ② 原片拿不到（iCloud 出错 / 资源异常）→ 降级 provider 路径
-                                PhotoPickerBox.Coordinator.loadViaProvider(
-                                    p, wantID: wantID, fallbackID: fallbackID,
-                                    takeQ: takeQ, box: box, defaultExt: defaultExt) { group.leave() }
                             }
+                            continue
                         }
-                        continue
+                        // ③ 没权限 / 图片 → provider 路径（视频会按能否拿到原始类型标"兼容版"）
+                        PhotoPickerBox.Coordinator.loadViaProvider(
+                            p, wantID: wantID, fallbackID: typeID,
+                            takeQ: takeQ, box: box, defaultExt: defaultExt) { group.leave() }
                     }
-                    // ③ 没权限 / 图片 → provider 路径（视频会按能否拿到原始类型标"兼容版"）
-                    PhotoPickerBox.Coordinator.loadViaProvider(
-                        p, wantID: wantID, fallbackID: fallbackID,
-                        takeQ: takeQ, box: box, defaultExt: defaultExt) { group.leave() }
+                    group.notify(queue: .main) {
+                        pickedCB(box.saved)
+                    }
                 }
-                group.notify(queue: .main) {
-                    pickedCB(box.saved)
+            }
+
+            if imageMode {
+                beginExport(false)                 // 图片不走原片路径，无需权限
+            } else {
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { st in
+                    beginExport(st == .authorized || st == .limited)
                 }
             }
         }
