@@ -124,6 +124,9 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
             //   "take 真的完成"才算这一条 done，否则 group.notify 可能早于复制完成）。
             let takeQ = DispatchQueue(label: "vg.import.take")
             let typeID = self.typeID, defaultExt = self.defaultExt
+            // ★ 先解构成局部常量 —— 下面有两层闭包（async → notify），
+            //   直接引用属性会要求显式 self（编译错，踩过）
+            let pickedCB = self.onPicked
 
             DispatchQueue.main.async {
                 for p in results.map(\.itemProvider) {
@@ -146,8 +149,8 @@ struct PhotoPickerBox: UIViewControllerRepresentable {
                         takeQ.sync { box.take(from: url, suggestedName: p.suggestedName, defaultExt: defaultExt) }
                     }
                 }
-                group.notify(queue: .main) { [onPicked] in
-                    onPicked(box.saved)
+                group.notify(queue: .main) {
+                    pickedCB(box.saved)
                 }
             }
         }
