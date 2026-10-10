@@ -554,17 +554,6 @@ struct ContentView: View {
             //   已经换成 Safari 式的整屏缩略图网格（功能卡片 →「标签页」），
             //   那条横条跟它重复、而且名字挤在一起认不出谁是谁 → 删掉。
             Divider()
-            // ★ v1.0.266：导入轻提示（"有 N 个刚才已经导入过了"）—— 用户反复导入时
-            //   让他**当场知道为什么没有新卡**，而不是继续以为没成功。
-            if let n = center.importNotice {
-                Text(n)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(Color(.secondarySystemBackground))
-            }
 
             ZStack(alignment: .bottomTrailing) {
                 // ★★ v1.0.265：**内容区衬底** —— 修"拖面板收起时四周闪白"。
@@ -2384,6 +2373,17 @@ struct DownloadList: View {
         VStack(spacing: 0) {
             topBar
             Divider()
+            // ★ v1.0.266：导入轻提示（"有 N 个刚才已经导入过了"）—— 用户反复导入时
+            //   让他**当场知道为什么没有新卡**，而不是继续以为没成功。
+            if let n = center.importNotice {
+                Text(n)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Color(.secondarySystemBackground))
+            }
             if center.jobs.isEmpty {
                 emptyState
             } else {
