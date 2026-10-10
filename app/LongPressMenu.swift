@@ -79,7 +79,8 @@ struct LongPressMenuView: View {
                 ZStack {
                     Image(systemName: "video.fill")
                         .font(.system(size: 52, weight: .regular))
-                        .foregroundStyle(Color(white: 0.35))
+                        // ★ v1.0.263：原来写死 Color(white: 0.35)，深色模式下偏暗难读 → 语义色
+                        .foregroundStyle(Color(.secondaryLabel))
                 }
                 Text(info.host.isEmpty ? "视频" : info.host)
                     .font(.system(size: 14))

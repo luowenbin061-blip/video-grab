@@ -487,6 +487,9 @@ struct SettingsGeneralPage: View {
     /// ★ v1.0.224：触感反馈（震动）。键跟 `Haptics.key` 是同一个，**默认开**。
     ///   用户定的：一个开关、强度固定最轻、靠命名自明（不写多余说明）。
     @AppStorage(Haptics.key) private var haptics = true
+    /// ★ v1.0.263：显示模式（跟随系统/浅色/深色）。改完立即全局生效
+    ///   （根视图的 `preferredColorScheme` 绑的是同一个键）。
+    @AppStorage(AppTheme.key) private var theme = AppTheme.system.rawValue
 
     var body: some View {
         Form {
@@ -518,6 +521,20 @@ struct SettingsGeneralPage: View {
                 Text("搜索")
             } footer: {
                 Text("地址栏里输的不是网址时，用它去搜。自定义模板必须含 %@。")
+            }
+
+            // ★ v1.0.263：显示模式（浅色/深色/跟随系统）—— 用户要的"两种主题"切换。
+            //   三项里的「跟随系统」= 老行为（选了深色的人有回头路）；改完立即生效。
+            Section {
+                Picker("显示模式", selection: $theme) {
+                    ForEach(AppTheme.allCases) { t in
+                        Text(t.title).tag(t.rawValue)
+                    }
+                }
+            } header: {
+                Text("外观")
+            } footer: {
+                Text("深色会把整个界面换成深色配色。选「跟随系统」就跟系统设置走。")
             }
 
             // ★ v1.0.222 保持屏幕常亮 / ★ v1.0.224 触感反馈 —— 都是「系统行为」，
