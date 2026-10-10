@@ -71,6 +71,11 @@ targets:
         #
         # 存相册要的权限说明
         NSPhotoLibraryAddUsageDescription: 用于把你下载并转好的视频保存到系统相册（只在你点「存相册」时写入）。
+        # ★★ v1.0.270：**读**相册要的权限说明 —— 导入视频时用「原始文件」而不是系统
+        #   转码后的兼容版（否则 15M 的原片会变成 88M+）。
+        #   ★ 这一行不是可选项：调 PHAsset 相关接口时没有它，iOS 会**直接终止进程**。
+        #   ★ 文案面向"用户受益"（DP 复核提醒：审核/用户视角），不写技术理由。
+        NSPhotoLibraryUsageDescription: 读取你选中的相册视频的原始文件，避免导入过程中画质损失、体积变大。
         # 采集源的 m3u8 和分片常常是 http，放开 ATS（自用，不上架）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

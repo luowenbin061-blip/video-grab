@@ -1460,6 +1460,16 @@ final class DownloadJob: ObservableObject, Identifiable {
         let playable = (tracks?.isEmpty == false)
 
         if playable {
+            // ★ v1.0.270：把**实际编码**记一笔（排障用）—— "导入后体积变大"就是靠它定案：
+            //   `hvc1` = HEVC 原片（体积小）／`avc1` = H.264（多半是系统转的兼容版）。
+            if let t = tracks?.first, let fd = t.formatDescriptions.first,
+               let desc = fd as? CMFormatDescription {
+                let sub = CMFormatDescriptionGetMediaSubType(desc)
+                let b = [UInt8((sub >> 24) & 0xFF), UInt8((sub >> 16) & 0xFF),
+                         UInt8((sub >> 8) & 0xFF), UInt8(sub & 0xFF)]
+                let fourCC = String(bytes: b, encoding: .ascii) ?? "?"
+                notes.append("· 编码 \(fourCC) · \(DownloadJob.sizeText(fileSize == 0 ? JobStore.size(of: dest.lastPathComponent) : fileSize))")
+            }
             // 按「mp4 不转、能播的也不折腾」的约定原样留着
             outputName = dest.lastPathComponent
             mp4Ready = true

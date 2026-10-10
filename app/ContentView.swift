@@ -84,6 +84,10 @@ final class DownloadCenter: ObservableObject {
         return job
     }
 
+    /// ★ v1.0.270：**给用户视线内的反馈通道** —— 点完导入后用户会回到浏览器首页，
+    ///   而导入卡建在下载页里（他看不见）。由 ContentView 把它接到浏览器的 toast 上。
+    var onToast: ((String) -> Void)?
+
     /// ★★ v1.0.268：相册导入的**"准备中"占位卡**（见 `DownloadJob.makePreparing`）。
     ///   用户选完视频、系统开始导出（转码 / iCloud 下载原片）时**立刻建**；
     ///   导出完成后**删掉占位卡、换成真卡**（真卡走 `addImported` 原路）。
@@ -99,6 +103,9 @@ final class DownloadCenter: ObservableObject {
             return j.id
         }
         save()
+        // ★ v1.0.270：**在用户当前的页面上**说一句（他这时候在浏览器首页，
+        //   下载页里的占位卡他看不到）
+        onToast?("正在从相册准备 \(count) 个视频…（原片较大的话会久一点）")
         // ★ 超时兜底：iCloud 上的原片下载卡住时回调可能一直不回 ——
         //   60 秒后把还没被换掉的占位卡清掉并说明原因（不让它永久挂着）
         let ids = preparingJobs
@@ -109,6 +116,7 @@ final class DownloadCenter: ObservableObject {
                 jobs.removeAll { stale.contains($0.id) }
                 preparingJobs.removeAll { stale.contains($0) }
                 importNotice = "有 \(stale.count) 个视频没能从相册取出来（可能还在 iCloud 上，先在相册里下载一份再试）"
+                onToast?("有 \(stale.count) 个视频没能从相册取出来（可能还在 iCloud 上）")
                 save()
             }
         }
@@ -119,6 +127,17 @@ final class DownloadCenter: ObservableObject {
         jobs.removeAll { preparingJobs.contains($0.id) }
         preparingJobs = []
         addImported(files)
+        // ★★ v1.0.270：给用户一句**看得见**的结论（他在浏览器首页）。
+        //   ★ DP：降级可以，**静默降级不行** —— 有一部分是系统转码的"兼容版"时
+        //   要明说，否则他下次发现体积又不对，又来问一遍。
+        let fallback = files.filter(\.transcodedFallback).count
+        if files.isEmpty {
+            onToast?("没能从相册取出视频，可以再试一次")
+        } else if fallback > 0 {
+            onToast?("已导入 \(files.count) 个视频（其中 \(fallback) 个是系统兼容格式，在「下载页」里）")
+        } else {
+            onToast?("已导入 \(files.count) 个视频（在「下载页」里）")
+        }
     }
 
     /// 工具箱「导入视频」：相册/文件选来的视频进这里。
@@ -912,6 +931,12 @@ struct ContentView: View {
         .onAppear {
             input = model.address
             downloads.preparePiP()
+            // ★ v1.0.270：把「导入反馈」接到浏览器 toast 上 —— 用户点完导入会回到
+            //   首页，而导入卡建在下载页（他看不到）；这两句提示让他**当场知道**
+            //   在准备 / 已导入（比"回下载页才发现"强得多）。
+            downloads.onToast = { [weak model] msg in
+                model?.showToast(msg, seconds: 2.6)
+            }
             // ★ v1.0.160：把压缩队列的三根线接上（小窗 / 收编出口 / 别人要不要小窗）
             downloads.wireCompressQueue()
             // ★ v1.0.236：浏览历史改成「**开始加载就记 → 成功才留 → 失败就撤**」三件套。
