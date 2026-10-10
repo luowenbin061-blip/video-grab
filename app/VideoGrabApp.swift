@@ -55,14 +55,63 @@ enum AppTheme: String, CaseIterable, Identifiable {
 /// 材质）立即跟随 —— Apple 文档明确（DP 复核确认）。
 /// 与 `preferredColorScheme` 是**两层互补**（一个管 SwiftUI 环境、一个管 UIKit trait），
 /// 值永远同源（都从 `AppTheme.key` 派生），不会打架。
+/// ★★ v1.0.273：**"系统当前外观"的桥** —— 专治"跟随系统"档对**已呈现的 sheet** 不生效。
+///
+/// ══ 用户实测（v1.0.272）══
+/// 三档里**深色 / 浅色切换都即时生效**，**只有"跟随系统"不生效** ——
+/// 选了它，**设置卡片不变浅**，退出重开才变（用户原话）。
+///
+/// ══ 原因（确定性）══
+/// `ThemeBound` 给 sheet 传的是 `AppTheme.system.scheme` = **`nil`**，
+/// 而 `preferredColorScheme(nil)` 的语义是**"我不指定"** —— SwiftUI **不会因此重绘
+/// 已经呈现出来的** sheet（它只在"无 → 有"或"值发生变化"时才推）。
+/// 深浅两档传的是**明确值**，所以能立即重绘；"跟随系统"传 nil → **值没变化** →
+/// sheet 保持上一个主题不动。（重开设置时 sheet 重建，才重新继承到正确外观。）
+///
+/// ══ 解法：永远不给 nil ══
+/// "跟随系统"时改传**系统当前的明确模式**（本类持有）。取值来源 =
+/// `UIWindowScene.traitCollection` —— **scene 级** trait，**不受 window 的
+/// `overrideUserInterfaceStyle` 影响**，所以拿到的永远是"系统真值"。
+///
+/// ══ 刷新时机 ══
+/// ① 每次 `ThemeApplier.apply`（即用户切档时）；② 回前台时（`scenePhase` 变化）——
+/// "跟随系统"档下用户去系统设置改外观，必然要切出再切回，回来就重新解析。
+final class ThemeCenter: ObservableObject {
+    static let shared = ThemeCenter()
+    /// 系统当前模式（**明确值**，绝不为 nil）
+    @Published var systemScheme: ColorScheme = .light
+}
+
 enum ThemeApplier {
 
     /// 立即设一次 + 下一帧再补一次（DP 建议：防"窗口/呈现还没就绪"的时序竞态）
     @MainActor
     static func apply(_ raw: String) {
-        let style = (AppTheme(rawValue: raw) ?? .system).uiStyle
-        set(style)
-        DispatchQueue.main.async { set(style) }
+        let theme = AppTheme(rawValue: raw) ?? .system
+        set(theme.uiStyle)
+        syncSystemScheme(theme)
+        DispatchQueue.main.async {
+            set(theme.uiStyle)
+            syncSystemScheme(theme)     // ★ v1.0.273：下一帧再补一次
+        }
+    }
+
+    /// ★ v1.0.273：把"系统当前模式"喂给 `ThemeCenter`
+    /// （"跟随系统"档的 sheet 靠它拿到**明确值**，见 `ThemeCenter` 的说明）
+    @MainActor
+    private static func syncSystemScheme(_ theme: AppTheme) {
+        ThemeCenter.shared.systemScheme = theme.scheme ?? currentSystemScheme()
+    }
+
+    /// 系统**真值**：取 **scene 级** trait —— 不受 window 的 override 影响
+    @MainActor
+    static func currentSystemScheme() -> ColorScheme {
+        for scene in UIApplication.shared.connectedScenes {
+            if let ws = scene as? UIWindowScene {
+                return ws.traitCollection.userInterfaceStyle == .dark ? .dark : .light
+            }
+        }
+        return .light
     }
 
     @MainActor
@@ -84,9 +133,15 @@ enum ThemeApplier {
 /// 每个面板的内容根上都挂一层，它自己有 `@AppStorage`，改主题必然当场生效。
 struct ThemeBound: ViewModifier {
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.system.rawValue
+    /// ★ v1.0.273：观察它 —— "跟随系统"档下系统外观变了，**已呈现的** sheet 才会跟着重绘
+    @ObservedObject private var center = ThemeCenter.shared
 
     func body(content: Content) -> some View {
-        content.preferredColorScheme(AppTheme(rawValue: themeRaw)?.scheme)
+        // ★★ v1.0.273：**绝不给 nil**。
+        //   `nil` 的语义是"我不指定"，SwiftUI **不会因此重绘已呈现的 sheet**
+        //   —— 这正是"选跟随系统后设置卡片不变、要重开才变"的根因（用户实测）。
+        //   "跟随系统"档改传 `center.systemScheme`（**明确的**系统值），值一变立即重绘。
+        content.preferredColorScheme(AppTheme(rawValue: themeRaw)?.scheme ?? center.systemScheme)
     }
 }
 
@@ -132,7 +187,13 @@ struct VideoGrabApp: App {
                     ScreenAwake.apply()
                     ThemeApplier.apply(themeRaw)      // ★ v1.0.264：首启动落一次 UIKit trait
                 }
-                .onChange(of: phase) { _ in ScreenAwake.apply() }
+                .onChange(of: phase) { _ in
+                    ScreenAwake.apply()
+                    // ★ v1.0.273：回前台重新解析一次主题（含"系统当前外观"）——
+                    //   "跟随系统"档下用户去系统设置改了外观，切回来时 sheet 要能立刻跟上；
+                    //   顺带把 window 的 override 再落一次（幂等，防被系统清掉）。
+                    ThemeApplier.apply(themeRaw)
+                }
                 // ★ v1.0.264：切换瞬间立即落到 UIKit trait（不等 SwiftUI 环境传播）——
                 //   这正是"设置页当场变深色"的关键。
                 .onChange(of: themeRaw) { raw in ThemeApplier.apply(raw) }

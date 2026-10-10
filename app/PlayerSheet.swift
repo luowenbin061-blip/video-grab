@@ -256,6 +256,9 @@ struct PlayerSheet: View {
 
     /// ★ v1.0.263：主题（与根视图同键）—— fullScreenCover 内部的第二层（见 body 末尾）。
     @AppStorage(AppTheme.key) private var themeRaw = AppTheme.system.rawValue
+    /// ★ v1.0.273：观察"系统当前外观"—— "跟随系统"档下也能立刻跟上
+    ///   （`nil` 不会触发**已呈现**视图的重绘，见 `ThemeCenter` 的说明）。
+    @ObservedObject private var themeCenter = ThemeCenter.shared
 
     var body: some View {
         ZStack {
@@ -413,7 +416,7 @@ struct PlayerSheet: View {
         }
         // ★ v1.0.263：**第二层保险** —— fullScreenCover 对 preferredColorScheme 的继承
         //   在 iOS 15/16 有已知坑（DP 审查指出）；播放器内部再挂一层，主题必达。
-        .preferredColorScheme(AppTheme(rawValue: themeRaw)?.scheme)
+        .preferredColorScheme(AppTheme(rawValue: themeRaw)?.scheme ?? themeCenter.systemScheme)
     }
 }
 
