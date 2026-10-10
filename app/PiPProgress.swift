@@ -21,7 +21,7 @@ final class PiPProgress: NSObject, ObservableObject {
 
     /// 画帧要用的数据，由外部（DownloadCenter）提供
     struct Snapshot {
-        var title = "视频抓取"
+        var title = "幻影浏览器"
         var detail = ""
         var progress: Double = 0      // 0...1
         var activeCount = 0

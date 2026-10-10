@@ -710,7 +710,7 @@ struct SettingsSharePage: View {
                     if on {
                         if downloads.startSharing() == nil {
                             note = "没能开启共享。先确认手机连着 Wi-Fi，"
-                                 + "并且系统设置里允许「视频抓取」访问本地网络。"
+                                 + "并且系统设置里允许「幻影浏览器」访问本地网络。"
                         } else {
                             note = nil
                         }

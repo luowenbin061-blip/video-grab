@@ -14,7 +14,7 @@ enum Saver {
         var errorDescription: String? {
             switch self {
             case .noPhotoPermission:
-                return "没有相册写入权限。请到 设置 → 隐私与安全性 → 照片 里允许「视频抓取」添加照片。"
+                return "没有相册写入权限。请到 设置 → 隐私与安全性 → 照片 里允许「幻影浏览器」添加照片。"
             case .notSavable(let ext):
                 return "相册只收图片和视频（.mp4/.mov/.jpg/.png 这类）。.\(ext) 请用「存文件夹」。"
             }

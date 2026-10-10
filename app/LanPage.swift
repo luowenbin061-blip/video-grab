@@ -56,7 +56,7 @@ enum LanPage {
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <meta name="color-scheme" content="dark light">
-        <title>视频抓取 · 文件</title>
+        <title>幻影浏览器 · 文件</title>
         <style>
         :root{
           /* ① 原始值 */

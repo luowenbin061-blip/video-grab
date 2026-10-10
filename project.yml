@@ -40,7 +40,7 @@ targets:
     info:
       path: app/Info.plist
       properties:
-        CFBundleDisplayName: 视频抓取
+        CFBundleDisplayName: 幻影浏览器
         CFBundleName: VideoGrab
         CFBundleDevelopmentRegion: zh_CN
         # 版本号必须引用 build setting —— 不写这两行的话 XcodeGen 会往 Info.plist 里

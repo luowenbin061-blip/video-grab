@@ -876,7 +876,7 @@ final class LocalHTTPServer {
         <!doctype html><meta charset="utf-8"><title>需要访问口令</title>
         <body style="font:15px -apple-system,system-ui,sans-serif;margin:40px;color:#111">
         <h2>需要访问口令</h2>
-        <p>请用手机上「视频抓取」里显示的那个完整地址打开，形如
+        <p>请用手机上「幻影浏览器」里显示的那个完整地址打开，形如
         <code>http://192.168.x.x:18080/口令/</code>。</p>
         </body>
         """)
@@ -953,7 +953,7 @@ final class LocalHTTPServer {
 
         let heading = relPath.isEmpty ? "我的下载" : (relPath as NSString).lastPathComponent
         let sub = relPath.isEmpty
-            ? "手机上的「视频抓取」正在共享这个目录"
+            ? "手机上的「幻影浏览器」正在共享这个目录"
             : "共享目录 / \(relPath)"
         var back: String? = nil
         if !relPath.isEmpty {
@@ -963,7 +963,7 @@ final class LocalHTTPServer {
 
         let html = LanPage.html(
             items: items, heading: heading, sub: sub, backURL: back,
-            note: "这一页是手机上的「视频抓取」共享出来的。点缩略图在线播放（mp4 能直接播），"
+            note: "这一页是手机上的「幻影浏览器」共享出来的。点缩略图在线播放（mp4 能直接播），"
                 + "点卡片选中后可批量下载，缩略图右上角的 ↓ 下载单个。"
                 + "App 内部的缩略图、播放缓存清单和临时分片目录不在这里显示"
                 + "（用电脑挂 WebDAV 看得到）。要关掉共享，回手机 App 点「关闭共享」。")

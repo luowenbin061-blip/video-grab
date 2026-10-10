@@ -8,7 +8,7 @@ import Foundation
 /// 要不要存到相册或文件夹。
 ///
 /// 而 Documents 一旦开了 `UIFileSharingEnabled`，就会自动暴露在系统
-/// 「文件」App → 我的 iPhone → 视频抓取 里 —— 那等于"转出程序"了，
+/// 「文件」App → 我的 iPhone → 幻影浏览器 里 —— 那等于"转出程序"了，
 /// 用户还没做选择，文件已经在外面了。
 ///
 /// Application Support 是 App 私有的，系统「文件」App 看不到。

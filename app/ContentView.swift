@@ -374,7 +374,7 @@ final class DownloadCenter: ObservableObject {
                                            progress: 0, activeCount: 0)
             }
             return PiPProgress.Snapshot(
-                title: first?.title ?? "视频抓取",
+                title: first?.title ?? "幻影浏览器",
                 detail: first?.phase ?? "",
                 progress: total > 0 ? Double(done) / Double(total) : 0,
                 activeCount: act.count)
