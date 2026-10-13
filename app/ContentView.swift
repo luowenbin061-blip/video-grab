@@ -571,7 +571,8 @@ struct ContentView: View {
     /// ★ v1.0.124：一次要分享的东西可能有好几件（导出 PDF + 转出的图片）
     ///   原来是单个 URL，现在换成容器；分享网址 / 分享下载好的文件仍是一件的写法。
     @State private var shareBundle: ShareBundle?
-    /// 地址栏是否正在被编辑 —— 正在打字时，页面导航不能覆盖他输入的内容
+    /// 地址栏是否处于**编辑态**（v1.0.274：编辑态才显示输入框、浏览态显示标题）。
+    /// 正在打字时，页面导航不能覆盖他输入的内容。
     @FocusState private var urlFocused: Bool
 
     /// ★★ v1.0.243：网页弹窗询问的**软菜单** —— 就近展开在"你点的位置"附近。
@@ -1003,7 +1004,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 顶部（只有这一行：后退 / 前进 / 地址栏 / 前往）
+    // MARK: - 顶部（只有这一行：地址栏 —— 浏览态读信息，编辑态才给输入框）
     // 原来「后退 前进 刷新」挤在底部工具栏里，三条工具栏 + 一排图标按钮堆在一起，
     // 功能看着重叠。现在顶上一行只管「去哪儿」，其余全部收到下面。
 
@@ -1103,7 +1104,7 @@ struct ContentView: View {
             LazyVStack(spacing: 0) {
             ForEach(Array(list.enumerated()), id: \.element.id) { idx, s in
                 Button {
-                    urlFocused = false                  // 先收键盘，再走（顺序反了会闪）
+                    exitEdit()                          // 先收键盘归位，再走（顺序反了会闪）
                     if let q = s.search {
                         model.submit(q)
                     } else if let u = s.open {
@@ -1160,7 +1161,7 @@ struct ContentView: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .padding(.top, 42)
-                    .onTapGesture { urlFocused = false }
+                    .onTapGesture { exitEdit() }
                 if !list.isEmpty {
                     addrSuggestionPanel(list).padding(.top, 46)
                 }
@@ -1169,7 +1170,7 @@ struct ContentView: View {
         }
     }
 
-    /// 地址栏提交（回车 / 点「前往」）：是网址就打开，不是就拿去搜
+    /// 地址栏提交（回车）：是网址就打开，不是就拿去搜
     /// ★ v1.0.214：「窗口」按钮 —— 把本页视频交给内置播放器播。
     /// 明确的正片、而且第二名跟它差得远（或只有一条）→ 直接播，省一次点击；
     /// 拿不准（比如页面既有正片又有自动播放的广告）→ 弹列表让用户自己选。
@@ -1293,70 +1294,128 @@ struct ContentView: View {
     // MARK: - 顶部（只有地址栏这一行）
     // 后退/前进挪到底栏去了 —— 参考图里导航就在下面，顶上一行只负责「去哪儿」。
 
+    // ★★ v1.0.274：地址栏改「双模式」（对着亚瑟浏览器的做法）——
+    //   · 浏览态（平时）：只安静显示「这页是什么」（标题 → 域名 → 占位），
+    //     没有输入框、没有「前往」按钮 —— 地址栏是每天要看几百次的地方，
+    //     常驻一个待填的框只会一直占视线（Safari / 亚瑟在非编辑态都是「读信息」）；
+    //   · 编辑态（点一下）：才亮出输入框（预填当前地址）+「取消」，
+    //     键盘自己弹、联想照旧。回车提交 / 点「取消」或点页面别处退出。
+    //   ★ 两个模式的行高保持一致（14pt 字 + 上下 7pt），切换时顶栏不跳。
     private var topBar: some View {
         HStack(spacing: 6) {
-            HStack(spacing: 6) {
-                // ★ v1.0.214：这一页有视频时，左上角从地球图标**换成**「窗口」按钮
-                //   （点一下用内置播放器播本页视频）。没有视频时还是地球图标。
-                //   为什么是"换"而不是"加"：同一个位置互相替换，不额外占宽度 ——
-                //   否则地址栏会被挤窄、光标聚焦时更挤。
-                if model.pageVideos.isEmpty {
-                    Image(systemName: "globe")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Button { pageVideoTapped() } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "play.rectangle.fill")
-                                .font(.system(size: 11))
-                            Text("窗口")
-                                .font(.system(size: 12, weight: .medium))
+            if urlFocused {
+                // ── 编辑态：输入框 + 取消 ──
+                HStack(spacing: 6) {
+                    TextField("搜索或输入网址", text: $input)
+                        .focused($urlFocused)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        // ★ v1.0.205：从 .URL 换到 .webSearch —— 地址栏现在也能当搜索框，
+                        //   .URL 键盘没有空格键，想输一句话很难受。
+                        .keyboardType(.webSearch)
+                        .font(.system(size: 14))
+                        .onSubmit { submitInput() }
+                        .submitLabel(.go)
+
+                    if !input.isEmpty {
+                        Button {
+                            input = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.tertiary)
                         }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3.5)
-                        .background(Color.accentColor, in: Capsule())
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清空地址")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("播放本页视频")
                 }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9))
 
-                TextField("输入网址，或直接搜点什么", text: $input)
-                    .focused($urlFocused)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled(true)
-                    // ★ v1.0.205：从 .URL 换到 .webSearch —— 地址栏现在也能当搜索框，
-                    //   .URL 键盘没有空格键，想输一句话很难受。
-                    .keyboardType(.webSearch)
-                    .font(.system(size: 14))
-                    .onSubmit { submitInput() }
-                    .submitLabel(.go)
+                Button("取消") { exitEdit() }
+                    .font(.system(size: 14, weight: .medium))
+                    .padding(.horizontal, 2)
+            } else {
+                // ── 浏览态：地球 / 窗口按钮 + 标题（点整行进编辑）──
+                HStack(spacing: 6) {
+                    // ★ v1.0.214：这一页有视频时，左上角从地球图标**换成**「窗口」按钮
+                    //   （点一下用内置播放器播本页视频）。没有视频时还是地球图标。
+                    if model.pageVideos.isEmpty {
+                        Image(systemName: "globe")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .contentShape(Rectangle())
+                            .onTapGesture { enterEdit() }
+                    } else {
+                        Button { pageVideoTapped() } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "play.rectangle.fill")
+                                    .font(.system(size: 11))
+                                Text("窗口")
+                                    .font(.system(size: 12, weight: .medium))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(Color.accentColor, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("播放本页视频")
+                    }
 
-                if !input.isEmpty {
-                    Button {
-                        input = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.tertiary)
+                    // 平时显示「这页是什么」：标题 → 域名 → 占位；点它 = 进编辑
+                    Button { enterEdit() } label: {
+                        Text(addrIdleText ?? "搜索或输入网址")
+                            .font(.system(size: 14))
+                            .foregroundStyle(addrIdleText == nil ? Color.secondary : Color.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 7)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("清空地址")
+                    .accessibilityLabel("地址栏")
                 }
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9))
-
-            Button("前往") { submitInput() }
-                .font(.system(size: 14, weight: .medium))
-                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
-                .padding(.horizontal, 2)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color(.secondarySystemBackground))
         // 加载进度条：贴在地址栏**正下方**（对齐 Safari 的位置）
         .overlay(alignment: .bottom) { pageProgressBar }
+    }
+
+    // MARK: - ★ v1.0.274 地址栏双模式（浏览态 / 编辑态）
+
+    /// 浏览态那行显示什么：标题优先 → 拿不到标题用域名 → 都没有给 nil（显示占位）。
+    /// 为什么不显示完整地址：地址又长又碎，平时要看的是「这页是什么」。
+    private var addrIdleText: String? {
+        let t = model.pageTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { return t }
+        if let h = URL(string: model.address)?.host, !h.isEmpty {
+            return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+        }
+        return nil
+    }
+
+    /// 编辑框里预填的地址：about:blank / 空都算「没有地址」（给空白，好输入）。
+    private var addrEditableURL: String {
+        let a = model.address
+        return (a.isEmpty || a == "about:blank") ? "" : a
+    }
+
+    /// 进编辑态：预填当前地址 + 亮出输入框（键盘跟着弹）。
+    private func enterEdit() {
+        input = addrEditableURL
+        urlFocused = true
+    }
+
+    /// 退出编辑态（取消 / 点页面别处）：输入框归位成当前地址，
+    /// 不留「打了一半没提交」的残值 —— 下次点进来是干净的。
+    private func exitEdit() {
+        urlFocused = false
+        input = addrEditableURL
     }
 
     /// 页面加载进度条（v1.0.79）。
